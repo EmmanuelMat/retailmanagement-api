@@ -1,0 +1,54 @@
+syntax = "proto3";
+package fiscal_core;
+
+service FiscalService {
+  rpc SignAndSendECF (SignRequest) returns (SignResponse);
+  rpc SignAndSendRFCE (RfceRequest) returns (SignResponse);
+  rpc GetTrackStatus (TrackRequest) returns (TrackResponse);
+  rpc GetAccountBalance (BalanceRequest) returns (BalanceResponse);
+  rpc Generate606 (ReportRequest) returns (ReportResponse);
+  rpc Generate607 (ReportRequest) returns (ReportResponse);
+  rpc ReserveStock (ReserveRequest) returns (ReserveResponse);
+  rpc StreamSales (StreamRequest) returns (stream SaleEvent);
+}
+
+message SignRequest {
+  string tenant_id = 1;
+  string e_ncf = 2;
+  int32 tipo_e_cf = 3;
+  string json_payload = 4;
+  bytes p12_encrypted = 5;
+  string p12_password = 6;
+  bool is_contingency = 7;
+}
+
+message SignResponse {
+  string track_id = 1;
+  string codigo_seguridad = 2;
+  string signed_xml_s3_url = 3;
+  string qr_url = 4;
+  string qr_png_base64 = 5;
+  string status = 6;
+  int64 processing_ms = 7;
+}
+
+message RfceRequest {
+  string tenant_id = 1;
+  string period = 2; // YYYYMMDD
+  repeated string e_ncf_list = 3; // E32 <250k to summarize
+}
+
+message TrackRequest { string track_id = 1; }
+message TrackResponse { string status = 1; string dgii_response = 2; }
+
+message BalanceRequest { string tenant_id = 1; uint64 account_id = 2; uint32 ledger = 3; }
+message BalanceResponse { string debits_posted = 1; string credits_posted = 2; string balance = 3; }
+
+message ReportRequest { string tenant_id = 1; string period = 2; } // AAAAMM
+message ReportResponse { string txt_content = 1; bool prevalidation_ok = 2; repeated string errors = 3; }
+
+message ReserveRequest { string tenant_id = 1; string sku = 2; string qty = 3; string sale_id = 4; }
+message ReserveResponse { bool ok = 1; string error = 2; uint64 tb_transfer_id = 3; }
+
+message StreamRequest { string tenant_id = 1; }
+message SaleEvent { string sale_id = 1; string e_ncf = 2; string status = 3; string qr_url = 4; }

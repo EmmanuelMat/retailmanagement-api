@@ -1,0 +1,58 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Next.js
+.next/
+out/
+build
+dist
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+# Keep Cargo.lock for services/core binary? Keep
+!services/core/Cargo.lock
+
+# Env
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Turbo
+.turbo
+
+# Expo
+.expo
+.expo-shared
+web-build
+
+# TigerBeetle data
+*.tigerbeetle
+0_*.tigerbeetle
+tigerbeetle
+tigerbeetle.zip
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor
+.vscode
+.idea
+*.swp
+
+# Testing
+coverage
+
+# Docs build
+docs/.vitepress/dist

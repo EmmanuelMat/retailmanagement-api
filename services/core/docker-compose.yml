@@ -1,0 +1,50 @@
+version: '3.9'
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fiscal_core
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 5
+
+  # TigerBeetle - single replica for dev (in prod use 3)
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    command: >
+      start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+    ports:
+      - "3000:3000"
+    volumes:
+      - tbdata:/data
+    # For dev, we need to format first time - run: docker exec ... ./tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+
+  nats:
+    image: nats:2.10-alpine
+    command: "-js -m 8222"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - natsdata:/data
+
+  # Optional: Formance Ledger alternative for quick prototyping
+  # formance-ledger:
+  #   image: ghcr.io/formancehq/ledger:latest
+  #   ports:
+  #     - "3068:3068"
+  #   environment:
+  #     - POSTGRES_URI=postgres://postgres:postgres@postgres:5432/formance?sslmode=disable
+
+volumes:
+  pgdata:
+  tbdata:
+  natsdata:

@@ -1,0 +1,32 @@
+{
+  "name": "rd-pos-bank-core-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check",
+    "dev:web": "pnpm --filter web dev",
+    "dev:api": "pnpm --filter @repo/api-client dev",
+    "dev:core": "cargo watch -q -c -w services/core/src -x 'run --bin fiscal-core'",
+    "dev:core:grpc": "cd services/core && cargo run",
+    "db:migrate": "echo 'EventStore migrations' && cd services/core && cargo run --bin migrate",
+    "docs": "echo 'Docs at /docs'",
+    "prepare": "husky install || true"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.0"
+  }
+}

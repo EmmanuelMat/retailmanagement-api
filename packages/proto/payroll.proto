@@ -1,0 +1,31 @@
+syntax = "proto3";
+package payroll_core;
+
+service PayrollService {
+  rpc ClockIn (ClockInRequest) returns (ClockInResponse);
+  rpc RequestAdvance (AdvanceRequest) returns (AdvanceResponse);
+  rpc ApproveAdvance (ApproveRequest) returns (ApproveResponse);
+  rpc RunPayroll (PayrollRunRequest) returns (PayrollRunResponse);
+  rpc GetEmployeeBalance (EmployeeBalanceRequest) returns (EmployeeBalanceResponse);
+}
+
+message ClockInRequest { string tenant_id = 1; string employee_id = 2; string hours = 3; string rate_per_hour = 4; }
+message ClockInResponse { string accrued_net = 1; }
+
+message AdvanceRequest { string tenant_id = 1; string employee_id = 2; string amount_cents = 3; string reason = 4; }
+message AdvanceResponse { string request_id = 1; string status = 2; uint64 tigerbeetle_transfer_id = 3; }
+
+message ApproveRequest { string tenant_id = 1; string request_id = 2; string approved_by = 3; }
+message ApproveResponse { bool ok = 1; }
+
+message PayrollRunRequest { string tenant_id = 1; string period = 2; } // 202607
+message PayrollRunResponse { string payroll_id = 1; string gross_total = 2; string net_total = 3; }
+
+message EmployeeBalanceRequest { string tenant_id = 1; string employee_id = 2; }
+message EmployeeBalanceResponse {
+  string employee_id = 1;
+  string accrued_net_cents = 2;
+  string advance_balance_cents = 3;
+  string available_for_advance_cents = 4;
+  string max_allowed_cents = 5;
+}

@@ -1,0 +1,59 @@
+[package]
+name = "fiscal-core"
+version = "0.1.0"
+edition = "2021"
+description = "Bank-grade Rust core: EventStore + TigerBeetle + DGII e-CF + Payroll Advance"
+
+[dependencies]
+# Async + Web
+tokio = { version = "1.40", features = ["full"] }
+axum = { version = "0.7", features = ["json"] }
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+tokio-stream = { version = "0.1", features = ["net"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-native-tls","postgres","uuid","json","chrono","rust_decimal"] }
+uuid = { version = "1.10", features = ["v4","serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Money
+rust_decimal = { version = "1.35", features = ["serde-with-str"] }
+rust_decimal_macros = "1.35"
+
+# Crypto - DGII signing
+openssl = { version = "0.10", features = ["vendored"] }
+sha2 = "0.10"
+base64 = { version = "0.22" }
+zeroize = "1.8"
+roxmltree = "0.20"
+
+# HTTP client for DGII real send
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
+mime = "0.3"
+
+# XML Security (C14N spec compliant, optional but we implement custom + use as reference)
+# xml-sec = "0.7" # pure rust, uncomment if want to use
+
+# Utils
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+anyhow = "1.0"
+thiserror = "2.0"
+
+[build-dependencies]
+tonic-build = "0.12"
+prost-build = "0.13"
+
+[[bin]]
+name = "fiscal-core"
+path = "src/main.rs"
+
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
