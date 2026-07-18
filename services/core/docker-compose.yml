@@ -1,6 +1,4 @@
-version: '3.9'
-# Fixed for TigerBeetle exit code 1 - auto format
-
+# Fixed for TigerBeetle - auto-formats, no version
 services:
   postgres:
     image: postgres:16-alpine
@@ -22,14 +20,13 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Checking if TigerBeetle needs formatting..."
+        TB_BIN=$(which tigerbeetle 2>/dev/null || echo "/tigerbeetle")
         if [ ! -f /data/0_0.tigerbeetle ]; then
-          echo "Formatting..."
-          /tigerbeetle/tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle || true
-          echo "Format done"
+          echo "Formatting TigerBeetle..."
+          $TB_BIN format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle || true
         fi
         echo "Starting TigerBeetle..."
-        exec /tigerbeetle/tigerbeetle start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+        exec $TB_BIN start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
     ports:
       - "3000:3000"
     volumes:

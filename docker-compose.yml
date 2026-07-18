@@ -1,6 +1,6 @@
-version: '3.9'
-# Fixed for TigerBeetle - auto-formats on first run, then starts
-# If tigerbeetle-1 exits with code 1, it's because data file not formatted
+# Fixed for TigerBeetle - auto-formats on first run
+# Removed version (obsolete)
+# Fixed binary path: tigerbeetle binary is in PATH, not /tigerbeetle/tigerbeetle
 
 services:
   postgres:
@@ -18,23 +18,27 @@ services:
       interval: 5s
       retries: 5
 
-  # TigerBeetle - single replica dev
-  # Fix for exit code 1: Needs format first time
-  # This entrypoint tries to format, ignores error if already formatted, then starts
   tigerbeetle:
     image: ghcr.io/tigerbeetle/tigerbeetle:latest
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         echo "Checking /data/0_0.tigerbeetle..."
+        ls -lh /data/ || true
+        echo "PATH=$PATH"
+        which tigerbeetle || echo "tigerbeetle not in PATH, trying /tigerbeetle"
+        ls -lh /tigerbeetle || true
+        ls -lh /usr/bin/tigerbeetle || true
+        TB_BIN=$(which tigerbeetle 2>/dev/null || echo "/tigerbeetle")
+        echo "Using TB_BIN=$TB_BIN"
         if [ ! -f /data/0_0.tigerbeetle ]; then
           echo "Formatting TigerBeetle file first time..."
-          /tigerbeetle/tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle || true
+          $TB_BIN format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle || true
         else
           echo "File already exists, skipping format"
         fi
         echo "Starting TigerBeetle on 0.0.0.0:3000..."
-        exec /tigerbeetle/tigerbeetle start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+        exec $TB_BIN start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
     ports:
       - "3000:3000"
     volumes:
@@ -50,4 +54,3 @@ services:
 volumes:
   pgdata:
   tbdata:
-  nats_data:
