@@ -1,5 +1,6 @@
 version: '3.9'
-# Root docker-compose that orchestrates everything for local dev
+# Fixed for TigerBeetle - auto-formats on first run, then starts
+# If tigerbeetle-1 exits with code 1, it's because data file not formatted
 
 services:
   postgres:
@@ -12,10 +13,28 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 5
 
+  # TigerBeetle - single replica dev
+  # Fix for exit code 1: Needs format first time
+  # This entrypoint tries to format, ignores error if already formatted, then starts
   tigerbeetle:
     image: ghcr.io/tigerbeetle/tigerbeetle:latest
-    command: start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Checking /data/0_0.tigerbeetle..."
+        if [ ! -f /data/0_0.tigerbeetle ]; then
+          echo "Formatting TigerBeetle file first time..."
+          /tigerbeetle/tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle || true
+        else
+          echo "File already exists, skipping format"
+        fi
+        echo "Starting TigerBeetle on 0.0.0.0:3000..."
+        exec /tigerbeetle/tigerbeetle start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
     ports:
       - "3000:3000"
     volumes:
@@ -26,9 +45,9 @@ services:
     command: "-js"
     ports:
       - "4222:4222"
-
-  # Uncomment after first format: docker exec fiscal-core-tigerbeetle-1 tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+      - "8222:8222"
 
 volumes:
   pgdata:
   tbdata:
+  nats_data:
