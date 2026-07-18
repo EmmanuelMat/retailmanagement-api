@@ -3,6 +3,7 @@ name = "fiscal-core"
 version = "0.1.0"
 edition = "2021"
 description = "Bank-grade Rust core: EventStore + TigerBeetle + DGII e-CF + Payroll Advance"
+default-run = "fiscal-core"
 
 [dependencies]
 # Async + Web
