@@ -47,7 +47,7 @@ impl EmployeeState {
                 self.accrued_net += amount;
                 self.version += 1;
             },
-            EmployeeEvent::AdvanceApproved { amount } => {
+            EmployeeEvent::AdvanceApproved { amount, .. } => {
                 self.advance_balance += amount;
                 self.version += 1;
             },

@@ -66,7 +66,6 @@ fn canonicalize_node(
     // Regular attributes (non-xmlns), sorted lexicographically
     let mut regular_attrs: Vec<(String, String)> = node
         .attributes()
-        .iter()
         .filter(|a| {
             let n = a.name();
             !(n == "xmlns" || n.starts_with("xmlns:"))

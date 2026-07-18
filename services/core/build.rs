@@ -8,10 +8,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if !protoc_exists {
         println!("cargo:warning=protoc not found, creating dummy proto generated files for HTTP-only build");
+        println!("cargo:rustc-cfg=dummy_proto");
         let out_dir = std::env::var("OUT_DIR").unwrap();
         std::fs::create_dir_all(&out_dir).unwrap();
         
-        // Dummy fiscal_core.rs with messages + service trait stubs
+        // Dummy fiscal_core.rs - messages + service stubs that compile even without http/body
+        // Uses http crate 0.2 and tonic 0.12 BoxBody which exists
         std::fs::write(
             Path::new(&out_dir).join("fiscal_core.rs"),
             r#"
@@ -85,13 +87,18 @@ pub mod fiscal_service_server {
     impl<T: FiscalService> tonic::server::NamedService for FiscalServiceServer<T> {
         const NAME: &'static str = "fiscal_core.FiscalService";
     }
+    // Dummy Service impl that compiles - uses http 0.2 and tonic BoxBody via empty response
     #[tonic::async_trait]
-    impl<T: FiscalService> tonic::codegen::Service<http::Request<tonic::body::Body>> for FiscalServiceServer<T> {
-        type Response = http::Response<tonic::body::Body>;
+    impl<T: FiscalService> tonic::codegen::Service<http::Request<tonic::body::BoxBody>> for FiscalServiceServer<T> {
+        type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
         fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> { std::task::Poll::Ready(Ok(())) }
-        fn call(&mut self, _req: http::Request<tonic::body::Body>) -> Self::Future { Box::pin(async { Ok(http::Response::builder().status(200).body(tonic::body::Body::default()).unwrap()) }) }
+        fn call(&mut self, _req: http::Request<tonic::body::BoxBody>) -> Self::Future { 
+            Box::pin(async { 
+                Ok(http::Response::builder().status(200).body(tonic::body::BoxBody::default()).unwrap()) 
+            }) 
+        }
     }
 }
 "#,
@@ -141,12 +148,16 @@ pub mod payroll_service_server {
         const NAME: &'static str = "payroll_core.PayrollService";
     }
     #[tonic::async_trait]
-    impl<T: PayrollService> tonic::codegen::Service<http::Request<tonic::body::Body>> for PayrollServiceServer<T> {
-        type Response = http::Response<tonic::body::Body>;
+    impl<T: PayrollService> tonic::codegen::Service<http::Request<tonic::body::BoxBody>> for PayrollServiceServer<T> {
+        type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
         fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> { std::task::Poll::Ready(Ok(())) }
-        fn call(&mut self, _req: http::Request<tonic::body::Body>) -> Self::Future { Box::pin(async { Ok(http::Response::builder().status(200).body(tonic::body::Body::default()).unwrap()) }) }
+        fn call(&mut self, _req: http::Request<tonic::body::BoxBody>) -> Self::Future { 
+            Box::pin(async { 
+                Ok(http::Response::builder().status(200).body(tonic::body::BoxBody::default()).unwrap()) 
+            }) 
+        }
     }
 }
 "#,
@@ -155,6 +166,7 @@ pub mod payroll_service_server {
         return Ok(());
     }
 
+    println!("cargo:rustc-cfg=has_protoc");
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
