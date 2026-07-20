@@ -102,7 +102,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/reports/606", get(http_report_606))
         .route("/v1/reports/607", get(http_report_607))
         .route("/v1/test/sign-demo", get(http_test_sign_demo_get).post(http_test_sign_demo))
-        .route("/v1/test/sign-demo", get(http_test_sign_demo_get))
         .with_state(http_state)
         .layer(tower_http::cors::CorsLayer::permissive())
         .layer(tower_http::trace::TraceLayer::new_for_http());
