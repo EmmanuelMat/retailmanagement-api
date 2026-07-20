@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 //! ARECF (Acuse de Recibo) + ACECF (Aprobacion Comercial) builders
 //! Per DGII XSD ARECF v1.0 and ACECF v1.0
 //! 

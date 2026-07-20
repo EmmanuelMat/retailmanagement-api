@@ -8,10 +8,12 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Running migrations...");
 
-    sqlx::query(
+    // Use raw_sql for multiple statements (sqlx 0.8+)
+    // Or split into separate queries if raw_sql not available
+    sqlx::raw_sql(
         r#"
         CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-        
+
         CREATE TABLE IF NOT EXISTS events (
             event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             aggregate_type TEXT NOT NULL,
@@ -26,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
             hash TEXT NOT NULL,
             UNIQUE(aggregate_id, version)
         );
+
         CREATE INDEX IF NOT EXISTS idx_events_aggregate ON events (aggregate_id, version);
         CREATE INDEX IF NOT EXISTS idx_events_tenant_type ON events (tenant_id, aggregate_type);
 
@@ -37,7 +40,6 @@ async fn main() -> anyhow::Result<()> {
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
 
-        -- Read models (materialized views built by projectors)
         CREATE TABLE IF NOT EXISTS read_employee_balances (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,

@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 //! ECF XML Builder per DGII Informe Técnico v1.0 XSD
 //! Converts JSON ECF structure (like mseller docs) to XML string matching DGII XSD
 //! Supports E31 (Crédito Fiscal), E32 (<250k and >=250k), E33 Nota Débito, E34 Nota Crédito, E41-E47

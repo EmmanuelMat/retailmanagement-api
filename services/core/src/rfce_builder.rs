@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 //! RFCE Builder - Resumen Factura Consumo Electronica < 250k
 //! Per DGII XSD RFCE v1.0 - Summarizes many E32 <250k invoices into one summary to send to DGII
 //! Flow per dgii-ecf lib: convertECF32ToRFCE(signedEcfXml) -> { xml, securityCode }
