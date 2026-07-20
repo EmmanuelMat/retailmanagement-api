@@ -28,10 +28,14 @@ use grpc::AppState;
 use services::ecfl_service::{sign_xml_ecf, generate_qr_url};
 use ecf_builder::{build_ecf_xml, build_simple_pos_ecf, ECF};
 use dgii_client::{DGIIClient, DGIIEnvironment};
+use services::auth_service::{AuthService, RegisterRequest as TenantRegisterRequest, LoginRequest as AuthLoginRequest};
+use sqlx::PgPool;
 
 #[derive(Clone)]
 struct HttpState {
     app_state: Arc<AppState>,
+    auth_service: Arc<AuthService>,
+    pool: PgPool,
 }
 
 #[tokio::main]
@@ -44,14 +48,39 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Postgres pool for Auth + EventStore
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/fiscal_core".to_string());
+    let pool = match PgPool::connect(&database_url).await {
+        Ok(p) => {
+            tracing::info!("Postgres connected: {}", database_url);
+            p
+        },
+        Err(e) => {
+            tracing::warn!("Postgres connection failed ({}), using lazy pool - some auth endpoints will fail until DB up: {}", database_url, e);
+            PgPool::connect_lazy(&database_url).expect("Invalid DATABASE_URL")
+        }
+    };
+
+    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-cambia-en-produccion-32-chars-min".to_string());
+    let auth_service = Arc::new(AuthService::new(pool.clone(), jwt_secret));
+
     let app_state = Arc::new(AppState::new());
     let http_state = HttpState {
         app_state: app_state.clone(),
+        auth_service,
+        pool,
     };
 
     let http_app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
+        // MODULO 1: Auth y Multi-tenancy
+        .route("/v1/auth/register", post(http_register))
+        .route("/v1/auth/login", post(http_login))
+        .route("/v1/tenants/:rnc", get(http_get_tenant))
+        .route("/v1/tenants/:rnc/usuarios", get(http_list_usuarios))
+        .route("/v1/auth/me", get(http_me))
+        // DGII e-CF
         .route("/v1/ecf/sign", post(http_sign_ecf))
         .route("/v1/ecf/sign-rfce", post(http_sign_rfce))
         .route("/v1/ecf/build", post(http_build_ecf))
@@ -72,7 +101,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/payroll/run", post(http_payroll_run))
         .route("/v1/reports/606", get(http_report_606))
         .route("/v1/reports/607", get(http_report_607))
-        .route("/v1/test/sign-demo", post(http_test_sign_demo))
+        .route("/v1/test/sign-demo", get(http_test_sign_demo_get).post(http_test_sign_demo))
+        .route("/v1/test/sign-demo", get(http_test_sign_demo_get))
         .with_state(http_state)
         .layer(tower_http::cors::CorsLayer::permissive())
         .layer(tower_http::trace::TraceLayer::new_for_http());
@@ -575,3 +605,109 @@ async fn http_build_sign_acecf(Json(req): Json<BuildSignACECFRequest>) -> Result
     let signed = sign_xml_ecf(&xml, &p12_der, &password).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Sign ACECF failed: {}", e)))?;
     Ok(Json(serde_json::json!({"eNCF": acecf.Encabezado.IdDoc.eNCF, "estado": estado, "signed_xml_preview": signed.signed_xml.chars().take(800).collect::<String>(), "file_name": format!("{}{}_ACECF.xml", acecf.Encabezado.Emisor.RNCEmisor, acecf.Encabezado.IdDoc.eNCF)})))
 }
+
+// ------------------ MODULO 1: Auth y Multi-tenancy ------------------
+
+async fn http_register(
+    State(state): State<HttpState>,
+    Json(req): Json<TenantRegisterRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    match state.auth_service.register(req).await {
+        Ok(resp) => Ok(Json(serde_json::json!({
+            "success": true,
+            "mensaje": "Negocio registrado exitosamente • RNC activo • Usuario ADMIN creado • Eventos TenantRegistrado y UsuarioCreado en ledger",
+            "token": resp.token,
+            "usuario": resp.usuario,
+            "tenant": resp.tenant,
+            "siguientePaso": "Sube tu certificado P12 DGII en /v1/tenants/:rnc/certificado y configura secuencias e-NCF en /configuracion/dgii"
+        }))),
+        Err(e) => Err((StatusCode::BAD_REQUEST, format!("Error registro: {}", e))),
+    }
+}
+
+async fn http_login(
+    State(state): State<HttpState>,
+    Json(req): Json<AuthLoginRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    match state.auth_service.login(req).await {
+        Ok(resp) => Ok(Json(serde_json::json!({
+            "success": true,
+            "mensaje": "Sesión iniciada • JWT 12h • tenant_id = RNC",
+            "token": resp.token,
+            "usuario": resp.usuario,
+            "tenant": resp.tenant
+        }))),
+        Err(e) => Err((StatusCode::UNAUTHORIZED, format!("Login falló: {}", e))),
+    }
+}
+
+async fn http_get_tenant(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    match state.auth_service.get_tenant(&rnc.replace("-", "")).await {
+        Ok(tenant) => Ok(Json(serde_json::json!(tenant))),
+        Err(e) => Err((StatusCode::NOT_FOUND, format!("Tenant no encontrado: {}", e))),
+    }
+}
+
+async fn http_list_usuarios(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    match state.auth_service.list_usuarios(&rnc.replace("-", "")).await {
+        Ok(usuarios) => Ok(Json(serde_json::json!({
+            "rnc": rnc,
+            "total": usuarios.len(),
+            "usuarios": usuarios,
+            "roles": ["ADMIN - Dueño total", "CAJERO - Solo POS y Caja", "ALMACEN - Solo Inventario", "CONTADOR - Solo Reportes y DGII"]
+        }))),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error listando usuarios: {}", e))),
+    }
+}
+
+async fn http_me(
+    State(state): State<HttpState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let auth_header = headers.get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .ok_or((StatusCode::UNAUTHORIZED, "Falta header Authorization: Bearer <token>".to_string()))?;
+    
+    let token = if auth_header.starts_with("Bearer ") {
+        &auth_header[7..]
+    } else {
+        auth_header
+    };
+
+    match state.auth_service.verify_jwt(token) {
+        Ok(claims) => Ok(Json(serde_json::json!({
+            "autenticado": true,
+            "usuario_id": claims.sub,
+            "tenant_id": claims.tenant_id,
+            "rol": claims.rol,
+            "email": claims.email,
+            "expira": claims.exp,
+            "mensaje": "Token válido • tenant_id = RNC para multi-tenancy"
+        }))),
+        Err(e) => Err((StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e))),
+    }
+}
+
+async fn http_test_sign_demo_get() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // GET version for easy curl without body
+    let xml = r#"<ECF><Encabezado><Version>1.0</Version><IdDoc><TipoeCF>32</TipoeCF><eNCF>E320000000001</eNCF><FechaVencimientoSecuencia>31-12-2026</FechaVencimientoSecuencia><IndicadorEnvioDiferido>1</IndicadorEnvioDiferido><TipoIngresos>01</TipoIngresos><TipoPago>1</TipoPago></IdDoc><Emisor><RNCEmisor>130793752</RNCEmisor><RazonSocialEmisor>COLMADO EL SOL SRL</RazonSocialEmisor><DireccionEmisor>Av Duarte</DireccionEmisor><FechaEmision>15-07-2026</FechaEmision></Emisor><Comprador><RNCComprador>000000000</RNCComprador><RazonSocialComprador>CONSUMIDOR FINAL</RazonSocialComprador></Comprador><Totales><MontoGravadoTotal>1000.00</MontoGravadoTotal><MontoGravadoI1>1000.00</MontoGravadoI1><TotalITBIS>180.00</TotalITBIS><MontoTotal>1180.00</MontoTotal></Totales></Encabezado><DetallesItems><Item><NumeroLinea>1</NumeroLinea><IndicadorFacturacion>1</IndicadorFacturacion><NombreItem>Arroz Premium</NombreItem><IndicadorBienoServicio>1</IndicadorBienoServicio><CantidadItem>1</CantidadItem><PrecioUnitarioItem>1000.00</PrecioUnitarioItem><MontoItem>1000.00</MontoItem></Item></DetallesItems></ECF>"#;
+    let p12_der = generate_self_signed_p12().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to gen P12: {}", e)))?;
+    let signed = sign_xml_ecf(xml, &p12_der, "password").map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Signing failed: {}", e)))?;
+    let qr_url = generate_qr_url("130793752", "E320000000001", "000000000", "15-07-2026", "1180.00", &signed.codigo_seguridad);
+    Ok(Json(serde_json::json!({
+        "e_ncf": "E320000000001",
+        "track_id": format!("DEMO-GET-TRACK-{}", uuid::Uuid::new_v4()),
+        "codigo_seguridad": signed.codigo_seguridad,
+        "digest_value": signed.digest_value,
+        "qr_url": qr_url,
+        "signed_xml_preview": signed.signed_xml.chars().take(500).collect::<String>(),
+        "mensaje": "Demo firma XAdES-BES real con cert auto-firmado (no válido para DGII prod, solo prueba builder+signer+QR)"
+    })))
+}
+

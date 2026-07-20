@@ -61,6 +61,51 @@ async fn main() -> anyhow::Result<()> {
             qr_url TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
+
+        -- MODULO 1: Auth y Multi-tenancy
+        CREATE TABLE IF NOT EXISTS tenants (
+            rnc TEXT PRIMARY KEY,
+            razon_social TEXT NOT NULL,
+            nombre_comercial TEXT,
+            direccion TEXT NOT NULL,
+            telefono TEXT,
+            correo TEXT,
+            logo_url TEXT,
+            ambiente_dgii TEXT NOT NULL DEFAULT 'TesteCF',
+            activo BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            nombre TEXT NOT NULL,
+            email TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            rol TEXT NOT NULL DEFAULT 'CAJERO', -- ADMIN, CAJERO, ALMACEN, CONTADOR
+            activo BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(tenant_id, email)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_usuarios_tenant ON usuarios(tenant_id);
+        CREATE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios(email);
+
+        -- Tabla secuencias DGII e-NCF por tenant
+        CREATE TABLE IF NOT EXISTS secuencias_ncf (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            tipo_ecf INT NOT NULL, -- 31,32,33,34,41,43, etc
+            prefijo TEXT NOT NULL, -- E31, E32...
+            desde BIGINT NOT NULL,
+            hasta BIGINT NOT NULL,
+            proximo BIGINT NOT NULL,
+            fecha_vencimiento DATE NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'ACTIVA', -- ACTIVA, AGOTADA, VENCIDA
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_secuencias_tenant_tipo ON secuencias_ncf(tenant_id, tipo_ecf);
         "#
     )
     .execute(&pool)

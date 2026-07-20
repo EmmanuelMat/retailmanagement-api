@@ -29,12 +29,15 @@ serde_json = "1.0"
 rust_decimal = { version = "1.35", features = ["serde-with-str"] }
 rust_decimal_macros = "1.35"
 
-# Crypto - DGII signing
+# Crypto - DGII signing + Auth
 openssl = { version = "0.10", features = ["vendored"] }
 sha2 = "0.10"
 base64 = { version = "0.22" }
 zeroize = "1.8"
 roxmltree = "0.20"
+argon2 = "0.5"
+jsonwebtoken = { version = "9", features = ["use_pem"] }
+rand = "0.8"
 
 # HTTP client for DGII real send
 reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
