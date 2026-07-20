@@ -6,14 +6,14 @@ description = "Bank-grade Rust core: EventStore + TigerBeetle + DGII e-CF + Payr
 default-run = "fiscal-core"
 
 [dependencies]
-# Async + Web
+# Async + Web - Use axum 0.6 to match tonic 0.12 http 0.2 (axum 0.7 uses http 1.0 which conflicts with tonic)
 tokio = { version = "1.40", features = ["full"] }
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.6", features = ["json"] }
 tonic = { version = "0.12", features = ["transport"] }
 prost = "0.13"
 tokio-stream = { version = "0.1", features = ["net"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.4", features = ["cors", "trace"] }
 http = "0.2"
 http-body = "0.4"
 http-body-util = "0.1"
@@ -39,9 +39,6 @@ roxmltree = "0.20"
 # HTTP client for DGII real send
 reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
 mime = "0.3"
-
-# XML Security (C14N spec compliant, optional but we implement custom + use as reference)
-# xml-sec = "0.7" # pure rust, uncomment if want to use
 
 # Utils
 tracing = "0.1"
