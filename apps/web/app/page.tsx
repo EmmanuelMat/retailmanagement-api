@@ -1,236 +1,308 @@
 /**
- * POS Banco-Grado - Interfaz en Español Dominicano
- * Núcleo Rust + TigerBeetle + DGII e-CF
+ * COLMADO EL SOL - POS Dominicano Único
+ * Diseño inspirado en letreros pintados a mano de colmados, no dashboard corporativo genérico
+ * 100% Español Dominicano
  */
 
-export default function PaginaPrincipal() {
+export default function ColmadoPOS() {
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      {/* Encabezado */}
-      <header className="sticky top-0 z-20 border-b border-zinc-800 bg-zinc-900/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center font-black text-sm shadow-lg shadow-orange-500/20">RD</div>
-            <div>
-              <h1 className="font-bold tracking-tight text-[15px]">Colmado POS • Núcleo Bancario</h1>
-              <p className="text-[11px] text-zinc-400">Eventos • TigerBeetle • DGII e-CF • Contabilidad • Nómina</p>
+    <div className="min-h-screen bg-[#0c0a09] text-stone-100 selection:bg-amber-500 selection:text-black relative overflow-hidden">
+      {/* Fondos radiales únicos */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute -top-[40%] -left-[20%] w-[80%] h-[80%] rounded-full bg-gradient-to-br from-amber-500/[0.08] to-orange-600/[0.03] blur-[120px]" />
+        <div className="absolute -bottom-[30%] -right-[10%] w-[60%] h-[60%] rounded-full bg-gradient-to-br from-emerald-500/[0.06] to-teal-600/[0.02] blur-[100px]" />
+        <div className="absolute top-[20%] right-[30%] w-[40%] h-[40%] rounded-full bg-gradient-to-br from-violet-500/[0.04] to-purple-600/[0.01] blur-[80px]" />
+      </div>
+
+      {/* Grid sutil */}
+      <div className="fixed inset-0 pointer-events-none opacity-[0.02]" style={{
+        backgroundImage: `linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)`,
+        backgroundSize: '48px 48px'
+      }} />
+
+      {/* Header - Hand painted style */}
+      <header className="relative z-20 border-b-[3px] border-stone-800 bg-[#1c1917] sticky top-0">
+        <div className="mx-auto max-w-[1800px] flex items-center justify-between px-5 py-3">
+          <div className="flex items-center gap-5">
+            {/* Logo sol */}
+            <div className="flex items-center gap-3">
+              <div className="relative h-12 w-12 rounded-[14px] bg-[#facc15] border-[3px] border-stone-900 flex items-center justify-center shadow-[4px_4px_0px_#0c0a09] rotate-[-2deg]">
+                <span className="text-[22px]">☀️</span>
+                <div className="absolute -top-1 -right-1 h-3 w-3 bg-emerald-500 rounded-full border-2 border-stone-900 animate-pulse" />
+              </div>
+              <div>
+                <h1 className="font-black text-[17px] tracking-[-0.02em] leading-none">COLMADO EL SOL</h1>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-[10px] font-bold bg-amber-400 text-black px-1.5 py-0.5 rounded-[4px] border border-black">DESDE 1998</span>
+                  <span className="text-[10px] text-stone-400 font-mono">RNC 130-79375-2 • SDO • RD</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden lg:flex items-center gap-2 ml-6">
+              {[
+                { icon: "🛒", label: "VENTA", active: true },
+                { icon: "📦", label: "INVENTARIO", active: false },
+                { icon: "👥", label: "CLIENTES", active: false },
+                { icon: "📒", label: "LIBRO", active: false },
+                { icon: "💸", label: "NÓMINA", active: false },
+              ].map((tab) => (
+                <div key={tab.label} className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full border-[2.5px] text-[11px] font-black tracking-wider cursor-pointer transition-all ${tab.active ? "bg-white text-black border-black shadow-[3px_3px_0px_black]" : "bg-stone-900 text-stone-400 border-stone-800 hover:border-stone-600 hover:text-stone-200"}`}>
+                  <span>{tab.icon}</span>{tab.label}
+                </div>
+              ))}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-400 border border-emerald-500/20">● Núcleo Rust: Conectado</span>
-            <span className="rounded-full bg-zinc-800 px-3 py-1 text-[11px] text-zinc-300">RNC: 130793752 • Colmado El Sol • SDO</span>
-            <div className="ml-2 h-8 w-8 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-xs font-bold">EM</div>
+
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-2 bg-stone-900 border-2 border-stone-800 rounded-full px-3 py-1.5">
+              <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-[11px] font-mono font-bold">NÚCLEO RUST • TIGERBEETLE • CONECTADO</span>
+            </div>
+            <div className="flex items-center gap-2 bg-amber-400 border-[2.5px] border-black rounded-full px-3 py-1.5 shadow-[3px_3px_0px_black] rotate-[1deg]">
+              <span className="text-[11px] font-black text-black">CAJA: RD$ 18,420.00</span>
+              <span className="h-5 w-5 bg-black text-amber-400 rounded-full flex items-center justify-center text-[10px] font-black">↗</span>
+            </div>
+            <div className="h-10 w-10 rounded-full bg-white border-[3px] border-black flex items-center justify-center font-black text-black shadow-[3px_3px_0px_black]">EM</div>
+          </div>
+        </div>
+
+        {/* Ticker eventos estilo colmado */}
+        <div className="bg-black border-y-2 border-stone-800 py-1 overflow-hidden">
+          <div className="flex gap-8 animate-[marquee_30s_linear_infinite] whitespace-nowrap text-[10px] font-mono">
+            <span className="text-stone-500">EVENTOS LEDGER #1828: VentaCompletada E320000000127 • TB linked 3 transfers atómicos • ETicketAceptado TrackID dgi-982x • QR https://ecf.dgii.gov.do/ • AdelantoSolicitado María RD$2,000 • 50% OK • AdelantoAprobado TB 3001 posted • InventarioReservado ARZ-002 • RFCE 47 facturas &lt;250k enviadas • ARECF recibido proveedor 130000001</span>
           </div>
         </div>
       </header>
 
-      {/* Navegación rápida */}
-      <div className="mx-auto max-w-[1600px] px-6 pt-4 flex gap-2 text-[12px]">
-        {[
-          { label: "Punto de Venta", active: true },
-          { label: "Inventario" },
-          { label: "Clientes" },
-          { label: "Contabilidad" },
-          { label: "Nómina y Adelantos" },
-          { label: "Reportes DGII (606/607)" },
-          { label: "Configuración DGII" },
-        ].map((tab) => (
-          <div key={tab.label} className={`rounded-full px-4 py-1.5 border cursor-pointer transition ${tab.active ? "bg-white text-black border-white font-semibold" : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700"}`}>
-            {tab.label}
+      <div className="relative z-10 mx-auto max-w-[1800px] flex min-h-[calc(100vh-78px)]">
+        {/* Sidebar izquierdo - Categorías + notas */}
+        <aside className="hidden xl:flex w-[300px] flex-col gap-4 p-4 border-r-2 border-stone-800 bg-[#1c1917]/50 backdrop-blur">
+          {/* Categorías estilo letrero */}
+          <div>
+            <h2 className="text-[11px] font-black tracking-[0.2em] text-stone-500 mb-3">CATEGORÍAS • INVENTARIO TIGERBEETLE</h2>
+            <div className="space-y-2">
+              {[
+                { icon: "🌽", nombre: "VÍVERES", count: 42, color: "bg-amber-400", text: "text-black" },
+                { icon: "🥤", nombre: "BEBIDAS / FRÍOS", count: 18, color: "bg-sky-400", text: "text-black" },
+                { icon: "🍞", nombre: "PANADERÍA", count: 120, color: "bg-orange-300", text: "text-black", alerta: true },
+                { icon: "🧴", nombre: "LIMPIEZA", count: 15, color: "bg-violet-300", text: "text-black" },
+                { icon: "🥫", nombre: "ENLATADOS", count: 24, color: "bg-emerald-300", text: "text-black" },
+                { icon: "🍭", nombre: "DULCES", count: 67, color: "bg-pink-300", text: "text-black" },
+              ].map((cat) => (
+                <div key={cat.nombre} className="group flex items-center justify-between p-3 rounded-[14px] border-[2.5px] border-stone-800 bg-stone-900 hover:bg-stone-800 hover:border-stone-700 cursor-pointer transition-all hover:rotate-[-0.5deg] hover:shadow-[4px_4px_0px_black]">
+                  <div className="flex items-center gap-3">
+                    <div className={`h-9 w-9 rounded-[10px] ${cat.color} border-2 border-black flex items-center justify-center text-[16px] shadow-[2px_2px_0px_black]`}>{cat.icon}</div>
+                    <div>
+                      <p className="font-black text-[12px] tracking-wide">{cat.nombre}</p>
+                      <p className="text-[10px] text-stone-500 font-mono">{cat.count} productos • Stock OK</p>
+                    </div>
+                  </div>
+                  {cat.alerta && <span className="h-2 w-2 bg-red-500 rounded-full animate-ping" />}
+                </div>
+              ))}
+            </div>
           </div>
-        ))}
-      </div>
 
-      <div className="mx-auto max-w-[1600px] grid grid-cols-12 gap-6 p-6">
-        {/* Izquierda - Terminal de Venta */}
-        <div className="col-span-8 space-y-5">
-          {/* Métricas superiores */}
-          <div className="grid grid-cols-4 gap-4">
+          {/* Nota amarilla adelantos - estilo post-it mano */}
+          <div className="relative bg-[#fef08a] border-[3px] border-black rounded-[16px] p-4 shadow-[6px_6px_0px_black] rotate-[-1deg] text-black">
+            <div className="absolute -top-2 -right-2 h-6 w-12 bg-black/10 rotate-6 rounded-sm" />
+            <h3 className="font-black text-[13px] tracking-tight flex items-center gap-2">💸 ADELANTOS HOY • EWA 50%</h3>
+            <p className="text-[10px] font-bold opacity-60 mt-1 leading-tight">No es préstamo. Es sueldo ya ganado. Sin interés. Descuento quincena.</p>
+            
+            <div className="mt-3 space-y-2.5">
+              {[
+                { nombre: "María P. • Cajera", ganado: "9,200", disp: "4,600", sol: "2,000", motivo: "Medicina", estado: "✓ Aprobado TB 3001", color: "bg-emerald-400" },
+                { nombre: "Juan C. • Almacén", ganado: "6,400", disp: "3,200", sol: "3,000", motivo: "Transporte", estado: "⏳ Pendiente", color: "bg-amber-400" },
+              ].map((e) => (
+                <div key={e.nombre} className="bg-white border-2 border-black rounded-[10px] p-2.5 shadow-[2px_2px_0px_black]">
+                  <p className="font-black text-[11px]">{e.nombre}</p>
+                  <p className="text-[9px] font-mono opacity-60">Ganado RD${e.ganado} • Disp 50% RD${e.disp} • {e.motivo}</p>
+                  <div className="mt-1.5 flex justify-between items-center">
+                    <span className="font-black text-[11px]">RD${e.sol}</span>
+                    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded-full border border-black ${e.color}`}>{e.estado}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            
+            <p className="text-[8px] font-mono mt-3 opacity-50 leading-tight">Evento: AdelantoAprobado → TB Debe activo:anticipos / Haber caja pending→posted. Deducción nómina “Anticipo Salario”.</p>
+          </div>
+
+          {/* Mini ledger - estilo libreta */}
+          <div className="rounded-[14px] border-2 border-stone-800 bg-stone-900 p-3">
+            <h3 className="font-black text-[11px] tracking-widest text-stone-500">LIBRO MAYOR • TIGERBEETLE VIVO</h3>
+            <div className="mt-3 space-y-1.5 font-mono text-[11px]">
+              <div className="flex justify-between"><span className="text-stone-500">caja</span><span className="font-bold">RD$ 18,420</span></div>
+              <div className="flex justify-between text-amber-300"><span>anticipos</span><span>RD$ 6,000</span></div>
+              <div className="flex justify-between text-sky-300"><span>itbis x pagar</span><span>RD$ 4,210</span></div>
+              <div className="flex justify-between border-t border-dashed border-stone-700 pt-1.5 mt-1.5"><span className="font-black">ventas</span><span className="font-black text-emerald-400">RD$ 42,100</span></div>
+            </div>
+          </div>
+        </aside>
+
+        {/* Centro - Productos */}
+        <main className="flex-1 p-4">
+          {/* Buscador */}
+          <div className="flex gap-3 mb-4">
+            <div className="flex-1 relative">
+              <input placeholder="Buscar plátanos, arroz, fríos... (SKU o nombre)" className="w-full bg-black border-[3px] border-stone-800 rounded-full px-5 py-3 text-[13px] font-bold placeholder:text-stone-600 focus:outline-none focus:border-amber-400 focus:shadow-[0_0_0_4px_rgba(251,146,60,0.2)] transition-all" />
+              <div className="absolute right-2 top-2 bg-white text-black border-2 border-black rounded-full h-8 w-8 flex items-center justify-center font-black">⌕</div>
+            </div>
+            <div className="hidden md:flex gap-2">
+              {["TODOS", "18% • GRAVADO", "16% • REDUCIDA", "EXENTO"].map((f) => (
+                <button key={f} className="px-4 py-2 rounded-full border-[2.5px] border-stone-800 bg-stone-900 text-[11px] font-black tracking-wider hover:bg-white hover:text-black hover:border-black hover:shadow-[3px_3px_0px_black] transition-all">{f}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Banner DGII */}
+          <div className="mb-4 rounded-[14px] border-[3px] border-black bg-sky-400 text-black p-3 flex items-center justify-between shadow-[4px_4px_0px_black]">
+            <div className="flex items-center gap-3">
+              <div className="h-8 w-8 bg-black text-sky-400 rounded-full flex items-center justify-center font-black">✓</div>
+              <div>
+                <p className="font-black text-[12px] tracking-tight">CUMPLIMIENTO DGII • e-CF OBLIGATORIO DESDE 15 NOV 2026</p>
+                <p className="text-[10px] font-bold opacity-70">E32 &lt; RD$250k → Resumen diario RFCE • E31 con RNC • 606/607 auto desde ledger</p>
+              </div>
+            </div>
+            <span className="text-[10px] font-black bg-black text-sky-400 px-2 py-1 rounded-full">46 ACEPTADAS • 1 PENDIENTE</span>
+          </div>
+
+          {/* Grid productos - diseño único con tilt */}
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
             {[
-              { label: "Caja de Hoy", valor: "RD$ 18,420.00", detalle: "+12% vs ayer • 47 ventas", color: "text-emerald-400", bg: "from-emerald-500/10 to-emerald-600/5" },
-              { label: "Facturas DGII", valor: "47 E32", detalle: "46 Aceptadas • 1 Pendiente TrackID", color: "text-sky-400", bg: "from-sky-500/10 to-blue-600/5" },
-              { label: "Adelantos Activos", valor: "RD$ 6,000.00", detalle: "3 empleados • 50% regla", color: "text-amber-400", bg: "from-amber-500/10 to-orange-600/5" },
-              { label: "Eventos Ledger", valor: "1,284", detalle: "Inmutable • Hash encadenado", color: "text-violet-400", bg: "from-violet-500/10 to-purple-600/5" },
-            ].map((m) => (
-              <div key={m.label} className={`rounded-2xl border border-zinc-800 bg-gradient-to-br ${m.bg} bg-zinc-900 p-4`}>
-                <p className="text-[11px] uppercase tracking-wider text-zinc-400">{m.label}</p>
-                <p className={`mt-1 text-[18px] font-bold ${m.color}`}>{m.valor}</p>
-                <p className="mt-1 text-[11px] text-zinc-500">{m.detalle}</p>
+              { sku: "PLT-001", nombre: "PLÁTANOS X LIBRA", precio: "45.00", itbis: "EXENTO", stock: 42, cat: "VÍVERES", emoji: "🍌", bg: "from-yellow-300 to-amber-400", rotate: "-1deg" },
+              { sku: "ARZ-002", nombre: "ARROZ PREMIUM 1LB", precio: "118.00", itbis: "18% GRAVADO", stock: 18, cat: "VÍVERES", emoji: "🍚", bg: "from-stone-100 to-stone-300", rotate: "1deg" },
+              { sku: "REF-010", nombre: "COCA-COLA 2L • FRÍO", precio: "95.00", itbis: "18% GRAVADO", stock: 3, cat: "FRÍOS", emoji: "🥤", bg: "from-red-500 to-red-700", alerta: true, rotate: "-0.5deg" },
+              { sku: "PAN-001", nombre: "PAN SOBAO", precio: "10.00", itbis: "16% REDUCIDA", stock: 120, cat: "PANADERÍA", emoji: "🥖", bg: "from-amber-200 to-orange-300", rotate: "0.8deg" },
+              { sku: "ACE-005", nombre: "ACEITE CRISOL 16OZ", precio: "185.00", itbis: "16% REDUCIDA", stock: 24, cat: "VÍVERES", emoji: "🫒", bg: "from-yellow-200 to-lime-300", rotate: "-0.8deg" },
+              { sku: "DET-003", nombre: "DETERGENTE ACE", precio: "135.00", itbis: "18% GRAVADO", stock: 15, cat: "LIMPIEZA", emoji: "🧼", bg: "from-blue-300 to-cyan-400", rotate: "1.2deg" },
+            ].map((p) => (
+              <div key={p.sku} className={`product-card group relative rounded-[20px] border-[3px] border-black bg-gradient-to-br ${p.bg} p-4 shadow-[6px_6px_0px_black] cursor-pointer`} style={{ transform: `rotate(${p.rotate})` }}>
+                {p.alerta && <div className="absolute -top-2 -right-2 bg-red-500 text-white border-2 border-black rounded-full px-2 py-0.5 text-[9px] font-black animate-bounce">¡POCO STOCK!</div>}
+                <div className="flex justify-between items-start">
+                  <span className="bg-black text-white text-[9px] font-black px-2 py-0.5 rounded-full border border-black">{p.cat} • {p.sku}</span>
+                  <span className={`h-2 w-2 rounded-full border border-black ${p.stock < 5 ? "bg-red-500" : "bg-emerald-400"}`} />
+                </div>
+                <div className="mt-2 text-[48px] leading-none drop-shadow-[3px_3px_0px_rgba(0,0,0,0.2)] group-hover:scale-110 transition-transform">{p.emoji}</div>
+                <h3 className="mt-2 font-black text-black text-[13px] leading-[0.95] tracking-tight">{p.nombre}</h3>
+                <div className="mt-3 flex items-end justify-between">
+                  <div>
+                    <p className="font-black text-black text-[18px] tracking-tight">RD$ {p.precio}</p>
+                    <p className="text-[9px] font-black bg-black text-white inline-block px-1.5 py-0.5 rounded-full mt-1">{p.itbis} • STOCK {p.stock}</p>
+                  </div>
+                  <div className="h-9 w-9 bg-black text-white rounded-full border-2 border-black flex items-center justify-center font-black text-[18px] shadow-[2px_2px_0px_black] group-hover:rotate-90 transition-transform">+</div>
+                </div>
               </div>
             ))}
           </div>
 
-          {/* Terminal POS */}
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden">
-            <div className="border-b border-zinc-800 p-4 flex justify-between items-center bg-zinc-900/50">
+          {/* Stats abajo productos */}
+          <div className="mt-6 grid grid-cols-3 gap-3">
+            <div className="rounded-[14px] border-[3px] border-black bg-white text-black p-3 shadow-[4px_4px_0px_black]">
+              <p className="font-black text-[11px]">VENTAS HOY • 47 E32</p>
+              <p className="font-black text-[22px] mt-1">RD$ 18,420</p>
+              <p className="text-[10px] font-bold opacity-60">+12% vs ayer • TigerBeetle posted 1,284 events</p>
+            </div>
+            <div className="rounded-[14px] border-[3px] border-black bg-black text-white p-3 shadow-[4px_4px_0px_white]">
+              <p className="font-black text-[11px] text-stone-400">ITBIS COBRADO HOY</p>
+              <p className="font-black text-[22px] text-sky-400 mt-1">RD$ 3,211</p>
+              <p className="text-[10px] font-bold opacity-60">Para IT-1 • 18% y 16% separado auto</p>
+            </div>
+            <div className="rounded-[14px] border-[3px] border-amber-400 bg-amber-400 text-black p-3 shadow-[4px_4px_0px_black]">
+              <p className="font-black text-[11px]">EVENTOS • LEDGER INMUTABLE</p>
+              <p className="font-black text-[22px]">1,284</p>
+              <p className="text-[10px] font-bold">Hash encadenado • Auditoría DGII lista</p>
+            </div>
+          </div>
+        </main>
+
+        {/* Derecha - Recibo papel único */}
+        <aside className="hidden lg:flex w-[380px] flex-col p-4 gap-4 bg-[#1c1917]/80 backdrop-blur border-l-2 border-stone-800">
+          {/* Cliente */}
+          <div className="rounded-[14px] border-2 border-stone-800 bg-black p-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-full bg-white border-2 border-black flex items-center justify-center font-black">👤</div>
               <div>
-                <h2 className="font-semibold text-[14px]">Terminal de Venta • Consumidor Final</h2>
-                <p className="text-[11px] text-zinc-400 mt-0.5">Tipo e-CF: E32 ( &lt; RD$250,000 ) • Modo Resumen RFCE • ITBIS 18% / 16% / Exento</p>
-              </div>
-              <div className="flex gap-2">
-                <span className="text-[11px] bg-zinc-800 border border-zinc-700 px-2.5 py-1 rounded-lg">eNCF: E320000000128</span>
-                <span className="text-[11px] bg-sky-950 border border-sky-900 text-sky-300 px-2.5 py-1 rounded-lg">RFCE: Activo</span>
+                <p className="font-black text-[12px]">CONSUMIDOR FINAL</p>
+                <p className="text-[10px] font-mono text-stone-400">RNC 000000000 • Sin crédito fiscal</p>
               </div>
             </div>
-            
-            <div className="grid grid-cols-5 gap-6 p-4">
-              {/* Productos */}
-              <div className="col-span-3">
-                <div className="flex justify-between items-center mb-3">
-                  <h3 className="text-[12px] font-semibold uppercase tracking-wider text-zinc-400">Productos • Inventario en TigerBeetle</h3>
-                  <input placeholder="Buscar por SKU o nombre..." className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs w-56 focus:outline-none focus:border-zinc-700" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  {[
-                    { sku: "PLT-001", nombre: "Plátanos x libra", precio: "45.00", itbis: "EXENTO", existencia: 42, categoria: "Víveres" },
-                    { sku: "ARZ-002", nombre: "Arroz Premium 1lb", precio: "118.00", itbis: "18% • Gravado", existencia: 18, categoria: "Víveres" },
-                    { sku: "REF-010", nombre: "Coca-Cola 2L", precio: "95.00", itbis: "18% • Gravado", existencia: 3, categoria: "Bebidas", alerta: true },
-                    { sku: "PAN-001", nombre: "Pan Sobao", precio: "10.00", itbis: "16% • Reducida", existencia: 120, categoria: "Panadería" },
-                    { sku: "ACE-005", nombre: "Aceite Crisol 16oz", precio: "185.00", itbis: "16% • Reducida", existencia: 24, categoria: "Víveres" },
-                    { sku: "DET-003", nombre: "Detergente Ace", precio: "135.00", itbis: "18% • Gravado", existencia: 15, categoria: "Limpieza" },
-                  ].map((p) => (
-                    <div key={p.sku} className={`group cursor-pointer rounded-xl border p-3 transition ${p.alerta ? "border-amber-900/50 bg-amber-950/20 hover:border-amber-800" : "border-zinc-800 bg-zinc-950 hover:border-zinc-700 hover:bg-zinc-900"}`}>
-                      <div className="flex justify-between items-start">
-                        <p className="text-[10px] text-zinc-500">{p.sku} • {p.categoria}</p>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.existencia < 5 ? "bg-red-950 text-red-300 border border-red-900" : "bg-zinc-900 text-zinc-400 border border-zinc-800"}`}>Exist: {p.existencia}</span>
-                      </div>
-                      <p className="font-medium mt-1 text-[13px] group-hover:text-white">{p.nombre}</p>
-                      <div className="mt-2 flex justify-between items-center">
-                        <p className="text-[13px] font-bold">RD$ {p.precio}</p>
-                        <span className="text-[9px] bg-zinc-900 border border-zinc-800 px-1.5 py-0.5 rounded text-zinc-400">{p.itbis}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+            <span className="text-[10px] font-black bg-stone-800 border border-stone-700 px-2 py-1 rounded-full">E32</span>
+          </div>
+
+          {/* Recibo papel */}
+          <div className="relative">
+            <div className="rounded-t-[16px] bg-[#fafaf9] text-black border-[3px] border-black shadow-[6px_6px_0px_black] overflow-hidden">
+              {/* Header recibo */}
+              <div className="bg-black text-white p-4 text-center">
+                <p className="font-black tracking-[0.2em] text-[11px]">COLMADO EL SOL SRL</p>
+                <p className="text-[9px] font-mono opacity-60 mt-1">RNC 130-79375-2 • Av Duarte #123 • SDO • Tel 809-555-0101</p>
+                <div className="mt-2 inline-block bg-white text-black font-black text-[10px] px-2 py-0.5 rounded-full">FACTURA CONSUMO ELECTRÓNICA</div>
+                <p className="font-mono text-[9px] mt-1 opacity-60">eNCF: E320000000128 • 15-07-2026 21:33 • Caja 01</p>
               </div>
 
-              {/* Carrito */}
-              <div className="col-span-2 rounded-xl bg-zinc-950 border border-zinc-800 p-4 flex flex-col">
-                <h3 className="text-[12px] font-semibold uppercase tracking-wider text-zinc-400">Carrito de Venta</h3>
-                
-                <div className="mt-3 space-y-2">
-                  <div className="flex justify-between text-[12px] bg-zinc-900 border border-zinc-800 rounded-lg p-2">
-                    <span>Plátanos x 2 lb</span><span>RD$ 90.00</span>
+              <div className="p-4">
+                <div className="space-y-2.5">
+                  <div className="flex justify-between text-[11px] font-bold"><span>PLÁTANOS X 2 LB</span><span>RD$ 90.00</span></div>
+                  <div className="flex justify-between text-[11px]"><span className="opacity-60">  45.00 x 2 • EXENTO</span><span>EXENTO</span></div>
+                  <div className="flex justify-between text-[11px] font-bold"><span>ARROZ PREMIUM (1)</span><span>RD$ 118.00</span></div>
+                  <div className="flex justify-between text-[11px] font-bold"><span>COCA-COLA 2L (1)</span><span>RD$ 95.00</span></div>
+                  <div className="border-t-2 border-dashed border-black/20 my-3" />
+                  <div className="flex justify-between text-[11px]"><span className="opacity-60">Subtotal Gravado 18%</span><span>RD$ 213.00</span></div>
+                  <div className="flex justify-between text-[11px]"><span className="opacity-60">Exento + 16% Reducida</span><span>RD$ 90.00</span></div>
+                  <div className="flex justify-between text-[11px]"><span className="opacity-60">ITBIS 18%</span><span>RD$ 38.34</span></div>
+                  <div className="flex justify-between font-black text-[16px] border-t-[3px] border-black pt-2 mt-2"><span>TOTAL</span><span>RD$ 341.34</span></div>
+                </div>
+
+                <div className="mt-4 bg-black text-white rounded-[10px] p-3">
+                  <p className="font-black text-[10px] tracking-widest">PAGO • EFECTIVO</p>
+                  <div className="flex justify-between text-[11px] mt-1"><span>Entregado</span><span>RD$ 500.00</span></div>
+                  <div className="flex justify-between text-[12px] font-black"><span>Devuelta</span><span className="text-amber-400">RD$ 158.66</span></div>
+                </div>
+
+                <div className="mt-4 flex gap-2">
+                  <div className="flex-1 border-2 border-black rounded-[10px] p-2 text-center">
+                    <div className="h-16 w-16 mx-auto bg-black rounded-[8px] flex items-center justify-center text-white font-black text-[20px]">QR</div>
+                    <p className="text-[7px] font-mono mt-1 leading-tight">https://ecf.dgii.gov.do/eCF/ConsultaTimbre?RNCEmisor=13079...&CodigoSeguridad=A1B2C3</p>
                   </div>
-                  <div className="flex justify-between text-[12px] bg-zinc-900 border border-zinc-800 rounded-lg p-2">
-                    <span>Arroz Premium (1)</span><span>RD$ 118.00</span>
-                  </div>
-                  <div className="flex justify-between text-[12px] bg-zinc-900 border border-zinc-800 rounded-lg p-2">
-                    <span>Coca-Cola 2L (1)</span><span>RD$ 95.00</span>
+                  <div className="flex-1 text-[8px] font-mono leading-tight">
+                    <p className="font-black">DGII • TIMBRE ELECTRÓNICO</p>
+                    <p className="mt-1 opacity-60">RNC Emisor: 130793752</p>
+                    <p className="opacity-60">eNCF: E320000000128</p>
+                    <p className="opacity-60">Fecha: 15-07-2026</p>
+                    <p className="opacity-60">Total: RD$ 341.34</p>
+                    <p className="font-black mt-1">Cod Seg: A1B2C3 • TrackID: dgi-982x</p>
+                    <p className="mt-1 bg-amber-400 text-black font-black inline-block px-1 rounded">ACEPTADO</p>
                   </div>
                 </div>
 
-                <div className="mt-auto pt-4 space-y-1.5">
-                  <div className="flex justify-between text-[12px] text-zinc-400">
-                    <span>Subtotal Gravado 18%</span><span>RD$ 213.00</span>
-                  </div>
-                  <div className="flex justify-between text-[12px] text-zinc-400">
-                    <span>Exento + 16% Reducida</span><span>RD$ 90.00</span>
-                  </div>
-                  <div className="flex justify-between text-[12px] text-zinc-400">
-                    <span>ITBIS 18%</span><span>RD$ 38.34</span>
-                  </div>
-                  <div className="flex justify-between font-bold text-[16px] border-t border-zinc-800 pt-3">
-                    <span>Total a Pagar</span><span>RD$ 341.34</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 mt-3">
-                    <button className="rounded-xl bg-zinc-800 border border-zinc-700 text-sm py-2.5 hover:bg-zinc-700 transition text-zinc-200">Efectivo</button>
-                    <button className="rounded-xl bg-zinc-800 border border-zinc-700 text-sm py-2.5 hover:bg-zinc-700 transition text-zinc-200">Tarjeta</button>
-                  </div>
-                  <button className="w-full rounded-xl bg-white text-black font-bold py-3 hover:bg-zinc-200 transition shadow-lg shadow-white/10">
-                    Cobrar • Generar E32 • QR DGII
-                  </button>
-                  <p className="text-[10px] text-zinc-500 text-center leading-tight">
-                    Flujo bancario: Evento VentaCompletada → Núcleo Rust → TigerBeetle (Reserva Inventario + Linked Transfers) → Firma XAdES-BES → DGII Asíncrono (TrackID)
-                  </p>
-                </div>
+                <p className="text-[8px] font-mono text-center mt-4 opacity-40 leading-tight">Conserve este recibo • Evento #1828 • Hash encadenado TigerBeetle • Hecho en RD • Gracias por su compra • Vuelva pronto!</p>
               </div>
             </div>
-          </div>
-        </div>
-
-        {/* Derecha - Contabilidad + Adelantos */}
-        <div className="col-span-4 space-y-5">
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-            <div className="flex justify-between items-center">
-              <h3 className="font-semibold text-[13px]">Libro Mayor • TigerBeetle (Vivo)</h3>
-              <span className="text-[10px] bg-emerald-950 border border-emerald-900 text-emerald-300 px-2 py-0.5 rounded-full">Tiempo Real</span>
-            </div>
-            <div className="mt-4 space-y-2.5 text-[12px]">
-              <div className="flex justify-between"><span className="text-zinc-400">activo:caja_efectivo</span><span className="font-mono font-semibold">RD$ 18,420.00</span></div>
-              <div className="flex justify-between"><span className="text-zinc-400">activo:banco_popular</span><span className="font-mono">RD$ 42,100.00</span></div>
-              <div className="flex justify-between"><span className="text-amber-300">activo:anticipos_empleados</span><span className="font-mono text-amber-300">RD$ 6,000.00</span></div>
-              <div className="flex justify-between"><span className="text-sky-300">pasivo:itbis_por_pagar</span><span className="font-mono text-sky-300">RD$ 4,210.00</span></div>
-              <div className="flex justify-between"><span className="text-zinc-400">pasivo:tss_por_pagar</span><span className="font-mono">RD$ 1,180.00</span></div>
-              <div className="flex justify-between border-t border-zinc-800 pt-2"><span className="text-zinc-200 font-semibold">ingreso:ventas_gravadas</span><span className="font-mono text-emerald-400 font-bold">RD$ 42,100.00</span></div>
-            </div>
-            <p className="text-[10px] text-zinc-500 mt-3 leading-tight">Balances calculados desde TigerBeetle: debits_posted - credits_posted. Inmutable, sin UPDATE. Atomicidad con transfers vinculados.</p>
+            {/* Zigzag bottom */}
+            <div className="h-4 bg-repeat-x" style={{
+              backgroundImage: `radial-gradient(circle at 8px 0px, transparent 8px, #fafaf9 8px)`,
+              backgroundSize: '16px 16px',
+              backgroundPosition: '0px 0px'
+            }} />
           </div>
 
-          <div className="rounded-2xl border border-amber-900/50 bg-gradient-to-br from-amber-950/30 to-orange-950/20 p-4">
-            <div className="flex justify-between items-center">
-              <h3 className="font-semibold text-[13px] text-amber-200">Adelantos Hoy • Préstamos EWA (Regla 50%)</h3>
-              <span className="text-[10px] bg-amber-500 text-black font-bold px-2 py-0.5 rounded-full">3 activos</span>
-            </div>
-            <p className="text-[11px] text-amber-200/70 mt-1">No es préstamo. Es sueldo ya ganado. Sin interés. Descuento automático en quincena.</p>
-            <div className="mt-4 space-y-3">
-              {[
-                { nombre: "María Pérez • Cajera", ganado: "9,200", disponible: "4,600", solicitado: "2,000", estado: "Aprobado • Transfer 3001 posted", motivo: "Medicina" },
-                { nombre: "Juan Carlos • Almacén", ganado: "6,400", disponible: "3,200", solicitado: "3,000", estado: "Pendiente gerente", motivo: "Transporte" },
-                { nombre: "Luisa Gómez • Limpieza", ganado: "5,100", disponible: "2,550", solicitado: "1,000", estado: "Aprobado • posted", motivo: "Útiles escolares" },
-              ].map((e) => (
-                <div key={e.nombre} className="rounded-xl bg-zinc-900/80 border border-amber-900/30 p-3">
-                  <p className="text-[12px] font-semibold">{e.nombre}</p>
-                  <p className="text-[10px] text-zinc-400 mt-1">Ganado: RD$ {e.ganado} • Disponible 50%: RD$ {e.disponible} • Motivo: {e.motivo}</p>
-                  <div className="mt-2 flex justify-between items-center">
-                    <span className="text-[12px] font-bold">Solicita RD$ {e.solicitado}</span>
-                    <span className="text-[9px] bg-zinc-800 border border-zinc-700 px-2 py-0.5 rounded-full text-amber-300">{e.estado}</span>
-                  </div>
-                  <p className="text-[9px] text-zinc-500 mt-2">Evento: AdelantoAprobado → TB: Debe activo:anticipos / Haber activo:caja (pending→posted). Deducción en nómina como “Anticipo de Salario”.</p>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <button className="rounded-xl bg-amber-500 text-black text-[12px] font-bold py-2 hover:bg-amber-400 transition">Aprobar Todos</button>
-              <button className="rounded-xl bg-zinc-900 border border-zinc-800 text-[12px] py-2 hover:bg-zinc-800 transition">Ver Nómina</button>
-            </div>
+          <button className="w-full bg-[#facc15] hover:bg-yellow-300 text-black border-[3px] border-black rounded-full py-3.5 font-black text-[13px] tracking-wider shadow-[6px_6px_0px_black] hover:shadow-[8px_8px_0px_black] hover:translate-x-[-2px] hover:translate-y-[-2px] transition-all">
+            COBRAR • RD$ 341.34 • GENERAR E32 + QR DGII
+          </button>
+
+          <div className="grid grid-cols-3 gap-2">
+            <button className="bg-stone-900 border-2 border-stone-800 rounded-full py-2 text-[10px] font-black hover:bg-white hover:text-black hover:border-black transition-colors">EFECTIVO</button>
+            <button className="bg-stone-900 border-2 border-stone-800 rounded-full py-2 text-[10px] font-black hover:bg-white hover:text-black hover:border-black transition-colors">TARJETA</button>
+            <button className="bg-stone-900 border-2 border-stone-800 rounded-full py-2 text-[10px] font-black hover:bg-white hover:text-black hover:border-black transition-colors">TRANSFER</button>
           </div>
 
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-            <h3 className="font-semibold text-[12px] uppercase tracking-wider text-zinc-400">Registro de Eventos • Sólo Agrega (Inmutable)</h3>
-            <div className="mt-3 space-y-2 text-[10px] font-mono leading-relaxed">
-              <div className="text-zinc-500">#1824 21:33:10 <span className="text-zinc-200">VentaCompletada</span> E320000000127 • TB id 9812 linked (3 transfers atómicos)</div>
-              <div className="text-zinc-500">#1825 21:33:11 <span className="text-sky-300">SolicitudFirmaTicket</span> → Núcleo Rust XAdES-BES</div>
-              <div className="text-zinc-500">#1826 21:33:14 <span className="text-emerald-300">TicketAceptado</span> TrackID dgi-982x • QR https://ecf.dgii.gov.do/ • CodSeg A1B2C3</div>
-              <div className="text-zinc-500">#1827 21:35:02 <span className="text-amber-300">AdelantoSolicitado</span> María RD$2,000 • Regla 50% OK • TB pending</div>
-              <div className="text-zinc-500">#1828 21:35:30 <span className="text-amber-300">AdelantoAprobado</span> TB transfer 3001 pending→posted • Caja -2000</div>
-              <div className="text-zinc-500">#1829 21:36:01 <span className="text-violet-300">InventarioReservado</span> SKU ARZ-002 qty 1 • flags pending</div>
-            </div>
-            <p className="text-[10px] text-zinc-500 mt-3">Cada evento tiene hash SHA256(prev_hash + payload). Detección de alteración como blockchain. Re-play para auditoría DGII.</p>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-            <h3 className="font-semibold text-[12px]">Cumplimiento DGII • Reportes Automáticos</h3>
-            <p className="text-[11px] text-zinc-400 mt-1.5">606 Compras + 607 Ventas + 608 Anulados + RFCE. Generado desde libro mayor, no tablas mutables.</p>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              <button className="rounded-lg bg-zinc-800 border border-zinc-700 text-[11px] py-2 hover:bg-zinc-700 transition">Exportar 606</button>
-              <button className="rounded-lg bg-zinc-800 border border-zinc-700 text-[11px] py-2 hover:bg-zinc-700 transition">607 + RFCE</button>
-              <button className="rounded-lg bg-zinc-800 border border-zinc-700 text-[11px] py-2 hover:bg-zinc-700 transition">IT-1</button>
-            </div>
-            <div className="mt-3 rounded-lg bg-sky-950/30 border border-sky-900/50 p-2.5">
-              <p className="text-[10px] text-sky-300">e-CF obligatorio desde 15 Nov 2026 para pequeños. E32 &lt; RD$250k se reporta en resumen diario RFCE para no saturar DGII.</p>
-            </div>
-          </div>
-        </div>
+          <p className="text-[9px] font-mono text-stone-500 text-center leading-tight">Flujo bancario: VentaCompletada → Rust Core → TigerBeetle Reserve Inventory linked → XAdES-BES firma → DGII async TrackID → QR impreso</p>
+        </aside>
       </div>
 
-      {/* Pie con estado */}
-      <footer className="border-t border-zinc-800 bg-zinc-900/50 mt-4">
-        <div className="mx-auto max-w-[1600px] px-6 py-3 flex justify-between items-center text-[11px] text-zinc-500">
-          <span>Monorepo: apps/web (Next.js) + apps/mobile (Expo) + services/core (Rust) + TigerBeetle • EventStore Postgres</span>
-          <span>Hecho en 🇩🇴 Santo Domingo • Núcleo bancario • Listo para PSFE DGII</span>
-        </div>
-      </footer>
+      <style>{`@keyframes marquee { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }`}</style>
     </div>
   );
 }
