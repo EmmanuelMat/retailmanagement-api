@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Search, Plus, Minus, Trash2, ShoppingCart, FileCheck, Printer, CheckCircle2, XCircle, IdCard } from "lucide-react";
+import { Search, Plus, Minus, Trash2, ShoppingCart, FileCheck, Printer, CheckCircle2, XCircle, IdCard, ChevronDown } from "lucide-react";
 import { Badge, Button, Card, CardContent, Input, Label, Select, formatDOP } from "@repo/ui";
 import { apiFetch, ApiError } from "@/lib/api";
 
@@ -82,6 +82,7 @@ export default function PosPage() {
   const [quickNombre, setQuickNombre] = useState("");
   const [quickDireccion, setQuickDireccion] = useState("");
   const [usandoCliente, setUsandoCliente] = useState(false);
+  const [mostrarRnc, setMostrarRnc] = useState(false);
 
   const [mostrarAprobacion, setMostrarAprobacion] = useState(false);
   const [aprobacionMensaje, setAprobacionMensaje] = useState("");
@@ -329,7 +330,7 @@ export default function PosPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto por nombre o SKU..." className="pl-9" />
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 overflow-y-auto pb-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pb-4">
           {filtered.map((p) => {
             const stock = Number(p.stock_actual);
             return (
@@ -399,65 +400,90 @@ export default function PosPage() {
 
           <div className="border-t border-border pt-4 mt-4 space-y-3">
             <div className="space-y-1.5">
-              <Label htmlFor="rncQuery">RNC / Cédula del cliente</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="rncQuery"
-                  value={rncQuery}
-                  onChange={(e) => {
-                    setRncQuery(e.target.value);
-                    setRncFound(null);
-                    setRncNotFound(false);
-                  }}
-                  placeholder="130793752"
-                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleVerificarRnc())}
-                />
-                <Button type="button" variant="secondary" onClick={handleVerificarRnc} disabled={rncBuscando || !rncQuery.trim()}>
-                  <IdCard className="h-4 w-4" />{rncBuscando ? "..." : "Verificar"}
-                </Button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setMostrarRnc((v) => !v)}
+                className="flex items-center justify-between w-full rounded-md border border-border p-2.5 text-xs font-medium hover:bg-muted transition-colors"
+              >
+                <span>RNC / Crédito Fiscal {rncFound || rncNotFound ? "· en curso" : "(opcional)"}</span>
+                <ChevronDown className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${mostrarRnc ? "rotate-180" : ""}`} />
+              </button>
 
-              {rncFound && (
-                <div className="rounded-md border border-border p-2.5 space-y-2">
-                  <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                    Encontrado en DGII
-                    <Badge variant={rncFound.estado === "ACTIVO" ? "success" : "secondary"}>{rncFound.estado || "—"}</Badge>
-                  </p>
-                  <Input value={quickNombre} onChange={(e) => setQuickNombre(e.target.value)} placeholder="Nombre del cliente" />
-                  <Input value={quickDireccion} onChange={(e) => setQuickDireccion(e.target.value)} placeholder="Dirección (requerida para Crédito Fiscal)" />
-                  <Button type="button" size="sm" className="w-full" onClick={handleUsarClienteRnc} disabled={usandoCliente || !quickNombre.trim()}>
-                    {usandoCliente ? "Guardando..." : "Usar este cliente en la venta"}
-                  </Button>
-                </div>
-              )}
+              {mostrarRnc && (
+                <div className="space-y-2 pt-1.5">
+                  <Label htmlFor="rncQuery">RNC / Cédula del cliente</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="rncQuery"
+                      value={rncQuery}
+                      onChange={(e) => {
+                        setRncQuery(e.target.value);
+                        setRncFound(null);
+                        setRncNotFound(false);
+                      }}
+                      placeholder="130793752"
+                      onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleVerificarRnc())}
+                    />
+                    <Button type="button" variant="secondary" onClick={handleVerificarRnc} disabled={rncBuscando || !rncQuery.trim()}>
+                      <IdCard className="h-4 w-4" />{rncBuscando ? "..." : "Verificar"}
+                    </Button>
+                  </div>
 
-              {rncNotFound && (
-                <div className="rounded-md border border-warning/20 bg-warning/10 p-2.5 space-y-2">
-                  <p className="text-xs text-warning">No encontrado en el padrón DGII. Puedes registrarlo manualmente:</p>
-                  <Input value={quickNombre} onChange={(e) => setQuickNombre(e.target.value)} placeholder="Nombre del cliente *" />
-                  <Input value={quickDireccion} onChange={(e) => setQuickDireccion(e.target.value)} placeholder="Dirección (requerida para Crédito Fiscal)" />
-                  <Button type="button" size="sm" className="w-full" onClick={handleUsarClienteRnc} disabled={usandoCliente || !quickNombre.trim()}>
-                    {usandoCliente ? "Guardando..." : "Usar este cliente en la venta"}
-                  </Button>
+                  {rncFound && (
+                    <div className="rounded-md border border-border p-2.5 space-y-2">
+                      <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                        Encontrado en DGII
+                        <Badge variant={rncFound.estado === "ACTIVO" ? "success" : "secondary"}>{rncFound.estado || "—"}</Badge>
+                      </p>
+                      <Input value={quickNombre} onChange={(e) => setQuickNombre(e.target.value)} placeholder="Nombre del cliente" />
+                      <Input value={quickDireccion} onChange={(e) => setQuickDireccion(e.target.value)} placeholder="Dirección (requerida para Crédito Fiscal)" />
+                      <Button type="button" size="sm" className="w-full" onClick={handleUsarClienteRnc} disabled={usandoCliente || !quickNombre.trim()}>
+                        {usandoCliente ? "Guardando..." : "Usar este cliente en la venta"}
+                      </Button>
+                    </div>
+                  )}
+
+                  {rncNotFound && (
+                    <div className="rounded-md border border-warning/20 bg-warning/10 p-2.5 space-y-2">
+                      <p className="text-xs text-warning">No encontrado en el padrón DGII. Puedes registrarlo manualmente:</p>
+                      <Input value={quickNombre} onChange={(e) => setQuickNombre(e.target.value)} placeholder="Nombre del cliente *" />
+                      <Input value={quickDireccion} onChange={(e) => setQuickDireccion(e.target.value)} placeholder="Dirección (requerida para Crédito Fiscal)" />
+                      <Button type="button" size="sm" className="w-full" onClick={handleUsarClienteRnc} disabled={usandoCliente || !quickNombre.trim()}>
+                        {usandoCliente ? "Guardando..." : "Usar este cliente en la venta"}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="cliente">Cliente</Label>
-              <Select
-                id="cliente"
-                value={clienteId}
-                onChange={(e) => {
-                  setClienteId(e.target.value);
-                  const c = clientes.find((cl) => cl.id === e.target.value);
-                  const tieneRnc = !!c?.rnc_cedula && c.rnc_cedula !== "000000000";
-                  if (!tieneRnc) setTipoEcf("32");
-                }}
-              >
-                <option value="">Consumidor final</option>
-                {clientes.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-              </Select>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="cliente">Cliente</Label>
+                <Select
+                  id="cliente"
+                  value={clienteId}
+                  onChange={(e) => {
+                    setClienteId(e.target.value);
+                    const c = clientes.find((cl) => cl.id === e.target.value);
+                    const tieneRnc = !!c?.rnc_cedula && c.rnc_cedula !== "000000000";
+                    if (!tieneRnc) setTipoEcf("32");
+                  }}
+                >
+                  <option value="">Consumidor final</option>
+                  {clientes.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="metodo">Método de pago</Label>
+                <Select id="metodo" value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
+                  <option value="EFECTIVO">Efectivo</option>
+                  <option value="TARJETA">Tarjeta</option>
+                  <option value="TRANSFERENCIA">Transferencia</option>
+                  <option value="CREDITO">Crédito</option>
+                  <option value="FIADO">Fiado</option>
+                </Select>
+              </div>
             </div>
             {(() => {
               if (!facturaElectronicaActiva) return null;
@@ -473,16 +499,6 @@ export default function PosPage() {
                 </div>
               ) : null;
             })()}
-            <div className="space-y-1.5">
-              <Label htmlFor="metodo">Método de pago</Label>
-              <Select id="metodo" value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
-                <option value="EFECTIVO">Efectivo</option>
-                <option value="TARJETA">Tarjeta</option>
-                <option value="TRANSFERENCIA">Transferencia</option>
-                <option value="CREDITO">Crédito</option>
-                <option value="FIADO">Fiado</option>
-              </Select>
-            </div>
 
             {metodoPago === "FIADO" && !clienteId && (
               <div className="rounded-md border border-warning/20 bg-warning/10 text-warning p-2 text-xs">
