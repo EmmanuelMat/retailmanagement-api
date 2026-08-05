@@ -1,26 +1,226 @@
-export default function Pagina() {
+"use client";
+
+import { useEffect, useState } from "react";
+import { Plus, History } from "lucide-react";
+import {
+  Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow, Pagination,
+} from "@repo/ui";
+import { apiFetch } from "@/lib/api";
+import { useServerTable } from "@/lib/use-server-table";
+
+interface Producto {
+  id: string;
+  sku: string;
+  nombre: string;
+}
+
+interface Movimiento {
+  id: string;
+  producto_id: string;
+  producto_nombre: string;
+  producto_sku: string;
+  tipo: "ENTRADA" | "SALIDA" | "AJUSTE";
+  cantidad: string;
+  motivo: string | null;
+  created_at: string;
+}
+
+interface MovimientosFilters {
+  productoId?: string;
+  tipo?: string;
+  fechaDesde?: string;
+  fechaHasta?: string;
+}
+
+const TIPO_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
+  ENTRADA: "default",
+  SALIDA: "destructive",
+  AJUSTE: "secondary",
+};
+
+export default function MovimientosPage() {
+  const [productos, setProductos] = useState<Producto[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+
+  const [productoId, setProductoId] = useState("");
+  const [cantidad, setCantidad] = useState("");
+  const [motivo, setMotivo] = useState("");
+
+  const {
+    items: movimientos,
+    total,
+    totalPages,
+    loading,
+    error,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+    refresh,
+  } = useServerTable<Movimiento, MovimientosFilters>({
+    path: "/api/inventario/movimientos",
+    initialPageSize: 20,
+    initialSortBy: "created_at",
+    initialSortDir: "desc",
+  });
+
+  useEffect(() => {
+    apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
+  }, []);
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!productoId || !cantidad) return;
+    setSaving(true);
+    setFormError("");
+    try {
+      await apiFetch("/api/inventario/movimientos", {
+        method: "POST",
+        body: JSON.stringify({ producto_id: productoId, tipo: "AJUSTE", cantidad, motivo: motivo || undefined }),
+      });
+      setCantidad("");
+      setMotivo("");
+      refresh();
+    } catch (e: any) {
+      setFormError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <div className="min-h-[calc(100vh-120px)] bg-[#0c0a09] p-6">
-      <div className="mx-auto max-w-[1200px]">
-        <div className="rounded-[20px] border-[3px] border-black bg-white text-black p-8 shadow-[8px_8px_0px_black]">
-          <div className="flex items-center gap-4">
-            <div className="h-14 w-14 rounded-[14px] bg-amber-400 border-[3px] border-black flex items-center justify-center text-2xl shadow-[3px_3px_0px_black]">🔄</div>
-            <div>
-              <h1 className="font-black text-[22px] tracking-tight">Movimientos • Kardex</h1>
-              <p className="text-[12px] font-bold opacity-60 mt-1">Entradas compras, salidas ventas, ajustes, traslados</p>
-            </div>
-          </div>
-          <div className="mt-6 rounded-[14px] border-2 border-dashed border-black/20 bg-amber-50 p-6 text-center">
-            <p className="font-black text-[14px]">🚧 MÓDULO EN CONSTRUCCIÓN • PLAN MAESTRO FASE ACTIVA</p>
-            <p className="text-[11px] font-mono mt-2 opacity-60">Este módulo está planificado en docs/00-PLAN-MAESTRO-SISTEMA-COMPLETO.md<br/>Entidades, Eventos, API Rust, UI Español, Ledger TigerBeetle, Validaciones DGII</p>
-            <div className="mt-4 flex justify-center gap-2">
-              <span className="text-[10px] font-black bg-black text-white px-2 py-1 rounded-full">Event Sourcing</span>
-              <span className="text-[10px] font-black bg-amber-400 text-black border border-black px-2 py-1 rounded-full">TigerBeetle</span>
-              <span className="text-[10px] font-black bg-sky-400 text-black border border-black px-2 py-1 rounded-full">DGII e-CF</span>
-            </div>
-          </div>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold font-serif tracking-tight">Movimientos · Kardex</h1>
+        <p className="text-sm text-muted-foreground mt-1">Historial de entradas, salidas (automáticas) y ajustes manuales de inventario.</p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Ajuste de Inventario</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+            <div className="sm:col-span-2 space-y-1.5">
+              <Label htmlFor="producto">Producto</Label>
+              <Select id="producto" value={productoId} onChange={(e) => setProductoId(e.target.value)} required>
+                <option value="">Selecciona…</option>
+                {productos.map((p) => (
+                  <option key={p.id} value={p.id}>{p.sku} · {p.nombre}</option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="cantidad">Cantidad</Label>
+              <Input id="cantidad" type="number" step="0.01" value={cantidad} onChange={(e) => setCantidad(e.target.value)} placeholder="10" required />
+              <p className="text-xs text-muted-foreground">Usa negativo para reducir stock.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="motivo">Motivo</Label>
+              <Input id="motivo" value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej. Merma, recuento" />
+            </div>
+            <Button type="submit" disabled={saving} className="sm:col-span-4 sm:w-fit">
+              <Plus className="h-4 w-4" />
+              Registrar ajuste
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      {(error || formError) && (
+        <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error || formError}</div>
+      )}
+
+      <div className="flex flex-wrap gap-3">
+        <Select
+          value={state.filters.productoId || ""}
+          onChange={(e) => setFilters({ productoId: e.target.value || undefined })}
+          className="max-w-[220px]"
+        >
+          <option value="">Todos los productos</option>
+          {productos.map((p) => (
+            <option key={p.id} value={p.id}>{p.sku} · {p.nombre}</option>
+          ))}
+        </Select>
+        <Select
+          value={state.filters.tipo || ""}
+          onChange={(e) => setFilters({ tipo: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="">Todos los tipos</option>
+          <option value="ENTRADA">Entrada</option>
+          <option value="SALIDA">Salida</option>
+          <option value="AJUSTE">Ajuste</option>
+        </Select>
+        <Input
+          type="date"
+          value={state.filters.fechaDesde || ""}
+          onChange={(e) => setFilters({ fechaDesde: e.target.value || undefined })}
+          className="max-w-[160px]"
+        />
+        <Input
+          type="date"
+          value={state.filters.fechaHasta || ""}
+          onChange={(e) => setFilters({ fechaHasta: e.target.value || undefined })}
+          className="max-w-[160px]"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          {loading ? (
+            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
+          ) : movimientos.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
+              <History className="h-6 w-6" />
+              Aún no hay movimientos registrados.
+            </div>
+          ) : (
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+                    <TableHead>Producto</TableHead>
+                    <TableHead>Tipo</TableHead>
+                    <SortableTableHead column="cantidad" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Cantidad</SortableTableHead>
+                    <TableHead>Motivo</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {movimientos.map((m) => (
+                    <TableRow key={m.id}>
+                      <TableCell className="text-muted-foreground text-xs">{new Date(m.created_at).toLocaleString("es-DO")}</TableCell>
+                      <TableCell>
+                        <span className="font-medium">{m.producto_nombre}</span>{" "}
+                        <span className="text-xs text-muted-foreground font-mono">{m.producto_sku}</span>
+                      </TableCell>
+                      <TableCell><Badge variant={TIPO_VARIANT[m.tipo]}>{m.tipo}</Badge></TableCell>
+                      <TableCell className={`text-right font-mono tabular-nums ${Number(m.cantidad) < 0 ? "text-destructive" : ""}`}>
+                        {Number(m.cantidad) > 0 ? "+" : ""}{m.cantidad}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{m.motivo || "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <div className="px-3">
+                <Pagination
+                  page={state.page}
+                  totalPages={totalPages}
+                  total={total}
+                  pageSize={state.pageSize}
+                  onPageChange={setPage}
+                  onPageSizeChange={setPageSize}
+                />
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

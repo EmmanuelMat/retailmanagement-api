@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parseCoreResponse } from "@/lib/core-proxy";
 
 const CORE_HTTP = process.env.CORE_HTTP_URL || "http://localhost:3001";
 
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest) {
       cache: "no-store",
     });
 
-    const data = await coreRes.json();
+    const data = await parseCoreResponse(coreRes);
     
     if (!coreRes.ok) {
       return NextResponse.json({ error: data.error || data.mensaje || "Error registro en núcleo Rust" }, { status: coreRes.status });

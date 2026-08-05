@@ -1,0 +1,249 @@
+//! Conduces (guías de despacho) - Módulo 5c
+//! Un conduce ya NO es un documento con precio propio: la Venta (factura) se
+//! crea PRIMERO, por la cantidad total acordada; el conduce solo registra
+//! que una parte de esa cantidad salió físicamente del negocio - sin precio,
+//! sin ITBIS, solo cantidad. El stock se descuenta aquí, en el momento de
+//! la entrega, no en `ventas_service::create_venta` (que para una venta con
+//! `entrega_diferida` deja el stock intacto - ver ese archivo).
+
+use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use uuid::Uuid;
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct Conduce {
+    pub id: Uuid,
+    pub tenant_id: String,
+    pub venta_id: Uuid,
+    pub usuario_id: Option<Uuid>,
+    pub direccion_entrega: Option<String>,
+    pub orden_compra: Option<String>,
+    pub vehiculo_placa: Option<String>,
+    pub conductor: Option<String>,
+    pub notas: Option<String>,
+    pub entregado_por: Option<String>,
+    pub recibido_por: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ConduceItem {
+    pub id: Uuid,
+    pub conduce_id: Uuid,
+    pub venta_item_id: Uuid,
+    pub producto_id: Uuid,
+    pub sku: String,
+    pub nombre: String,
+    pub cantidad: Decimal,
+    pub unidad: Option<String>,
+    pub observaciones: Option<String>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ConduceConVenta {
+    pub id: Uuid,
+    pub venta_id: Uuid,
+    pub cliente_nombre: Option<String>,
+    pub direccion_entrega: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateConduceItemRequest {
+    pub venta_item_id: Uuid,
+    pub cantidad: Decimal,
+    pub observaciones: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateConduceRequest {
+    pub venta_id: Uuid,
+    pub direccion_entrega: Option<String>,
+    pub orden_compra: Option<String>,
+    pub vehiculo_placa: Option<String>,
+    pub conductor: Option<String>,
+    pub notas: Option<String>,
+    pub entregado_por: Option<String>,
+    pub recibido_por: Option<String>,
+    pub items: Vec<CreateConduceItemRequest>,
+}
+
+pub struct ConduceCompleta {
+    pub conduce: Conduce,
+    pub items: Vec<ConduceItem>,
+}
+
+pub struct ConduceService {
+    pool: PgPool,
+}
+
+impl ConduceService {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn create_conduce(&self, tenant_id: &str, usuario_id: Uuid, req: CreateConduceRequest) -> anyhow::Result<ConduceCompleta> {
+        if req.items.is_empty() {
+            anyhow::bail!("El conduce necesita al menos un producto");
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        let venta_estado: Option<(String, bool)> = sqlx::query_as(
+            "SELECT estado, entrega_diferida FROM ventas WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+        )
+        .bind(req.venta_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (venta_estado, entrega_diferida) = venta_estado.ok_or_else(|| anyhow::anyhow!("Venta no encontrada"))?;
+        if venta_estado == "ANULADA" {
+            anyhow::bail!("Esta venta está anulada - no se pueden registrar más entregas");
+        }
+        if !entrega_diferida {
+            anyhow::bail!("Esta venta no es de entrega diferida - la mercancía ya salió completa al facturarse");
+        }
+
+        let mut lineas: Vec<(Uuid, Uuid, String, String, Decimal, Option<String>, Option<String>)> = Vec::new();
+
+        for item in &req.items {
+            if item.cantidad <= Decimal::ZERO {
+                anyhow::bail!("La cantidad debe ser mayor a cero");
+            }
+
+            let venta_item: Option<(Uuid, String, String, Decimal, Decimal)> = sqlx::query_as(
+                "SELECT producto_id, sku, nombre, cantidad, cantidad_entregada FROM venta_items WHERE id = $1 AND venta_id = $2 FOR UPDATE",
+            )
+            .bind(item.venta_item_id)
+            .bind(req.venta_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let (producto_id, sku, nombre, cantidad, cantidad_entregada) =
+                venta_item.ok_or_else(|| anyhow::anyhow!("Línea de venta no encontrada"))?;
+
+            let pendiente = cantidad - cantidad_entregada;
+            if item.cantidad > pendiente {
+                anyhow::bail!("Para {} solo quedan {} pendientes de entregar (solicitado {})", nombre, pendiente, item.cantidad);
+            }
+
+            let producto_row: Option<(Decimal, String)> = sqlx::query_as(
+                "SELECT stock_actual, unidad_medida FROM productos WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+            )
+            .bind(producto_id)
+            .bind(tenant_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let (stock_actual, unidad_medida) = producto_row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+            if stock_actual < item.cantidad {
+                anyhow::bail!("Stock insuficiente para {}: disponible {}, solicitado {}", nombre, stock_actual, item.cantidad);
+            }
+
+            sqlx::query("UPDATE productos SET stock_actual = stock_actual - $1, updated_at = NOW() WHERE id = $2")
+                .bind(item.cantidad)
+                .bind(producto_id)
+                .execute(&mut *tx)
+                .await?;
+
+            sqlx::query("UPDATE venta_items SET cantidad_entregada = cantidad_entregada + $1 WHERE id = $2")
+                .bind(item.cantidad)
+                .bind(item.venta_item_id)
+                .execute(&mut *tx)
+                .await?;
+
+            lineas.push((item.venta_item_id, producto_id, sku, nombre, item.cantidad, Some(unidad_medida), item.observaciones.clone()));
+        }
+
+        let conduce = sqlx::query_as::<_, Conduce>(
+            r#"INSERT INTO conduces (tenant_id, venta_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               RETURNING id, tenant_id, venta_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por, created_at"#,
+        )
+        .bind(tenant_id)
+        .bind(req.venta_id)
+        .bind(usuario_id)
+        .bind(&req.direccion_entrega)
+        .bind(&req.orden_compra)
+        .bind(&req.vehiculo_placa)
+        .bind(&req.conductor)
+        .bind(&req.notas)
+        .bind(&req.entregado_por)
+        .bind(&req.recibido_por)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let mut items = Vec::new();
+        for (venta_item_id, producto_id, sku, nombre, cantidad, unidad, observaciones) in lineas {
+            let ci = sqlx::query_as::<_, ConduceItem>(
+                r#"INSERT INTO conduce_items (conduce_id, venta_item_id, producto_id, sku, nombre, cantidad, unidad, observaciones)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                   RETURNING id, conduce_id, venta_item_id, producto_id, sku, nombre, cantidad, unidad, observaciones"#,
+            )
+            .bind(conduce.id)
+            .bind(venta_item_id)
+            .bind(producto_id)
+            .bind(&sku)
+            .bind(&nombre)
+            .bind(cantidad)
+            .bind(&unidad)
+            .bind(&observaciones)
+            .fetch_one(&mut *tx)
+            .await?;
+            items.push(ci);
+
+            sqlx::query(
+                r#"INSERT INTO movimientos_inventario (tenant_id, producto_id, tipo, cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, usuario_id)
+                   VALUES ($1, $2, 'SALIDA', $3, NULL, 'Conduce', 'CONDUCE', $4, $5)"#,
+            )
+            .bind(tenant_id)
+            .bind(producto_id)
+            .bind(-cantidad)
+            .bind(conduce.id)
+            .bind(usuario_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(ConduceCompleta { conduce, items })
+    }
+
+    pub async fn list_conduces(&self, tenant_id: &str, venta_id: Option<Uuid>) -> anyhow::Result<Vec<ConduceConVenta>> {
+        let rows = sqlx::query_as::<_, ConduceConVenta>(
+            r#"SELECT c.id, c.venta_id, cl.nombre AS cliente_nombre, c.direccion_entrega, c.created_at
+               FROM conduces c
+               JOIN ventas v ON v.id = c.venta_id
+               LEFT JOIN clientes cl ON cl.id = v.cliente_id
+               WHERE c.tenant_id = $1 AND ($2::uuid IS NULL OR c.venta_id = $2)
+               ORDER BY c.created_at DESC
+               LIMIT 200"#,
+        )
+        .bind(tenant_id)
+        .bind(venta_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_conduce(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<ConduceCompleta> {
+        let conduce = sqlx::query_as::<_, Conduce>(
+            r#"SELECT id, tenant_id, venta_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por, created_at
+               FROM conduces WHERE id = $1 AND tenant_id = $2"#,
+        )
+        .bind(id)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Conduce no encontrado"))?;
+
+        let items = sqlx::query_as::<_, ConduceItem>(
+            "SELECT id, conduce_id, venta_item_id, producto_id, sku, nombre, cantidad, unidad, observaciones FROM conduce_items WHERE conduce_id = $1",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(ConduceCompleta { conduce, items })
+    }
+}

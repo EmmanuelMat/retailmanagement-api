@@ -457,6 +457,26 @@ pub fn escape_xml(s: &str) -> String {
 
 /// Convenience builder from simple POS items (for colmados)
 
+/// IndicadorFacturacion por tipo de ITBIS del renglón, según catálogo DGII
+/// (Informe Técnico e-CF, Tabla No. 6): 1=Tasa normal 18%, 2=Tasa reducida 16%,
+/// 4=Exento. Antes esta función asumía 18% fijo para todos los renglones,
+/// lo que sobre-facturaba ITBIS en productos EXENTO/GRAVADO_16.
+fn indicador_facturacion(itbis_tipo: &str) -> i32 {
+    match itbis_tipo {
+        "GRAVADO_16" => 2,
+        "EXENTO" => 4,
+        _ => 1, // GRAVADO_18 y cualquier otro valor por defecto
+    }
+}
+
+fn itbis_rate_for(itbis_tipo: &str) -> Decimal {
+    match itbis_tipo {
+        "GRAVADO_16" => Decimal::from_str_exact("0.16").unwrap(),
+        "EXENTO" => Decimal::ZERO,
+        _ => Decimal::from_str_exact("0.18").unwrap(),
+    }
+}
+
 pub fn build_simple_pos_ecf(
     tenant_rnc: &str,
     razon_social: &str,
@@ -465,25 +485,40 @@ pub fn build_simple_pos_ecf(
     tipo_ecf: i32,
     cliente_rnc: &str,
     cliente_nombre: &str,
-    items: Vec<(String, Decimal, Decimal)>, // (nombre, qty, precio_unitario)
+    items: Vec<(String, Decimal, Decimal, String)>, // (nombre, qty, precio_unitario, itbis_tipo)
     fecha_emision: &str, // DD-MM-YYYY
     fecha_vencimiento: &str,
+    cliente_direccion: Option<&str>, // requerido para Tipo 31 (Crédito Fiscal)
+    indicador_envio_diferido: i32, // 0=normal, 1=contingencia (sin conexión a DGII al momento de firmar)
+    referencia_ncf: Option<(&str, &str)>, // (NCFModificado, RazonModificacion) - requerido para Tipo 34 (Nota de Crédito)
 ) -> ECF {
-    let mut total_gravado = Decimal::ZERO;
-    let mut total_itbis = Decimal::ZERO;
+    let mut total_gravado_18 = Decimal::ZERO;
+    let mut total_gravado_16 = Decimal::ZERO;
+    let mut total_itbis_18 = Decimal::ZERO;
+    let mut total_itbis_16 = Decimal::ZERO;
     let mut total_exento = Decimal::ZERO;
     let mut ecf_items = Vec::new();
 
-    for (idx, (nombre, qty, precio)) in items.into_iter().enumerate() {
+    for (idx, (nombre, qty, precio, itbis_tipo)) in items.into_iter().enumerate() {
         let monto = qty * precio;
-        // Simplified: all gravado 18% for colmado example, but could be exento per product
-        let itbis = monto * Decimal::from_str_exact("0.18").unwrap();
-        total_gravado += monto;
-        total_itbis += itbis;
+        let itbis = monto * itbis_rate_for(&itbis_tipo);
+        match itbis_tipo.as_str() {
+            "GRAVADO_16" => {
+                total_gravado_16 += monto;
+                total_itbis_16 += itbis;
+            }
+            "EXENTO" => {
+                total_exento += monto;
+            }
+            _ => {
+                total_gravado_18 += monto;
+                total_itbis_18 += itbis;
+            }
+        }
 
         ecf_items.push(Item {
             NumeroLinea: (idx as i32) + 1,
-            IndicadorFacturacion: 1, // gravado
+            IndicadorFacturacion: indicador_facturacion(&itbis_tipo),
             NombreItem: nombre,
             IndicadorBienoServicio: 1, // bien
             DescripcionItem: None,
@@ -499,6 +534,8 @@ pub fn build_simple_pos_ecf(
         });
     }
 
+    let total_gravado = total_gravado_18 + total_gravado_16;
+    let total_itbis = total_itbis_18 + total_itbis_16;
     let monto_total = total_gravado + total_itbis + total_exento;
 
     ECF {
@@ -508,7 +545,7 @@ pub fn build_simple_pos_ecf(
                 TipoeCF: tipo_ecf,
                 eNCF: e_ncf.to_string(),
                 FechaVencimientoSecuencia: fecha_vencimiento.to_string(),
-                IndicadorEnvioDiferido: 0,
+                IndicadorEnvioDiferido: indicador_envio_diferido,
                 IndicadorMontoGravado: Some(0),
                 TipoIngresos: "01".to_string(),
                 TipoPago: 1,
@@ -542,7 +579,7 @@ pub fn build_simple_pos_ecf(
                 RazonSocialComprador: Some(cliente_nombre.to_string()),
                 ContactoComprador: None,
                 CorreoComprador: None,
-                DireccionComprador: None,
+                DireccionComprador: cliente_direccion.map(|d| d.to_string()),
                 MunicipioComprador: None,
                 ProvinciaComprador: None,
                 FechaEntrega: None,
@@ -560,16 +597,16 @@ pub fn build_simple_pos_ecf(
             Transporte: None,
             Totales: Totales {
                 MontoGravadoTotal: Some(total_gravado),
-                MontoGravadoI1: Some(total_gravado),
-                MontoGravadoI2: None,
+                MontoGravadoI1: if total_gravado_18 > Decimal::ZERO { Some(total_gravado_18) } else { None },
+                MontoGravadoI2: if total_gravado_16 > Decimal::ZERO { Some(total_gravado_16) } else { None },
                 MontoGravadoI3: None,
                 MontoExento: if total_exento > Decimal::ZERO { Some(total_exento) } else { None },
-                ITBIS1: Some(Decimal::from(18)),
-                ITBIS2: None,
+                ITBIS1: if total_gravado_18 > Decimal::ZERO { Some(Decimal::from(18)) } else { None },
+                ITBIS2: if total_gravado_16 > Decimal::ZERO { Some(Decimal::from(16)) } else { None },
                 ITBIS3: None,
                 TotalITBIS: Some(total_itbis),
-                TotalITBIS1: Some(total_itbis),
-                TotalITBIS2: None,
+                TotalITBIS1: if total_itbis_18 > Decimal::ZERO { Some(total_itbis_18) } else { None },
+                TotalITBIS2: if total_itbis_16 > Decimal::ZERO { Some(total_itbis_16) } else { None },
                 TotalITBIS3: None,
                 MontoImpuestoAdicional: None,
                 ImpuestosAdicionales: None,
@@ -602,7 +639,12 @@ pub fn build_simple_pos_ecf(
                 SubtotalMontoNoFacturablePagina: None,
             }],
         }),
-        InformacionReferencia: None,
+        InformacionReferencia: referencia_ncf.map(|(ncf, razon)| InformacionReferencia {
+            NCFModificado: ncf.to_string(),
+            FechaNCFModificado: None,
+            CodigoModificacion: Some("1".to_string()),
+            RazonModificacion: Some(razon.to_string()),
+        }),
         DescuentosORecargos: None,
         OtraMoneda: None,
         FechaHoraFirma: "".to_string(),

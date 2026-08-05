@@ -3,89 +3,143 @@
 @tailwind utilities;
 
 @layer base {
+  /* "Sello" system — la seriedad de un documento auditado: serif institucional
+     en identidad/títulos, Public Sans en cuerpo, acento tinta de sello. */
   :root {
-    --background: 20 14% 4%;
-    --foreground: 0 0% 98%;
+    --background: 60 14% 96%;
+    --surface: 0 0% 100%;
+    --surface-raised: 0 0% 100%;
+    --foreground: 40 6% 10%;
+    --foreground-soft: 48 3% 29%;
+    --muted: 51 11% 92%;
+    --muted-foreground: 47 4% 44%;
+    --border: 51 11% 88%;
+    --primary: 352 54% 31%;
+    --primary-hover: 352 55% 24%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 40 68% 48%;
+    --accent-hover: 40 68% 40%;
+    --accent-foreground: 40 30% 12%;
+    --success: 147 39% 30%;
+    --warning: 39 83% 32%;
+    --destructive: 5 59% 44%;
+    --radius: 0.75rem;
+    --shadow-color: 352 40% 20%;
+    --shadow-sm: 0 1px 2px hsl(var(--shadow-color) / 0.06);
+    --shadow-md: 0 4px 16px -4px hsl(var(--shadow-color) / 0.12), 0 2px 6px -2px hsl(var(--shadow-color) / 0.08);
+    --shadow-lg: 0 16px 48px -12px hsl(var(--shadow-color) / 0.22), 0 4px 12px -4px hsl(var(--shadow-color) / 0.1);
+    --shadow-glow: 0 0 0 1px hsl(var(--primary) / 0.08), 0 8px 30px -8px hsl(var(--primary) / 0.35);
+  }
+
+  :root[data-theme="dark"] {
+    --background: 30 5% 7%;
+    --surface: 45 8% 10%;
+    --surface-raised: 45 8% 13%;
+    --foreground: 50 18% 93%;
+    --foreground-soft: 47 8% 78%;
+    --muted: 50 7% 14%;
+    --muted-foreground: 45 5% 55%;
+    --border: 50 7% 18%;
+    --primary: 355 45% 61%;
+    --primary-hover: 355 48% 69%;
+    --primary-foreground: 30 5% 7%;
+    --accent: 40 70% 58%;
+    --accent-hover: 40 70% 66%;
+    --accent-foreground: 40 30% 10%;
+    --success: 144 32% 54%;
+    --warning: 39 66% 56%;
+    --destructive: 6 67% 65%;
+    --shadow-color: 0 0% 0%;
+    --shadow-sm: 0 1px 2px hsl(var(--shadow-color) / 0.3);
+    --shadow-md: 0 4px 16px -4px hsl(var(--shadow-color) / 0.5), 0 2px 6px -2px hsl(var(--shadow-color) / 0.4);
+    --shadow-lg: 0 16px 48px -12px hsl(var(--shadow-color) / 0.6), 0 4px 12px -4px hsl(var(--shadow-color) / 0.5);
+    --shadow-glow: 0 0 0 1px hsl(var(--primary) / 0.2), 0 8px 30px -8px hsl(var(--primary) / 0.5);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --background: 30 5% 7%;
+      --surface: 45 8% 10%;
+      --surface-raised: 45 8% 13%;
+      --foreground: 50 18% 93%;
+      --foreground-soft: 47 8% 78%;
+      --muted: 50 7% 14%;
+      --muted-foreground: 45 5% 55%;
+      --border: 50 7% 18%;
+      --primary: 355 45% 61%;
+      --primary-hover: 355 48% 69%;
+      --primary-foreground: 30 5% 7%;
+      --accent: 40 70% 58%;
+      --accent-hover: 40 70% 66%;
+      --accent-foreground: 40 30% 10%;
+      --success: 144 32% 54%;
+      --warning: 39 66% 56%;
+      --destructive: 6 67% 65%;
+      --shadow-color: 0 0% 0%;
+      --shadow-sm: 0 1px 2px hsl(var(--shadow-color) / 0.3);
+      --shadow-md: 0 4px 16px -4px hsl(var(--shadow-color) / 0.5), 0 2px 6px -2px hsl(var(--shadow-color) / 0.4);
+      --shadow-lg: 0 16px 48px -12px hsl(var(--shadow-color) / 0.6), 0 4px 12px -4px hsl(var(--shadow-color) / 0.5);
+      --shadow-glow: 0 0 0 1px hsl(var(--primary) / 0.2), 0 8px 30px -8px hsl(var(--primary) / 0.5);
+    }
   }
 }
 
 * {
-  border-color: hsl(0 0% 14% / 0.8);
+  border-color: hsl(var(--border));
 }
 
 body {
   font-feature-settings: "rlig" 1, "calt" 1;
-  background: #0c0a09;
-  overflow-x: hidden;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+/* Serif solo en identidad y títulos — el cuerpo sigue en Public Sans para
+   no perder velocidad de lectura en pantallas de caja todo el día. */
+h1, h2, h3 {
+  font-family: var(--font-serif), Charter, Georgia, serif;
+  letter-spacing: -0.01em;
+}
+
+/* Hero de mercadeo — trama de puntos sutil, siente premium sin distraer */
+.bg-grid-dots {
+  background-image: radial-gradient(hsl(var(--foreground) / 0.14) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.bg-hero-glow {
+  background:
+    radial-gradient(60% 50% at 15% 0%, hsl(var(--primary) / 0.16), transparent 60%),
+    radial-gradient(50% 45% at 100% 10%, hsl(var(--accent) / 0.14), transparent 60%);
+}
+
+.animate-fade-up {
+  animation: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #1c1917;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #44403c;
+  background: hsl(var(--border));
   border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #57534e;
-}
-
-/* Receipt zigzag bottom */
-.receipt-zigzag::after {
-  content: '';
-  position: absolute;
-  bottom: -12px;
-  left: 0;
-  right: 0;
-  height: 24px;
-  background: 
-    radial-gradient(circle at 12px 0px, transparent 12px, #fafaf9 12px),
-    radial-gradient(circle at 12px 12px, #fafaf9 12px, transparent 12px);
-  background-size: 24px 24px;
-  background-position: 0 0, 0 12px;
-  background-repeat: repeat-x;
-}
-
-/* Noise texture */
-.noise::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
-  pointer-events: none;
-}
-
-/* Hand-draw border */
-.hand-border {
-  border: 2px solid #1c1917;
-  box-shadow: 4px 4px 0px #1c1917;
-  transition: all 0.15s ease;
-}
-.hand-border:hover {
-  box-shadow: 6px 6px 0px #1c1917;
-  transform: translate(-2px, -2px);
-}
-
-/* Product card tilt */
-.product-card {
-  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.product-card:hover {
-  transform: rotate(-1deg) scale(1.02);
-}
-.product-card:nth-child(even):hover {
-  transform: rotate(1deg) scale(1.02);
-}
-
-/* Glow */
-.glow-amber {
-  box-shadow: 0 0 20px rgba(245, 158, 11, 0.15), 0 0 40px rgba(245, 158, 11, 0.05);
-}
-.glow-emerald {
-  box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
+  background: hsl(var(--muted-foreground) / 0.4);
 }

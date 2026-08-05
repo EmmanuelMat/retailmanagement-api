@@ -1,296 +1,798 @@
 "use client";
-import { useState } from "react";
 
-type Producto = {
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { Search, Plus, Minus, Trash2, ShoppingCart, FileCheck, Printer, CheckCircle2, XCircle, IdCard } from "lucide-react";
+import { Badge, Button, Card, CardContent, Input, Label, Select, formatDOP } from "@repo/ui";
+import { apiFetch, ApiError } from "@/lib/api";
+
+interface Producto {
+  id: string;
   sku: string;
   nombre: string;
-  precio: number;
-  itbis: string;
-  stock: number;
-  categoria: string;
-  emoji: string;
-  bg: string;
-};
+  itbis_tipo: "GRAVADO_18" | "GRAVADO_16" | "EXENTO";
+  precio_venta: string;
+  stock_actual: string;
+}
 
-type CarritoItem = Producto & { cantidad: number };
+interface Cliente {
+  id: string;
+  nombre: string;
+  rnc_cedula?: string | null;
+  direccion?: string | null;
+}
 
-const productos: Producto[] = [
-  { sku: "PLT-001", nombre: "PLÁTANOS X LIBRA", precio: 45, itbis: "EXENTO", stock: 42, categoria: "VÍVERES", emoji: "🍌", bg: "from-yellow-300 to-amber-400" },
-  { sku: "ARZ-002", nombre: "ARROZ PREMIUM 1LB", precio: 118, itbis: "18% GRAVADO", stock: 18, categoria: "VÍVERES", emoji: "🍚", bg: "from-stone-100 to-stone-300" },
-  { sku: "REF-010", nombre: "COCA-COLA 2L • FRÍO", precio: 95, itbis: "18% GRAVADO", stock: 3, categoria: "BEBIDAS", emoji: "🥤", bg: "from-red-500 to-red-700" },
-  { sku: "PAN-001", nombre: "PAN SOBAO", precio: 10, itbis: "16% REDUCIDA", stock: 120, categoria: "PANADERÍA", emoji: "🥖", bg: "from-amber-200 to-orange-300" },
-  { sku: "PRESIDENTE", nombre: "Presidente 12oz", precio: 150, itbis: "18% GRAVADO", stock: 24, categoria: "BEBIDAS", emoji: "🍺", bg: "from-amber-300 to-yellow-500" },
-  { sku: "LECHE-001", nombre: "Leche Rica 1L", precio: 85, itbis: "EXENTO", stock: 15, categoria: "VÍVERES", emoji: "🥛", bg: "from-blue-100 to-blue-300" },
-  { sku: "ARROZ-SEL", nombre: "Arroz Selecto 2lb", precio: 72, itbis: "EXENTO", stock: 35, categoria: "VÍVERES", emoji: "🍚", bg: "from-stone-200 to-stone-400" },
-  { sku: "MARLBORO", nombre: "Marlboro Red (Ind)", precio: 25, itbis: "18% GRAVADO", stock: 50, categoria: "OTROS", emoji: "🚬", bg: "from-red-400 to-red-600" },
-];
+interface RncRecord {
+  rnc: string;
+  nombre: string;
+  nombre_comercial: string | null;
+  estado: string | null;
+}
 
-const categorias = [
-  { nombre: "VÍVERES", count: 42, icon: "🌽", color: "bg-amber-400", activo: true },
-  { nombre: "BEBIDAS", count: 102, icon: "🥤", color: "bg-sky-400", activo: false },
-  { nombre: "PANADERÍA", count: 15, icon: "🥖", color: "bg-orange-300", activo: false },
-  { nombre: "LIMPIEZA", count: 42, icon: "🧴", color: "bg-violet-300", activo: false },
-];
+interface CarritoLinea {
+  producto: Producto;
+  cantidad: number;
+  descuento: number;
+}
 
-export default function POSStitch() {
-  const [carrito, setCarrito] = useState<CarritoItem[]>([
-    { sku: "PLT-001", nombre: "PLÁTANOS X LIBRA", precio: 45, itbis: "EXENTO", stock: 42, categoria: "VÍVERES", emoji: "🍌", bg: "from-yellow-300 to-amber-400", cantidad: 2 },
-    { sku: "ARZ-002", nombre: "Arroz Selecto 2lb", precio: 72, itbis: "EXENTO", stock: 35, categoria: "VÍVERES", emoji: "🍚", bg: "from-stone-200 to-stone-400", cantidad: 2 },
-    { sku: "MARLBORO", nombre: "Marlboro Red (Ind)", precio: 25, itbis: "18% GRAVADO", stock: 50, categoria: "OTROS", emoji: "🚬", bg: "from-red-400 to-red-600", cantidad: 1 },
-  ]);
-  const [categoriaActiva, setCategoriaActiva] = useState("VÍVERES");
-  const [busqueda, setBusqueda] = useState("");
+const ITBIS_RATE: Record<string, number> = { GRAVADO_18: 0.18, GRAVADO_16: 0.16, EXENTO: 0 };
+const ITBIS_LABEL: Record<string, string> = { GRAVADO_18: "18%", GRAVADO_16: "16%", EXENTO: "Exento" };
 
-  const subtotalGravado = carrito.filter(i => i.itbis.includes("18%")).reduce((s, i) => s + i.precio * i.cantidad, 0);
-  const subtotalExento = carrito.filter(i => !i.itbis.includes("18%")).reduce((s, i) => s + i.precio * i.cantidad, 0);
-  const itbis = subtotalGravado * 0.18;
-  const total = carrito.reduce((s, i) => s + i.precio * i.cantidad, 0) + itbis;
-  const entregado = 500;
-  const devuelta = entregado - total;
+interface VentaItem {
+  nombre: string;
+  cantidad: string;
+  precio_unitario: string;
+  subtotal: string;
+}
 
-  function agregarProducto(p: Producto) {
-    setCarrito(prev => {
-      const existe = prev.find(i => i.sku === p.sku);
-      if (existe) return prev.map(i => i.sku === p.sku ? { ...i, cantidad: i.cantidad + 1 } : i);
-      return [...prev, { ...p, cantidad: 1 }];
+interface VentaResult {
+  id: string;
+  subtotal: string;
+  itbis_total: string;
+  total: string;
+  metodo_pago: string;
+  tipo_ecf: number | null;
+  e_ncf: string | null;
+  qr_url: string | null;
+  codigo_seguridad: string | null;
+  estado_dgii: string | null;
+  created_at: string;
+  items?: VentaItem[];
+}
+
+export default function PosPage() {
+  const [productos, setProductos] = useState<Producto[]>([]);
+  const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [search, setSearch] = useState("");
+  const [carrito, setCarrito] = useState<CarritoLinea[]>([]);
+  const [clienteId, setClienteId] = useState("");
+  const [facturaElectronicaActiva, setFacturaElectronicaActiva] = useState(true);
+  const [tipoEcf, setTipoEcf] = useState("32");
+  const [metodoPago, setMetodoPago] = useState("EFECTIVO");
+  const [entregaDiferida, setEntregaDiferida] = useState(false);
+  const [cobrando, setCobrando] = useState(false);
+  const [error, setError] = useState("");
+  const [ventaResult, setVentaResult] = useState<VentaResult | null>(null);
+  const [postVentaStatus, setPostVentaStatus] = useState<{ ecfError?: string; impreso: boolean; printError?: string }>({ impreso: false });
+
+  const [rncQuery, setRncQuery] = useState("");
+  const [rncBuscando, setRncBuscando] = useState(false);
+  const [rncFound, setRncFound] = useState<RncRecord | null>(null);
+  const [rncNotFound, setRncNotFound] = useState(false);
+  const [quickNombre, setQuickNombre] = useState("");
+  const [quickDireccion, setQuickDireccion] = useState("");
+  const [usandoCliente, setUsandoCliente] = useState(false);
+
+  const [mostrarAprobacion, setMostrarAprobacion] = useState(false);
+  const [aprobacionMensaje, setAprobacionMensaje] = useState("");
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [aprobacionError, setAprobacionError] = useState("");
+
+  const [cajaAbierta, setCajaAbierta] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
+    apiFetch<{ clientes: Cliente[] }>("/api/clientes").then((d) => setClientes(d.clientes)).catch(() => {});
+    apiFetch<{ sesion: unknown | null }>("/api/caja/resumen").then((d) => setCajaAbierta(!!d.sesion)).catch(() => {});
+    try {
+      const raw = localStorage.getItem("tenant");
+      if (raw) {
+        const t = JSON.parse(raw);
+        if (t.factura_electronica_activa === false) setFacturaElectronicaActiva(false);
+      }
+    } catch {}
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return productos;
+    return productos.filter((p) => p.nombre.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
+  }, [search, productos]);
+
+  const totals = useMemo(() => {
+    let subtotal = 0, itbis = 0;
+    for (const l of carrito) {
+      const precio = Number(l.producto.precio_venta);
+      const bruto = precio * l.cantidad;
+      const descuento = Math.min(l.descuento, bruto);
+      const lineSub = bruto - descuento;
+      subtotal += lineSub;
+      itbis += lineSub * ITBIS_RATE[l.producto.itbis_tipo];
+    }
+    return { subtotal, itbis, total: subtotal + itbis };
+  }, [carrito]);
+
+  function addToCart(producto: Producto) {
+    setCarrito((c) => {
+      const existing = c.find((l) => l.producto.id === producto.id);
+      if (existing) {
+        return c.map((l) => (l.producto.id === producto.id ? { ...l, cantidad: l.cantidad + 1 } : l));
+      }
+      return [...c, { producto, cantidad: 1, descuento: 0 }];
     });
   }
 
-  function quitarProducto(sku: string) {
-    setCarrito(prev => prev.filter(i => i.sku !== sku));
+  function updateQty(productoId: string, delta: number) {
+    setCarrito((c) =>
+      c
+        .map((l) => (l.producto.id === productoId ? { ...l, cantidad: l.cantidad + delta } : l))
+        .filter((l) => l.cantidad > 0)
+    );
   }
 
-  const productosFiltrados = productos.filter(p => 
-    (categoriaActiva === "VÍVERES" || p.categoria === categoriaActiva) &&
-    (busqueda === "" || p.nombre.toLowerCase().includes(busqueda.toLowerCase()) || p.sku.toLowerCase().includes(busqueda.toLowerCase()))
-  );
+  function updateDescuento(productoId: string, value: string) {
+    const monto = Math.max(0, Number(value) || 0);
+    setCarrito((c) => c.map((l) => (l.producto.id === productoId ? { ...l, descuento: monto } : l)));
+  }
+
+  function removeLine(productoId: string) {
+    setCarrito((c) => c.filter((l) => l.producto.id !== productoId));
+  }
+
+  async function handleVerificarRnc() {
+    const rnc = rncQuery.trim();
+    if (!rnc) return;
+    setRncBuscando(true);
+    setRncFound(null);
+    setRncNotFound(false);
+    setError("");
+    try {
+      const data = await apiFetch<RncRecord>(`/api/rnc/${encodeURIComponent(rnc)}`);
+      setRncFound(data);
+      setQuickNombre(data.nombre_comercial || data.nombre);
+    } catch (e) {
+      // Solo un 404 real significa "no está en el padrón DGII" — cualquier
+      // otro fallo (red, servidor caído, etc.) se muestra como error real en
+      // vez de decirle al cajero que el RNC no existe cuando sí existe.
+      if (e instanceof ApiError && e.status === 404) {
+        setRncNotFound(true);
+        setQuickNombre("");
+        setQuickDireccion("");
+      } else {
+        setError(e instanceof Error ? e.message : "No se pudo verificar el RNC");
+      }
+    } finally {
+      setRncBuscando(false);
+    }
+  }
+
+  // Usa (o crea) un Cliente a partir del RNC/Cédula escrito directamente en
+  // el POS, sin tener que ir primero a la sección Clientes — necesario para
+  // comprador de paso que pide Crédito Fiscal o para Consumo >= RD$250,000.
+  async function handleUsarClienteRnc() {
+    const rnc = rncQuery.trim().replace(/\D/g, "");
+    if (!rnc || !quickNombre.trim()) return;
+    setUsandoCliente(true);
+    setError("");
+    try {
+      const existing = clientes.find((c) => (c.rnc_cedula || "").replace(/\D/g, "") === rnc);
+      let cliente: Cliente;
+      if (existing) {
+        cliente = await apiFetch<Cliente>(`/api/clientes/${existing.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ nombre: quickNombre, rnc_cedula: rnc, direccion: quickDireccion || undefined }),
+        });
+        setClientes((cs) => cs.map((c) => (c.id === cliente.id ? cliente : c)));
+      } else {
+        cliente = await apiFetch<Cliente>("/api/clientes", {
+          method: "POST",
+          body: JSON.stringify({ nombre: quickNombre, rnc_cedula: rnc, direccion: quickDireccion || undefined }),
+        });
+        setClientes((cs) => [...cs, cliente]);
+      }
+      setClienteId(cliente.id);
+      setRncQuery("");
+      setRncFound(null);
+      setRncNotFound(false);
+      setQuickNombre("");
+      setQuickDireccion("");
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setUsandoCliente(false);
+    }
+  }
+
+  async function handleCobrar(adminCreds?: { email: string; password: string }) {
+    if (carrito.length === 0) return;
+    if (metodoPago === "FIADO" && !clienteId) {
+      setError("Una venta fiada necesita un cliente seleccionado");
+      return;
+    }
+    setCobrando(true);
+    setError("");
+    if (adminCreds) setAprobacionError("");
+    try {
+      let venta = await apiFetch<VentaResult>("/api/ventas", {
+        method: "POST",
+        body: JSON.stringify({
+          cliente_id: clienteId || undefined,
+          metodo_pago: metodoPago,
+          tipo_ecf: Number(tipoEcf),
+          items: carrito.map((l) => ({
+            producto_id: l.producto.id,
+            cantidad: String(l.cantidad),
+            descuento: String(Math.min(l.descuento, Number(l.producto.precio_venta) * l.cantidad)),
+          })),
+          entrega_diferida: entregaDiferida || undefined,
+          aprobacion_admin: adminCreds,
+        }),
+      });
+      setMostrarAprobacion(false);
+      setAdminEmail("");
+      setAdminPassword("");
+      const items = venta.items;
+
+      const status: { ecfError?: string; impreso: boolean; printError?: string } = { impreso: false };
+
+      // Emisión de e-CF automática usando el certificado guardado en
+      // Configuración → DGII (si no hay uno guardado, esto falla y se deja
+      // la venta como "sin e-CF" para emitir manualmente después). La
+      // respuesta de este endpoint no trae los renglones, así que se
+      // reponen desde la venta original para no perderlos en el recibo.
+      // Si el negocio no tiene e-CF activado, ni se intenta — la venta
+      // queda como un ticket normal, sin avisos de DGII.
+      if (facturaElectronicaActiva) {
+        try {
+          venta = await apiFetch<VentaResult>(`/api/ventas/${venta.id}/emitir-ecf`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          venta.items = items;
+        } catch (e: any) {
+          status.ecfError = e.message;
+        }
+      }
+
+      // Cada venta cerrada intenta imprimir el ticket en la impresora de red
+      // configurada. Si falla (impresora apagada/no configurada) no bloquea
+      // el cierre de la venta — solo se informa en pantalla.
+      try {
+        await apiFetch(`/api/ventas/${venta.id}/imprimir`, { method: "POST" });
+        status.impreso = true;
+      } catch (e: any) {
+        status.printError = e.message;
+      }
+
+      setPostVentaStatus(status);
+      setVentaResult(venta);
+      setCarrito([]);
+      apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
+    } catch (e: any) {
+      if (e instanceof ApiError && e.message.startsWith("CAJA_NO_ABIERTA")) {
+        // Caso raro: la caja se cerró (en otra pestaña/usuario) después de
+        // cargar esta página, cuando el botón ya debería estar deshabilitado.
+        setCajaAbierta(false);
+        setError(e.message.replace("CAJA_NO_ABIERTA: ", ""));
+      } else if (e instanceof ApiError && e.status === 403 && e.message.startsWith("DESCUENTO_REQUIERE_APROBACION")) {
+        // El cajero pidió más descuento del que su cuenta permite sin
+        // autorización — se pide a un administrador que confirme aquí mismo,
+        // sin cerrar la sesión del cajero.
+        setAprobacionMensaje(e.message);
+        setMostrarAprobacion(true);
+      } else if (adminCreds) {
+        // Ya estábamos reintentando con credenciales de admin y aun así
+        // falló (contraseña incorrecta, no es ADMIN, etc.) — se muestra
+        // dentro del mismo popup en vez de cerrarlo.
+        setAprobacionError(e.message);
+      } else {
+        setError(e.message);
+      }
+    } finally {
+      setCobrando(false);
+    }
+  }
+
+  if (ventaResult) {
+    const cliente = clientes.find((c) => c.id === clienteId);
+    return (
+      <VentaConfirmada
+        venta={ventaResult}
+        cliente={cliente}
+        status={postVentaStatus}
+        onStatusChange={setPostVentaStatus}
+        onVentaChange={setVentaResult}
+        onNuevaVenta={() => {
+          setVentaResult(null);
+          setClienteId("");
+          setTipoEcf("32");
+        }}
+      />
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-[#151312] text-[#e8e1df] selection:bg-[#facc15] selection:text-black relative overflow-hidden">
-      {/* Noise */}
-      <div className="pointer-events-none fixed inset-0 opacity-[0.03]" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")` }} />
-
-      {/* Ticker */}
-      <div className="h-8 bg-black border-b-[3px] border-black flex items-center overflow-hidden sticky top-0 z-[60]">
-        <div className="animate-[marquee_30s_linear_infinite] whitespace-nowrap font-mono text-[10px] text-[#4edea3] uppercase px-4 flex gap-8">
-          <span>[SYS_OK] LEDGER: 0x882A...7C • NEW TRANSACTION: RD$ 450.00 FROM TERMINAL_01 • STOCK ALERT: CERVEZA 12oz LOW • DGII VALIDATION SUCCESSFUL • EWA LIMIT: 50% ENABLED • RFCE 47 FACTURAS &lt;250K ENVIADAS • ARECF RECIBIDO PROVEEDOR •</span>
-          <span>[SYS_OK] LEDGER: 0x882A...7C • NEW TRANSACTION: RD$ 450.00 FROM TERMINAL_01 • STOCK ALERT: CERVEZA 12oz LOW • DGII VALIDATION SUCCESSFUL • EWA LIMIT: 50% ENABLED •</span>
+    <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 h-[calc(100vh-104px)]">
+      <div className="flex flex-col min-h-0">
+        <div className="relative mb-4">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto por nombre o SKU..." className="pl-9" />
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 overflow-y-auto pb-4">
+          {filtered.map((p) => {
+            const stock = Number(p.stock_actual);
+            return (
+              <button
+                key={p.id}
+                onClick={() => stock > 0 && addToCart(p)}
+                disabled={stock <= 0}
+                className="text-left rounded-lg border border-border bg-background p-3 hover:border-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <p className="text-xs text-muted-foreground font-mono">{p.sku}</p>
+                <p className="text-sm font-semibold mt-1 leading-tight">{p.nombre}</p>
+                <div className="flex items-center justify-between mt-2">
+                  <span className="text-sm font-bold">{formatDOP(p.precio_venta)}</span>
+                  <Badge variant={p.itbis_tipo === "EXENTO" ? "secondary" : "default"}>{ITBIS_LABEL[p.itbis_tipo]}</Badge>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1">{stock > 0 ? `Stock: ${p.stock_actual}` : "Sin stock"}</p>
+              </button>
+            );
+          })}
+          {filtered.length === 0 && (
+            <p className="col-span-full text-sm text-muted-foreground py-10 text-center">No hay productos que coincidan.</p>
+          )}
         </div>
       </div>
 
-      {/* Header */}
-      <header className="flex justify-between items-center w-full px-6 py-4 sticky top-8 z-50 border-b-[3px] border-black bg-[#151312] h-20">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-[#facc15] border-[3px] border-black shadow-[4px_4px_0px_black] flex items-center justify-center text-2xl">☀️</div>
-          <div>
-            <h1 className="font-black text-[20px] leading-tight uppercase tracking-tight">Colmado El Sol</h1>
-            <p className="font-mono text-[10px] text-[#d1c6ab]">Desde 1998 • RNC 130-79375-2</p>
-          </div>
-        </div>
-        <nav className="hidden md:flex gap-2">
-          <button className="bg-[#facc15] text-black border-[3px] border-black shadow-[3px_3px_0px_black] font-black px-5 py-2 text-[11px] tracking-wider">VENTA</button>
-          <button className="text-[#e8e1df] font-black px-5 py-2 border-[3px] border-transparent hover:border-black hover:shadow-[3px_3px_0px_black] transition-all text-[11px]">INVENTARIO</button>
-          <button className="text-[#e8e1df] font-black px-5 py-2 border-[3px] border-transparent hover:border-black text-[11px]">CLIENTES</button>
-          <button className="text-[#e8e1df] font-black px-5 py-2 border-[3px] border-transparent hover:border-black text-[11px]">LIBRO</button>
-          <button className="text-[#e8e1df] font-black px-5 py-2 border-[3px] border-transparent hover:border-black text-[11px]">NÓMINA</button>
-        </nav>
-        <div className="flex items-center gap-3">
-          <div className="hidden md:flex items-center gap-2 bg-[#221f1e] border-2 border-black rounded-full px-3 py-1">
-            <div className="h-2 w-2 bg-emerald-400 rounded-full animate-pulse" />
-            <span className="text-[10px] font-mono font-bold">CAJA RD$ 18,420</span>
-          </div>
-          <div className="h-9 w-9 bg-white border-[3px] border-black rounded-full flex items-center justify-center font-black text-black">EM</div>
-        </div>
-      </header>
-
-      <main className="flex h-[calc(100vh-112px)] overflow-hidden">
-        {/* Izquierda */}
-        <aside className="w-[310px] border-r-[3px] border-black flex flex-col p-4 gap-4 overflow-y-auto bg-[#1d1b1a]">
-          <div>
-            <h2 className="font-black text-[12px] tracking-[0.2em] text-[#facc15] mb-3">CATEGORÍAS • TIGERBEETLE VIVO</h2>
-            <div className="space-y-2.5">
-              {categorias.map((cat) => (
-                <button
-                  key={cat.nombre}
-                  onClick={() => setCategoriaActiva(cat.nombre)}
-                  className={`w-full flex justify-between items-center border-[3px] border-black p-3 font-black text-[12px] shadow-[4px_4px_0px_black] transition-all hover:translate-x-[-1px] hover:translate-y-[-1px] hover:shadow-[5px_5px_0px_black] ${cat.activo || categoriaActiva === cat.nombre ? "bg-[#facc15] text-black" : "bg-[#221f1e] text-[#e8e1df] hover:bg-[#2c2928]"}`}
-                >
-                  <span className="flex items-center gap-2">{cat.nombre} {cat.icon}</span>
-                  <span className="bg-black text-white text-[10px] px-2 py-0.5 rounded-full border border-black">{cat.count}</span>
-                </button>
-              ))}
-            </div>
+      <Card className="flex flex-col sticky top-0 h-[calc(100vh-104px)]">
+        <CardContent className="flex flex-col flex-1 min-h-0 pt-5">
+          <div className="flex items-center gap-2 mb-4">
+            <ShoppingCart className="h-4 w-4 text-primary" />
+            <h2 className="font-bold text-sm">Venta actual</h2>
           </div>
 
-          <div className="mt-auto bg-[#facc15] p-4 border-[3px] border-black shadow-[6px_6px_0px_black] rotate-[-1.5deg]">
-            <div className="flex justify-between items-start">
-              <span className="text-[18px]">📌</span>
-              <span className="font-mono text-[9px] bg-black text-[#facc15] px-1.5 py-0.5 rounded-full font-black">URGENTE</span>
-            </div>
-            <p className="font-black text-black text-[14px] leading-none mt-2">ADELANTOS HOY EWA 50%</p>
-            <p className="font-mono text-[10px] text-black/60 mt-1">Sistema Ledger: Operacional • 3 activos</p>
-            <div className="mt-3 space-y-2">
-              <div className="bg-white border-2 border-black rounded-[10px] p-2.5 shadow-[2px_2px_0px_black]">
-                <p className="font-black text-[11px] text-black">María P. • Cajera</p>
-                <p className="text-[9px] font-mono text-black/60">Ganado RD$9,200 • Disp 50% RD$4,600</p>
-                <div className="flex justify-between items-center mt-1">
-                  <span className="font-black text-[11px] text-black">RD$2,000 • Medicina</span>
-                  <span className="text-[8px] font-black bg-emerald-400 border border-black px-1.5 py-0.5 rounded-full">✓ Aprobado TB 3001</span>
+          <div className="flex-1 overflow-y-auto space-y-2 min-h-0">
+            {carrito.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-10">Agrega productos para empezar.</p>
+            ) : (
+              carrito.map((l) => (
+                <div key={l.producto.id} className="border border-border rounded-md p-2 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{l.producto.nombre}</p>
+                      <p className="text-xs text-muted-foreground">{formatDOP(l.producto.precio_venta)} c/u</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => updateQty(l.producto.id, -1)}><Minus className="h-3 w-3" /></Button>
+                      <span className="text-sm w-6 text-center tabular-nums">{l.cantidad}</span>
+                      <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => updateQty(l.producto.id, 1)}><Plus className="h-3 w-3" /></Button>
+                    </div>
+                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => removeLine(l.producto.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                  </div>
+                  <div className="flex items-center gap-1.5 pl-0.5">
+                    <span className="text-[11px] text-muted-foreground shrink-0">Descuento RD$</span>
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={l.descuento || ""}
+                      onChange={(e) => updateDescuento(l.producto.id, e.target.value)}
+                      placeholder="0.00"
+                      className="h-7 text-xs"
+                    />
+                  </div>
                 </div>
+              ))
+            )}
+          </div>
+
+          <div className="border-t border-border pt-4 mt-4 space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="rncQuery">RNC / Cédula del cliente</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="rncQuery"
+                  value={rncQuery}
+                  onChange={(e) => {
+                    setRncQuery(e.target.value);
+                    setRncFound(null);
+                    setRncNotFound(false);
+                  }}
+                  placeholder="130793752"
+                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleVerificarRnc())}
+                />
+                <Button type="button" variant="secondary" onClick={handleVerificarRnc} disabled={rncBuscando || !rncQuery.trim()}>
+                  <IdCard className="h-4 w-4" />{rncBuscando ? "..." : "Verificar"}
+                </Button>
               </div>
-              <div className="bg-white border-2 border-black rounded-[10px] p-2.5 shadow-[2px_2px_0px_black]">
-                <p className="font-black text-[11px] text-black">Juan C. • Almacén</p>
-                <p className="text-[9px] font-mono text-black/60">Ganado RD$6,400 • Disp RD$3,200</p>
-                <div className="flex justify-between items-center mt-1">
-                  <span className="font-black text-[11px] text-black">RD$3,000 • Transporte</span>
-                  <span className="text-[8px] font-black bg-amber-400 border border-black px-1.5 py-0.5 rounded-full">⏳ Pendiente</span>
+
+              {rncFound && (
+                <div className="rounded-md border border-border p-2.5 space-y-2">
+                  <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    Encontrado en DGII
+                    <Badge variant={rncFound.estado === "ACTIVO" ? "success" : "secondary"}>{rncFound.estado || "—"}</Badge>
+                  </p>
+                  <Input value={quickNombre} onChange={(e) => setQuickNombre(e.target.value)} placeholder="Nombre del cliente" />
+                  <Input value={quickDireccion} onChange={(e) => setQuickDireccion(e.target.value)} placeholder="Dirección (requerida para Crédito Fiscal)" />
+                  <Button type="button" size="sm" className="w-full" onClick={handleUsarClienteRnc} disabled={usandoCliente || !quickNombre.trim()}>
+                    {usandoCliente ? "Guardando..." : "Usar este cliente en la venta"}
+                  </Button>
                 </div>
+              )}
+
+              {rncNotFound && (
+                <div className="rounded-md border border-warning/20 bg-warning/10 p-2.5 space-y-2">
+                  <p className="text-xs text-warning">No encontrado en el padrón DGII. Puedes registrarlo manualmente:</p>
+                  <Input value={quickNombre} onChange={(e) => setQuickNombre(e.target.value)} placeholder="Nombre del cliente *" />
+                  <Input value={quickDireccion} onChange={(e) => setQuickDireccion(e.target.value)} placeholder="Dirección (requerida para Crédito Fiscal)" />
+                  <Button type="button" size="sm" className="w-full" onClick={handleUsarClienteRnc} disabled={usandoCliente || !quickNombre.trim()}>
+                    {usandoCliente ? "Guardando..." : "Usar este cliente en la venta"}
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="cliente">Cliente</Label>
+              <Select
+                id="cliente"
+                value={clienteId}
+                onChange={(e) => {
+                  setClienteId(e.target.value);
+                  const c = clientes.find((cl) => cl.id === e.target.value);
+                  const tieneRnc = !!c?.rnc_cedula && c.rnc_cedula !== "000000000";
+                  if (!tieneRnc) setTipoEcf("32");
+                }}
+              >
+                <option value="">Consumidor final</option>
+                {clientes.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+              </Select>
+            </div>
+            {(() => {
+              if (!facturaElectronicaActiva) return null;
+              const clienteSel = clientes.find((c) => c.id === clienteId);
+              const tieneRnc = !!clienteSel?.rnc_cedula && clienteSel.rnc_cedula !== "000000000";
+              return tieneRnc ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="tipoEcf">Tipo de comprobante</Label>
+                  <Select id="tipoEcf" value={tipoEcf} onChange={(e) => setTipoEcf(e.target.value)}>
+                    <option value="32">Consumo (32)</option>
+                    <option value="31">Crédito Fiscal (31)</option>
+                  </Select>
+                </div>
+              ) : null;
+            })()}
+            <div className="space-y-1.5">
+              <Label htmlFor="metodo">Método de pago</Label>
+              <Select id="metodo" value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
+                <option value="EFECTIVO">Efectivo</option>
+                <option value="TARJETA">Tarjeta</option>
+                <option value="TRANSFERENCIA">Transferencia</option>
+                <option value="CREDITO">Crédito</option>
+                <option value="FIADO">Fiado</option>
+              </Select>
+            </div>
+
+            {metodoPago === "FIADO" && !clienteId && (
+              <div className="rounded-md border border-warning/20 bg-warning/10 text-warning p-2 text-xs">
+                Selecciona un cliente arriba para fiar esta venta.
               </div>
-            </div>
-          </div>
+            )}
 
-          <div className="rounded-[14px] border-2 border-[#373433] bg-[#221f1e] p-3">
-            <h3 className="font-black text-[10px] tracking-widest text-[#9a9078]">LIBRO MAYOR • VIVO</h3>
-            <div className="mt-3 space-y-1.5 font-mono text-[11px]">
-              <div className="flex justify-between"><span className="text-[#9a9078]">caja</span><span className="font-bold text-[#e8e1df]">RD$ 18,420</span></div>
-              <div className="flex justify-between text-[#facc15]"><span>anticipos</span><span>RD$ 6,000</span></div>
-              <div className="flex justify-between text-[#7bd0ff]"><span>itbis x pagar</span><span>RD$ 4,210</span></div>
-              <div className="flex justify-between border-t border-dashed border-[#373433] pt-1.5 mt-1.5"><span className="font-black">ventas</span><span className="font-black text-[#4edea3]">RD$ 42,100</span></div>
-            </div>
-          </div>
-        </aside>
+            <label className="flex items-start gap-2 text-xs text-muted-foreground rounded-md border border-border p-2.5">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={entregaDiferida}
+                onChange={(e) => setEntregaDiferida(e.target.checked)}
+              />
+              <span>
+                <span className="block font-medium text-foreground">Entrega diferida</span>
+                La mercancía no sale completa ahora — se factura todo, pero el cliente la recoge en varias partes. El stock se descuenta según se vaya entregando (Ventas → Entregas).
+              </span>
+            </label>
 
-        {/* Centro */}
-        <section className="flex-1 p-5 overflow-y-auto bg-[#151312]">
-          <div className="max-w-5xl mx-auto space-y-5">
-            <div className="flex gap-3">
-              <div className="relative flex-1">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[#9a9078]">⌕</span>
-                <input
-                  value={busqueda}
-                  onChange={(e) => setBusqueda(e.target.value)}
-                  placeholder="Buscar plátanos, arroz, fríos... (SKU o nombre)"
-                  className="w-full bg-[#221f1e] border-[3px] border-black shadow-[4px_4px_0px_black] rounded-full py-3 pl-12 pr-4 font-bold text-[13px] text-white placeholder:text-stone-500 focus:outline-none focus:border-[#facc15] focus:shadow-[0_0_0_4px_rgba(250,204,21,0.2)] transition-all"
+            {cajaAbierta === false && (
+              <div className="rounded-md border border-warning/20 bg-warning/10 text-warning p-2 text-xs">
+                La caja está cerrada. <Link href="/caja" className="underline font-medium">Ábrela antes de vender</Link>.
+              </div>
+            )}
+
+            <div className="text-sm space-y-1 pt-1">
+              <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatDOP(totals.subtotal)}</span></div>
+              <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(totals.itbis)}</span></div>
+              <div className="flex justify-between font-bold text-base pt-1"><span>Total</span><span className="tabular-nums">{formatDOP(totals.total)}</span></div>
+            </div>
+
+            {totals.total >= 250000 && !clienteId && (
+              <div className="rounded-md border border-warning/20 bg-warning/10 text-warning p-2 text-xs">
+                Ventas desde RD$250,000 requieren RNC o Cédula del cliente — selecciona uno arriba.
+              </div>
+            )}
+
+            {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{error}</div>}
+
+            <Button
+              className="w-full"
+              size="lg"
+              disabled={carrito.length === 0 || cobrando || cajaAbierta === false || (metodoPago === "FIADO" && !clienteId)}
+              onClick={() => handleCobrar()}
+            >
+              {cobrando ? "Procesando..." : `Cobrar ${formatDOP(totals.total)}`}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {mostrarAprobacion && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <Card className="w-full max-w-sm">
+            <CardContent className="pt-5 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">Aprobación de administrador requerida</p>
+                <p className="text-xs text-muted-foreground mt-1">{aprobacionMensaje}</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="adminEmail">Correo del administrador</Label>
+                <Input id="adminEmail" type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} autoFocus />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="adminPassword">Contraseña</Label>
+                <Input
+                  id="adminPassword"
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && adminEmail && adminPassword && handleCobrar({ email: adminEmail, password: adminPassword })}
                 />
               </div>
-              <div className="hidden md:flex bg-[#99d9ff] text-[#001e2c] border-[3px] border-black shadow-[4px_4px_0px_black] items-center px-4 gap-2 font-black text-[11px] rounded-full">
-                <span>✓</span> CUMPLIMIENTO DGII e-CF obligatorio
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {productosFiltrados.map((p) => (
-                <div
-                  key={p.sku}
-                  onClick={() => agregarProducto(p)}
-                  className={`group cursor-pointer relative rounded-[20px] border-[3px] border-black p-4 shadow-[6px_6px_0px_black] transition-all hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[8px_8px_0px_black] hover:rotate-[-1deg] bg-gradient-to-br ${p.bg}`}
+              {aprobacionError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{aprobacionError}</div>}
+              <div className="flex gap-2">
+                <Button
+                  className="flex-1"
+                  disabled={cobrando || !adminEmail || !adminPassword}
+                  onClick={() => handleCobrar({ email: adminEmail, password: adminPassword })}
                 >
-                  {p.stock < 5 && <div className="absolute -top-2 -right-2 bg-red-500 text-white border-2 border-black rounded-full px-2 py-0.5 text-[9px] font-black animate-bounce">¡POCO STOCK!</div>}
-                  <div className="flex justify-between items-start">
-                    <span className="bg-black text-[#facc15] text-[9px] font-black px-2 py-0.5 rounded-full border border-black">{p.sku} • {p.categoria}</span>
-                    <span className={`h-2.5 w-2.5 rounded-full border-2 border-black ${p.stock < 5 ? "bg-red-500" : "bg-emerald-400"}`} />
-                  </div>
-                  <div className="text-[52px] leading-none mt-3 drop-shadow-[3px_3px_0px_rgba(0,0,0,0.3)] group-hover:scale-110 transition-transform">{p.emoji}</div>
-                  <h3 className="mt-3 font-black text-black text-[13px] leading-[0.9] tracking-tight">{p.nombre}</h3>
-                  <div className="mt-3 flex items-end justify-between">
-                    <div>
-                      <p className="font-black text-black text-[18px]">RD$ {p.precio}.00</p>
-                      <p className="text-[8px] font-black bg-black text-white inline-block px-1.5 py-0.5 rounded-full mt-1">{p.itbis} • STOCK {p.stock}</p>
-                    </div>
-                    <div className="h-10 w-10 bg-black text-[#facc15] rounded-full border-2 border-black flex items-center justify-center font-black text-[20px] shadow-[2px_2px_0px_black] group-hover:rotate-90 transition-transform">+</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* Derecha - Recibo */}
-        <aside className="w-[400px] border-l-[3px] border-black flex flex-col bg-[#1d1b1a] relative">
-          <div className="flex-1 overflow-hidden p-4">
-            <div className="bg-[#fafaf9] text-black border-[3px] border-black shadow-[6px_6px_0px_black] rounded-t-[16px] overflow-hidden flex flex-col h-full">
-              <div className="bg-black text-white p-4 text-center">
-                <p className="font-black tracking-[0.2em] text-[11px]">REGISTRO #0942 • COLMADO EL SOL</p>
-                <p className="font-mono text-[9px] opacity-60 mt-1">RNC 130-79375-2 • Av Duarte #123 • 15-07-2026 21:33 • Caja 01</p>
-                <div className="mt-2 inline-block bg-white text-black font-black text-[9px] px-2 py-0.5 rounded-full">FACTURA CONSUMO ELECTRÓNICA E32</div>
-                <p className="font-mono text-[8px] mt-1 opacity-60">eNCF: E320000000128 • CONSUMIDOR FINAL 000000000</p>
+                  {cobrando ? "Verificando..." : "Aprobar y cobrar"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setMostrarAprobacion(false);
+                    setAdminEmail("");
+                    setAdminPassword("");
+                    setAprobacionError("");
+                  }}
+                >
+                  Cancelar
+                </Button>
               </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
 
-              <div className="flex-1 p-5 font-mono text-[11px] overflow-y-auto">
-                <div className="space-y-2.5">
-                  {carrito.map((item) => (
-                    <div key={item.sku} className="group flex justify-between border-b border-black/10 pb-2 hover:bg-amber-50 cursor-pointer" onClick={() => quitarProducto(item.sku)}>
-                      <span className="group-hover:line-through">{item.cantidad}x {item.nombre}</span>
-                      <span className="font-bold">RD$ {item.precio * item.cantidad}.00</span>
-                    </div>
-                  ))}
-                  {carrito.length === 0 && <p className="text-center opacity-30 py-8">Carrito vacío • Agrega productos</p>}
-                </div>
+const TIPO_ECF_LABEL: Record<number, string> = {
+  31: "Factura de Crédito Fiscal Electrónica",
+  32: "Factura de Consumo Electrónica",
+  33: "Nota de Débito Electrónica",
+  34: "Nota de Crédito Electrónica",
+};
 
-                <div className="mt-6 space-y-1.5 text-[11px]">
-                  <div className="flex justify-between opacity-60"><span>Subtotal Gravado 18%</span><span>RD$ {subtotalGravado.toFixed(2)}</span></div>
-                  <div className="flex justify-between opacity-60"><span>Exento + 16% Reducida</span><span>RD$ {subtotalExento.toFixed(2)}</span></div>
-                  <div className="flex justify-between opacity-60"><span>ITBIS 18%</span><span>RD$ {itbis.toFixed(2)}</span></div>
-                  <div className="flex justify-between font-black text-[16px] border-t-[3px] border-black border-dashed pt-3 mt-3">
-                    <span>TOTAL</span><span>RD$ {total.toFixed(2)}</span>
-                  </div>
-                </div>
+function VentaConfirmada({
+  venta,
+  cliente,
+  status,
+  onStatusChange,
+  onVentaChange,
+  onNuevaVenta,
+}: {
+  venta: VentaResult;
+  cliente?: Cliente;
+  status: { ecfError?: string; impreso: boolean; printError?: string };
+  onStatusChange: (s: { ecfError?: string; impreso: boolean; printError?: string }) => void;
+  onVentaChange: (v: VentaResult) => void;
+  onNuevaVenta: () => void;
+}) {
+  const [tenant, setTenant] = useState<{ razon_social?: string; rnc?: string; direccion?: string; telefono?: string; factura_electronica_activa?: boolean } | null>(null);
+  const facturaElectronicaActiva = tenant?.factura_electronica_activa !== false;
+  const [showEmitir, setShowEmitir] = useState(false);
+  const [p12Password, setP12Password] = useState("");
+  const [p12File, setP12File] = useState<File | null>(null);
+  const [sendToDgii, setSendToDgii] = useState(false);
+  const [emitiendo, setEmitiendo] = useState(false);
+  const [emitirError, setEmitirError] = useState("");
+  const [reimprimiendo, setReimprimiendo] = useState(false);
 
-                <div className="mt-6 space-y-3">
-                  <p className="font-black text-[10px] tracking-widest">MÉTODO DE PAGO</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <button className="border-2 border-black p-2 bg-black text-white font-black text-[10px] rounded-[8px]">EFECTIVO</button>
-                    <button className="border-2 border-black p-2 hover:bg-black/5 font-black text-[10px] rounded-[8px]">TARJETA</button>
-                    <button className="border-2 border-black p-2 hover:bg-black/5 font-black text-[10px] rounded-[8px]">CRÉDITO</button>
-                  </div>
-                  <div className="bg-black/5 p-3 border-2 border-black border-dotted rounded-[10px]">
-                    <p className="text-[11px]">Entrega: RD$ {entregado.toFixed(2)}</p>
-                    <p className="font-black text-[16px]">Cambio: <span className="text-emerald-600">RD$ {devuelta > 0 ? devuelta.toFixed(2) : "0.00"}</span></p>
-                  </div>
-                </div>
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("tenant");
+      if (raw) setTenant(JSON.parse(raw));
+    } catch {}
+  }, []);
 
-                <div className="mt-6 flex gap-3 opacity-80">
-                  <div className="w-20 h-20 bg-black rounded-[8px] flex items-center justify-center text-white font-black text-[24px] border-2 border-black">QR</div>
-                  <div className="flex-1 text-[8px] leading-tight font-mono">
-                    <p className="font-black">DGII • TIMBRE ELECTRÓNICO</p>
-                    <p className="mt-1">RNC Emisor: 130793752</p>
-                    <p>eNCF: E320000000128</p>
-                    <p>Fecha: 15-07-2026</p>
-                    <p>Total: RD$ {total.toFixed(2)}</p>
-                    <p className="font-black mt-1">Cod Seg: A1B2C3 • TrackID: dgi-982x</p>
-                    <p className="mt-1 bg-amber-400 text-black font-black inline-block px-1 rounded">ACEPTADO DGII</p>
-                  </div>
-                </div>
+  async function handleEmitir(e: React.FormEvent) {
+    e.preventDefault();
+    if (!p12File) return;
+    setEmitiendo(true);
+    setEmitirError("");
+    try {
+      const buf = await p12File.arrayBuffer();
+      const p12Base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+      const result = await apiFetch<VentaResult>(`/api/ventas/${venta.id}/emitir-ecf`, {
+        method: "POST",
+        body: JSON.stringify({ p12Base64, p12Password: p12Password || undefined, sendToDgii }),
+      });
+      result.items = venta.items;
+      onVentaChange(result);
+      onStatusChange({ ...status, ecfError: undefined });
+      setShowEmitir(false);
+    } catch (e: any) {
+      setEmitirError(e.message);
+    } finally {
+      setEmitiendo(false);
+    }
+  }
 
-                <p className="text-[8px] font-mono text-center mt-6 opacity-30 leading-tight">
-                  Conserve este recibo • Evento #1828 • Hash encadenado TigerBeetle • Hecho en RD • Gracias por su compra • Vuelva pronto!
-                </p>
-              </div>
+  async function handleReimprimir() {
+    setReimprimiendo(true);
+    try {
+      await apiFetch(`/api/ventas/${venta.id}/imprimir`, { method: "POST" });
+      onStatusChange({ ...status, impreso: true, printError: undefined });
+    } catch (e: any) {
+      onStatusChange({ ...status, impreso: false, printError: e.message });
+    } finally {
+      setReimprimiendo(false);
+    }
+  }
+
+  const fechaFirma = new Date(venta.created_at).toLocaleString("es-DO", { dateStyle: "short", timeStyle: "medium" });
+
+  return (
+    <div className="max-w-md mx-auto mt-6 space-y-4 pb-10">
+      <div className="text-center space-y-1">
+        <div className="h-12 w-12 rounded-full bg-primary/10 text-primary flex items-center justify-center mx-auto">
+          <FileCheck className="h-6 w-6" />
+        </div>
+        <h1 className="text-lg font-bold">Venta registrada</h1>
+      </div>
+
+      <div className="flex items-center justify-center gap-2">
+        {facturaElectronicaActiva && (venta.e_ncf ? (
+          <Badge variant={
+            venta.estado_dgii === "ACEPTADO" ? "success"
+              : venta.estado_dgii === "RECHAZADO" ? "destructive"
+              : venta.estado_dgii === "CONTINGENCIA_PENDIENTE" ? "warning"
+              : "secondary"
+          }>
+            e-CF {venta.estado_dgii === "CONTINGENCIA_PENDIENTE" ? "pendiente de envío" : venta.estado_dgii}
+          </Badge>
+        ) : (
+          <Badge variant="secondary">Sin e-CF</Badge>
+        ))}
+        {status.impreso ? (
+          <Badge variant="success"><Printer className="h-3 w-3 mr-1 inline" />Impreso</Badge>
+        ) : (
+          <Badge variant="destructive"><Printer className="h-3 w-3 mr-1 inline" />No impreso</Badge>
+        )}
+      </div>
+
+      {/* Vista previa del recibo, con el mismo formato de una factura de consumo electrónica dominicana */}
+      <Card className="font-mono text-xs">
+        <CardContent className="pt-5 space-y-2">
+          <div className="text-center space-y-0.5">
+            <p className="font-bold text-sm">{tenant?.razon_social || "Mi negocio"}</p>
+            <p>RNC: {tenant?.rnc || "—"}</p>
+            {tenant?.direccion && <p>{tenant.direccion}</p>}
+            {tenant?.telefono && <p>Tel: {tenant.telefono}</p>}
+          </div>
+          <div className="border-t border-dashed border-border" />
+          {venta.e_ncf ? (
+            <div className="space-y-0.5">
+              <p className="text-center font-bold">{TIPO_ECF_LABEL[venta.tipo_ecf ?? 32] ?? "Comprobante Fiscal Electrónico"}</p>
+              <div className="flex justify-between"><span>NCF:</span><span>{venta.e_ncf}</span></div>
+              <div className="flex justify-between"><span>Fecha:</span><span>{fechaFirma}</span></div>
+              <div className="flex justify-between"><span>Estado DGII:</span><span>{venta.estado_dgii}</span></div>
             </div>
-            <div className="h-4 bg-repeat-x -mt-[1px]" style={{ backgroundImage: `radial-gradient(circle at 8px 0px, transparent 8px, #fafaf9 8px)`, backgroundSize: '16px 16px' }} />
+          ) : (
+            <p className="text-center font-bold">{facturaElectronicaActiva ? "Ticket de venta (sin e-CF)" : "Ticket de venta"}</p>
+          )}
+          <div className="flex justify-between"><span>Método de pago:</span><span>{venta.metodo_pago}</span></div>
+          <div className="border-t border-dashed border-border" />
+          <div>
+            <p>Cliente: {cliente?.nombre || "Consumidor final"}</p>
+            {cliente?.rnc_cedula && <p>RNC/Cédula: {cliente.rnc_cedula}</p>}
           </div>
-
-          <div className="p-4 bg-black">
-            <button className="w-full bg-[#facc15] text-black border-[3px] border-black shadow-[4px_4px_0px_black] py-4 font-black text-[14px] tracking-wider uppercase hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[6px_6px_0px_black] transition-all flex items-center justify-center gap-3">
-              <span className="text-[20px]">💳</span> COBRAR RD$ {total.toFixed(2)} • E32 + QR DGII
-            </button>
-            <p className="text-[9px] font-mono text-stone-500 text-center mt-2 leading-tight">Flujo bancario: VentaCompletada → Rust Core → TigerBeetle Reserve Inventory linked → XAdES-BES firma → DGII async TrackID → QR impreso • 10 años retención</p>
+          <div className="border-t border-dashed border-border" />
+          <div className="space-y-1">
+            {venta.items?.map((it, i) => (
+              <div key={i} className="flex justify-between">
+                <span className="truncate pr-2">{it.nombre} x{it.cantidad}</span>
+                <span className="tabular-nums shrink-0">{formatDOP(it.subtotal)}</span>
+              </div>
+            ))}
           </div>
-        </aside>
-      </main>
+          <div className="border-t border-dashed border-border" />
+          <div className="flex justify-between"><span>Subtotal:</span><span className="tabular-nums">{formatDOP(venta.subtotal)}</span></div>
+          <div className="flex justify-between"><span>ITBIS:</span><span className="tabular-nums">{formatDOP(venta.itbis_total)}</span></div>
+          <div className="flex justify-between font-bold text-sm pt-1"><span>TOTAL RD$:</span><span className="tabular-nums">{formatDOP(venta.total)}</span></div>
+          {venta.codigo_seguridad && (
+            <>
+              <div className="border-t border-dashed border-border" />
+              <div className="text-center space-y-0.5">
+                <p>Código de Seguridad: {venta.codigo_seguridad}</p>
+                <p className="text-[10px] text-muted-foreground">El código QR de verificación DGII se imprime en el ticket físico.</p>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
-      <footer className="fixed bottom-0 w-full h-[28px] flex justify-between items-center px-4 z-50 bg-black text-white font-mono text-[10px] border-t-[3px] border-black">
-        <div className="flex gap-4">
-          <span>DGII Compliant v2.4 | System Ledger: 0x882A...7C | EventStore: 1,284 events hash-encadenados</span>
-          <span className="text-[#4edea3]">Terminal 01: ACTIVE • Caja Abierta • RD$ 18,420</span>
+      {facturaElectronicaActiva && status.ecfError && (
+        <div className="rounded-md border border-warning/20 bg-warning/10 text-warning p-2 text-xs flex items-start gap-2">
+          <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>No se emitió e-CF automáticamente: {status.ecfError}. Puedes emitirlo manualmente abajo, o configura un certificado en Configuración → DGII para que se emita solo la próxima vez.</span>
         </div>
-        <div className="flex gap-4 uppercase">
-          <span>Hecho en 🇩🇴 SDO • Rust + TigerBeetle • Español 100%</span>
-          <button className="text-[#facc15] font-black hover:underline">Cerrar Caja</button>
+      )}
+      {status.printError && (
+        <div className="rounded-md border border-warning/20 bg-warning/10 text-warning p-2 text-xs flex items-start gap-2">
+          <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>No se pudo imprimir: {status.printError}</span>
         </div>
-      </footer>
+      )}
+      {status.impreso && (
+        <div className="rounded-md border border-success/20 bg-success/10 text-success p-2 text-xs flex items-center gap-2">
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+          <span>Ticket enviado a la impresora configurada.</span>
+        </div>
+      )}
 
-      <style>{`@keyframes marquee { 0% { transform: translateX(0%); } 100% { transform: translateX(-50%); } }`}</style>
+      <Button variant="secondary" className="w-full" onClick={handleReimprimir} disabled={reimprimiendo}>
+        <Printer className="h-4 w-4" />{reimprimiendo ? "Imprimiendo..." : "Reimprimir ticket"}
+      </Button>
+
+      {facturaElectronicaActiva && !venta.e_ncf && !showEmitir && (
+        <Button variant="secondary" className="w-full" onClick={() => setShowEmitir(true)}>Emitir e-CF con certificado</Button>
+      )}
+
+      {facturaElectronicaActiva && showEmitir && (
+        <Card>
+          <CardContent className="pt-5">
+            <form onSubmit={handleEmitir} className="space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="p12">Certificado P12</Label>
+                <input id="p12" type="file" accept=".p12,.pfx" onChange={(e) => setP12File(e.target.files?.[0] || null)} className="text-sm" required />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="p12pass">Contraseña del certificado</Label>
+                <Input id="p12pass" type="password" value={p12Password} onChange={(e) => setP12Password(e.target.value)} />
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={sendToDgii} onChange={(e) => setSendToDgii(e.target.checked)} />
+                Enviar a DGII (si no, solo firma)
+              </label>
+              {emitirError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{emitirError}</div>}
+              <Button type="submit" disabled={emitiendo} className="w-full">{emitiendo ? "Firmando..." : "Firmar y emitir"}</Button>
+            </form>
+          </CardContent>
+        </Card>
+      )}
+
+      <Button className="w-full" onClick={onNuevaVenta}>Nueva venta</Button>
     </div>
   );
 }

@@ -130,6 +130,7 @@ export async function buildAndSignECF(params: { simplePos?: SimplePos; ecf?: ECF
     digest_value: string;
     qr_url: string;
     file_name: string;
+    signed_xml_preview: string;
   }>;
 }
 

@@ -56,3 +56,7 @@ coverage
 
 # Docs build
 docs/.vitepress/dist
+
+# DB backups / build cache
+services/core/backups/
+*.tsbuildinfo

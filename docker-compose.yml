@@ -20,6 +20,9 @@ services:
 
   tigerbeetle:
     image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    privileged: true
+    security_opt:
+      - seccomp:unconfined
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -29,18 +32,18 @@ services:
         which tigerbeetle || echo "tigerbeetle not in PATH, trying /tigerbeetle"
         ls -lh /tigerbeetle || true
         ls -lh /usr/bin/tigerbeetle || true
-        TB_BIN=$(which tigerbeetle 2>/dev/null || echo "/tigerbeetle")
-        echo "Using TB_BIN=$TB_BIN"
+        TB_BIN=$$(which tigerbeetle 2>/dev/null || echo "/tigerbeetle")
+        echo "Using TB_BIN=$$TB_BIN"
         if [ ! -f /data/0_0.tigerbeetle ]; then
           echo "Formatting TigerBeetle file first time..."
-          $TB_BIN format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle || true
+          $$TB_BIN format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle || true
         else
           echo "File already exists, skipping format"
         fi
         echo "Starting TigerBeetle on 0.0.0.0:3000..."
-        exec $TB_BIN start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+        exec $$TB_BIN start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
     ports:
-      - "3000:3000"
+      - "3002:3000"
     volumes:
       - tbdata:/data
 
@@ -51,6 +54,14 @@ services:
       - "4222:4222"
       - "8222:8222"
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
 volumes:
   pgdata:
   tbdata:
+  ollama_data:

@@ -2,40 +2,194 @@
 //! HTTP :3001 (Axum 0.6) - Real XAdES-BES + Full ECF Builder + RFCE + ARECF/ACECF
 //! gRPC disabled for now to avoid http version conflict (axum 0.6 vs tonic 0.12), enable with feature flag later
 
-mod aggregates;
 mod arecf_acecf_builder;
 mod dgii_client;
 mod ecf_builder;
-mod event_store;
-mod grpc;
-mod ledger;
+mod pagination;
+mod recibo_builder;
 mod rfce_builder;
 mod services;
 mod xml_c14n;
 
 use axum::{
+    body::{boxed, Full},
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, Method, Request, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use grpc::AppState;
 use services::ecfl_service::{sign_xml_ecf, generate_qr_url};
 use ecf_builder::{build_ecf_xml, build_simple_pos_ecf, ECF};
 use dgii_client::{DGIIClient, DGIIEnvironment};
-use services::auth_service::{AuthService, RegisterRequest as TenantRegisterRequest, LoginRequest as AuthLoginRequest};
+use services::audit_service::AuditService;
+use services::auth_service::{AuthService, Claims, RegisterRequest as TenantRegisterRequest, LoginRequest as AuthLoginRequest};
+use services::backup_service::BackupService;
+use services::caja_service::{BancosService, CajaService};
+use services::catalog_service::CatalogService;
+use services::compras_service::ComprasService;
+use services::conduce_service::ConduceService;
+use services::config_service::ConfigService;
+use services::cotizacion_service::CotizacionService;
+use services::contabilidad_service::ContabilidadService;
+use services::ai_service::AiService;
+use services::ecf_service::EcfService;
+use services::email_service::EmailService;
+use services::inventario_service::InventarioService;
+use services::license_service::{EstadoLicencia, LicenseService};
+use services::nomina_service::NominaService;
+use services::partner_service::PartnerService;
+use services::rate_limiter::RateLimiter;
+use services::report_service::ReportService;
+use services::rnc_service::RncService;
+use services::ventas_service::VentasService;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 #[derive(Clone)]
 struct HttpState {
-    app_state: Arc<AppState>,
     auth_service: Arc<AuthService>,
+    catalog_service: Arc<CatalogService>,
+    inventario_service: Arc<InventarioService>,
+    partner_service: Arc<PartnerService>,
+    ventas_service: Arc<VentasService>,
+    cotizacion_service: Arc<CotizacionService>,
+    conduce_service: Arc<ConduceService>,
+    compras_service: Arc<ComprasService>,
+    caja_service: Arc<CajaService>,
+    bancos_service: Arc<BancosService>,
+    nomina_service: Arc<NominaService>,
+    contabilidad_service: Arc<ContabilidadService>,
+    report_service: Arc<ReportService>,
+    config_service: Arc<ConfigService>,
+    rnc_service: Arc<RncService>,
+    ecf_service: Arc<EcfService>,
+    license_service: Arc<LicenseService>,
+    backup_service: Arc<BackupService>,
+    audit_service: Arc<AuditService>,
+    vendor_admin_secret: String,
+    rate_limiter: Arc<RateLimiter>,
+    email_service: Arc<EmailService>,
+    ai_service: Arc<AiService>,
+    frontend_url: String,
     pool: PgPool,
+}
+
+/// Shared JWT extraction, used by every route that needs tenant_id from the token
+/// instead of trusting a client-supplied query param.
+fn claims_from_headers(auth: &AuthService, headers: &HeaderMap) -> Result<Claims, (StatusCode, String)> {
+    let auth_header = headers.get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .ok_or((StatusCode::UNAUTHORIZED, "Falta header Authorization: Bearer <token>".to_string()))?;
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
+    auth.verify_jwt(token).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))
+}
+
+/// Applied to every route except `/`, `/health`, `/v1/auth/register`, `/v1/auth/login`.
+/// ADMIN always passes; other roles are checked against `required_roles`.
+async fn role_guard<B>(
+    State(state): State<HttpState>,
+    req: Request<B>,
+    next: Next<B>,
+) -> Result<Response, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, req.headers())?;
+    if claims.rol != "ADMIN" {
+        if let Some(allowed) = required_roles(req.uri().path(), req.method()) {
+            if !allowed.contains(&claims.rol.as_str()) {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!("Tu rol ({}) no tiene acceso a este recurso", claims.rol),
+                ));
+            }
+        }
+    }
+    Ok(next.run(req).await)
+}
+
+/// Corre junto a `role_guard` en cada request autenticado. A diferencia del
+/// rol (fijo por usuario), el estado de licencia se recalcula en cada
+/// llamada porque el tiempo pasa - ver `license_service::check_and_update`
+/// para el mecanismo de ratchet+HMAC anti-manipulación.
+async fn license_guard<B>(
+    State(state): State<HttpState>,
+    req: Request<B>,
+    next: Next<B>,
+) -> Result<Response, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, req.headers())?;
+    let es_escritura = req.method() != Method::GET;
+    let estado = state
+        .license_service
+        .check_and_update(&claims.tenant_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error verificando licencia: {}", e)))?;
+
+    if es_escritura && estado.status == EstadoLicencia::Expired {
+        return Err((
+            StatusCode::PAYMENT_REQUIRED,
+            "Tu período de prueba terminó. Contáctanos para activar tu licencia. Tus datos siguen disponibles para consulta y exportación.".to_string(),
+        ));
+    }
+    Ok(next.run(req).await)
+}
+
+/// `None` = any authenticated role is fine. Checked most-specific-prefix first.
+/// Keep in sync with apps/web/lib/roles.ts (frontend nav/route mirror of this table).
+fn required_roles(path: &str, method: &Method) -> Option<&'static [&'static str]> {
+    if path.starts_with("/v1/ecf/documentos") || path.starts_with("/v1/ecf/pendientes") {
+        return Some(&["CONTADOR"]);
+    }
+    if path.starts_with("/v1/ecf/") || path.starts_with("/v1/test/") {
+        return Some(&[]); // ADMIN-only (dev/test signing tooling, unused by real pages)
+    }
+    if path.starts_with("/v1/productos") || path.starts_with("/v1/categorias") {
+        return if method == Method::GET {
+            Some(&["CAJERO", "ALMACEN"])
+        } else {
+            Some(&["ALMACEN"])
+        };
+    }
+    match path {
+        p if p.starts_with("/v1/ventas")
+            || p.starts_with("/v1/notas-credito")
+            || p.starts_with("/v1/caja")
+            || p.starts_with("/v1/clientes")
+            || p.starts_with("/v1/cotizaciones")
+            || p.starts_with("/v1/conduces") =>
+        {
+            Some(&["CAJERO"])
+        }
+        p if p.starts_with("/v1/inventario")
+            || p.starts_with("/v1/compras")
+            || p.starts_with("/v1/proveedores") =>
+        {
+            Some(&["ALMACEN"])
+        }
+        p if p.starts_with("/v1/contabilidad")
+            || p.starts_with("/v1/bancos")
+            || p.starts_with("/v1/gastos")
+            || p.starts_with("/v1/reports/606")
+            || p.starts_with("/v1/reports/607")
+            || p.starts_with("/v1/auditoria") =>
+        {
+            Some(&["CONTADOR"])
+        }
+        p if p.starts_with("/v1/empleados")
+            || p.starts_with("/v1/nomina")
+            || p.starts_with("/v1/config")
+            || p.starts_with("/v1/tenants")
+            || p.starts_with("/v1/backup") =>
+        {
+            Some(&[]) // ADMIN-only
+        }
+        // /v1/auth/me, /v1/rnc/:rnc, /v1/reports/dashboard, /v1/license/status -> any authenticated role
+        _ => None,
+    }
 }
 
 #[tokio::main]
@@ -61,28 +215,174 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-cambia-en-produccion-32-chars-min".to_string());
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET debe estar configurado (ver .env.example) - genera uno con `openssl rand -base64 32`");
+    let vendor_admin_secret = std::env::var("VENDOR_ADMIN_SECRET").expect("VENDOR_ADMIN_SECRET debe estar configurado (ver .env.example)");
+    // Validados aquí para fallar al arrancar, no en el primer request que los
+    // use - license_service.rs y config_service.rs los vuelven a leer
+    // internamente cuando los necesitan.
+    std::env::var("LICENSE_SECRET").expect("LICENSE_SECRET debe estar configurado (ver .env.example)");
+    std::env::var("CERT_ENCRYPTION_KEY").expect("CERT_ENCRYPTION_KEY debe estar configurado (ver .env.example) - 32 bytes en base64");
+    let frontend_url = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:4000".to_string());
     let auth_service = Arc::new(AuthService::new(pool.clone(), jwt_secret));
+    let catalog_service = Arc::new(CatalogService::new(pool.clone()));
+    let inventario_service = Arc::new(InventarioService::new(pool.clone()));
+    let partner_service = Arc::new(PartnerService::new(pool.clone()));
+    let ventas_service = Arc::new(VentasService::new(pool.clone()));
+    let cotizacion_service = Arc::new(CotizacionService::new(pool.clone()));
+    let conduce_service = Arc::new(ConduceService::new(pool.clone()));
+    let compras_service = Arc::new(ComprasService::new(pool.clone()));
+    let caja_service = Arc::new(CajaService::new(pool.clone()));
+    let bancos_service = Arc::new(BancosService::new(pool.clone()));
+    let nomina_service = Arc::new(NominaService::new(pool.clone()));
+    let contabilidad_service = Arc::new(ContabilidadService::new(pool.clone()));
+    let report_service = Arc::new(ReportService::new(pool.clone()));
+    let config_service = Arc::new(ConfigService::new(pool.clone()));
+    let rnc_service = Arc::new(RncService::new(pool.clone()));
+    let ecf_service = Arc::new(EcfService::new(pool.clone()));
+    let license_service = Arc::new(LicenseService::new(pool.clone()));
+    let backup_service = Arc::new(BackupService::new(database_url.clone()));
+    let audit_service = Arc::new(AuditService::new(pool.clone()));
+    // 5 fallos -> bloqueado 15 min. Compartido entre login y forgot-password
+    // (claves con prefijo distinto, ver http_login / http_forgot_password).
+    let rate_limiter = Arc::new(RateLimiter::new(5, Duration::from_secs(15 * 60)));
+    let email_service = Arc::new(EmailService::new(
+        std::env::var("RESEND_API_KEY").ok().filter(|s| !s.is_empty()),
+        std::env::var("RESEND_FROM_EMAIL").unwrap_or_else(|_| "onboarding@resend.dev".to_string()),
+    ));
+    let ai_service = Arc::new(AiService::new(
+        pool.clone(),
+        std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string()),
+        std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2:3b".to_string()),
+    ));
 
-    let app_state = Arc::new(AppState::new());
+    // Respaldo automático cada 24h - ver backup_service.rs. No hay cron
+    // externo: arranca con el proceso, corre en background durante toda
+    // la vida del servidor.
+    {
+        let backup_service = backup_service.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+            loop {
+                interval.tick().await;
+                if let Err(e) = backup_service.run_backup().await {
+                    tracing::warn!("Respaldo automático falló: {}", e);
+                }
+            }
+        });
+    }
+
     let http_state = HttpState {
-        app_state: app_state.clone(),
         auth_service,
+        catalog_service,
+        inventario_service,
+        partner_service,
+        ventas_service,
+        cotizacion_service,
+        conduce_service,
+        compras_service,
+        caja_service,
+        bancos_service,
+        nomina_service,
+        contabilidad_service,
+        report_service,
+        config_service,
+        rnc_service,
+        ecf_service,
+        license_service,
+        backup_service,
+        audit_service,
+        vendor_admin_secret,
+        rate_limiter,
+        email_service,
+        ai_service,
+        frontend_url: frontend_url.clone(),
         pool,
     };
 
-    let http_app = Router::new()
-        .route("/", get(root))
-        .route("/health", get(health))
+    let protected = Router::new()
         // MODULO 1: Auth y Multi-tenancy
-        .route("/v1/auth/register", post(http_register))
-        .route("/v1/auth/login", post(http_login))
         .route("/v1/tenants/:rnc", get(http_get_tenant))
         .route("/v1/tenants/:rnc/usuarios", get(http_list_usuarios))
         .route("/v1/auth/me", get(http_me))
+        // MODULO 2: Categorias y Productos
+        .route("/v1/categorias", get(http_list_categorias).post(http_create_categoria))
+        .route("/v1/categorias/:id", axum::routing::put(http_update_categoria).delete(http_delete_categoria))
+        .route("/v1/productos", get(http_list_productos).post(http_create_producto))
+        .route("/v1/productos/:id", get(http_get_producto).put(http_update_producto).delete(http_delete_producto))
+        // MODULO 3: Inventario (kardex)
+        .route("/v1/inventario/resumen", get(http_inventario_resumen))
+        .route("/v1/inventario/movimientos", get(http_list_movimientos).post(http_create_movimiento))
+        // MODULO 4: Clientes y Proveedores
+        .route("/v1/clientes", get(http_list_clientes).post(http_create_cliente))
+        .route("/v1/clientes/:id", get(http_get_cliente).put(http_update_cliente).delete(http_delete_cliente))
+        .route("/v1/proveedores", get(http_list_proveedores).post(http_create_proveedor))
+        .route("/v1/proveedores/:id", get(http_get_proveedor).put(http_update_proveedor).delete(http_delete_proveedor))
+        // MODULO 5: Ventas / Punto de Venta
+        .route("/v1/ventas", get(http_list_ventas).post(http_create_venta))
+        .route("/v1/ventas/:id", get(http_get_venta))
+        .route("/v1/ventas/:id/emitir-ecf", post(http_emitir_ecf_venta))
+        .route("/v1/ventas/:id/imprimir", post(http_imprimir_venta))
+        .route("/v1/ventas/:id/nota-credito", post(http_crear_nota_credito))
+        .route("/v1/notas-credito/:id", get(http_get_nota_credito))
+        .route("/v1/cotizaciones", get(http_list_cotizaciones).post(http_create_cotizacion))
+        .route("/v1/cotizaciones/:id", get(http_get_cotizacion))
+        .route("/v1/cotizaciones/:id/rechazar", post(http_rechazar_cotizacion))
+        .route("/v1/cotizaciones/:id/convertir", post(http_convertir_cotizacion))
+        .route("/v1/conduces", get(http_list_conduces).post(http_create_conduce))
+        .route("/v1/conduces/:id", get(http_get_conduce))
+        .route("/v1/ecf/documentos", get(http_list_ecf_documentos))
+        .route("/v1/ecf/pendientes/reintentar", post(http_reintentar_pendientes))
+        // MODULO 6: Compras y Gastos
+        .route("/v1/compras", get(http_list_compras).post(http_create_compra))
+        .route("/v1/compras/:id", get(http_get_compra))
+        .route("/v1/gastos", get(http_list_gastos).post(http_create_gasto))
+        // MODULO 9: Caja y Bancos
+        .route("/v1/caja/resumen", get(http_caja_resumen))
+        .route("/v1/caja/abrir", post(http_caja_abrir))
+        .route("/v1/caja/cerrar", post(http_caja_cerrar))
+        .route("/v1/caja/movimientos", get(http_caja_movimientos))
+        .route("/v1/caja/sesiones", get(http_caja_sesiones))
+        .route("/v1/bancos", get(http_list_bancos).post(http_create_banco))
+        .route("/v1/bancos/:id/movimientos", get(http_list_banco_movimientos).post(http_create_banco_movimiento))
+        // MODULO 8: Nomina y Adelantos
+        .route("/v1/empleados", get(http_list_empleados).post(http_create_empleado))
+        .route("/v1/empleados/:id", get(http_get_empleado).put(http_update_empleado).delete(http_delete_empleado))
+        .route("/v1/nomina/adelantos", get(http_list_adelantos).post(http_request_adelanto))
+        .route("/v1/nomina/adelantos/:id/aprobar", post(http_approve_adelanto))
+        .route("/v1/nomina/adelantos/:id/rechazar", post(http_reject_adelanto))
+        .route("/v1/nomina/periodos", get(http_list_periodos))
+        .route("/v1/nomina/periodos/:id", get(http_get_periodo))
+        .route("/v1/nomina/run", post(http_run_payroll))
+        // MODULO 7: Contabilidad (Libro Mayor)
+        .route("/v1/contabilidad/asientos", get(http_list_asientos).post(http_create_asiento))
+        .route("/v1/contabilidad/libro-mayor", get(http_libro_mayor))
+        .route("/v1/contabilidad/sincronizar", post(http_sincronizar_contabilidad))
+        // MODULO 10: Reportes y Dashboard
+        .route("/v1/reports/606", get(http_report_606))
+        .route("/v1/reports/607", get(http_report_607))
+        .route("/v1/reports/dashboard", get(http_dashboard_resumen))
+        .route("/v1/ai/digest", get(http_ai_digest))
+        .route("/v1/ai/chat", post(http_ai_chat))
+        // MODULO 11: Configuracion DGII y Empresa
+        .route("/v1/config/empresa", get(http_get_empresa).put(http_update_empresa))
+        .route("/v1/config/usuarios", get(http_config_list_usuarios).post(http_config_create_usuario))
+        .route("/v1/config/usuarios/:id", axum::routing::put(http_config_update_usuario).delete(http_config_deactivate_usuario))
+        .route("/v1/config/secuencias-ncf", get(http_list_secuencias).post(http_create_secuencia))
+        .route("/v1/config/secuencias-ncf/:id/estado", axum::routing::put(http_set_secuencia_estado))
+        .route("/v1/config/certificado", get(http_certificado_status).post(http_upload_certificado))
+        .route("/v1/config/impresora", get(http_get_impresora).put(http_update_impresora))
+        .route("/v1/config/impresora/test", post(http_test_impresora))
+        .route("/v1/rnc/:rnc", get(http_lookup_rnc))
+        // Licencia de prueba
+        .route("/v1/license/status", get(http_license_status))
+        // Respaldo local (pg_dump) - ADMIN-only
+        .route("/v1/backup/descargar", get(http_backup_descargar))
+        // Fiado: abono contra el saldo de un cliente
+        .route("/v1/clientes/:id/abonos", post(http_registrar_abono))
+        // Bitácora de auditoría
+        .route("/v1/auditoria", get(http_list_auditoria))
         // DGII e-CF
         .route("/v1/ecf/sign", post(http_sign_ecf))
-        .route("/v1/ecf/sign-rfce", post(http_sign_rfce))
         .route("/v1/ecf/build", post(http_build_ecf))
         .route("/v1/ecf/build-sign", post(http_build_sign_ecf))
         .route("/v1/ecf/build-sign-send", post(http_build_sign_send))
@@ -95,15 +395,34 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/ecf/arecf/build-sign", post(http_build_sign_arecf))
         .route("/v1/ecf/acecf/build", post(http_build_acecf))
         .route("/v1/ecf/acecf/build-sign", post(http_build_sign_acecf))
-        .route("/v1/advances/request", post(http_advance_request))
-        .route("/v1/advances/approve", post(http_advance_approve))
-        .route("/v1/employees/:id/balance", get(http_employee_balance))
-        .route("/v1/payroll/run", post(http_payroll_run))
-        .route("/v1/reports/606", get(http_report_606))
-        .route("/v1/reports/607", get(http_report_607))
         .route("/v1/test/sign-demo", get(http_test_sign_demo_get).post(http_test_sign_demo))
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), role_guard))
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), license_guard));
+
+    let http_app = Router::new()
+        .route("/", get(root))
+        .route("/health", get(health))
+        .route("/v1/auth/register", post(http_register))
+        .route("/v1/auth/login", post(http_login))
+        .route("/v1/auth/forgot-password", post(http_forgot_password))
+        .route("/v1/auth/reset-password", post(http_reset_password))
+        // Vendedor-only: activa la licencia tras confirmar el pago. Deliberadamente
+        // fuera de `protected` - no requiere JWT de tenant, solo X-Vendor-Secret
+        // (ver http_activar_licencia), para que un ADMIN de tenant no pueda
+        // desbloquear su propia prueba con su propio token.
+        .route("/v1/tenants/:rnc/activar-licencia", post(http_activar_licencia))
+        .merge(protected)
         .with_state(http_state)
-        .layer(tower_http::cors::CorsLayer::permissive())
+        .layer(
+            tower_http::cors::CorsLayer::new()
+                .allow_origin(
+                    frontend_url
+                        .parse::<axum::http::HeaderValue>()
+                        .expect("FRONTEND_URL inválida - debe ser un origen como http://localhost:4000"),
+                )
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        )
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let http_port = std::env::var("CORE_HTTP_PORT").unwrap_or_else(|_| "3001".to_string());
@@ -119,9 +438,13 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn root() -> &'static str {
-    r#"fiscal-core bank-grade v0.2 - Rust core + Full ECF Builder v1.0 + Real DGII Send + RFCE + ARECF/ACECF
+    r#"fiscal-core v0.3 - Rust core + Full ECF Builder v1.0 + Real DGII Send + RFCE + ARECF/ACECF
 
 HTTP :3001
+  POST /v1/auth/register, /v1/auth/login, GET /v1/auth/me - Auth y Multi-tenancy
+  GET/POST /v1/categorias, PUT/DELETE /v1/categorias/:id
+  GET/POST /v1/productos, GET/PUT/DELETE /v1/productos/:id
+
   POST /v1/ecf/build - Build XML per Informe Tecnico v1.0
   POST /v1/ecf/build-sign - Build + XAdES-BES sign
   POST /v1/ecf/build-sign-send - Full: Build + Sign + Auth seed + Send DGII + Poll TrackID
@@ -133,19 +456,14 @@ HTTP :3001
   POST /v1/ecf/sign - Legacy sign
   POST /v1/test/sign-demo - Demo self-signed cert
 
-Advances & Payroll:
-  POST /v1/advances/request, POST /v1/advances/approve, GET /v1/employees/:id/balance, POST /v1/payroll/run
-Reports: GET /v1/reports/606?period=202607, 607
-
 Docs: /docs/01-ARCHITECTURE.md etc - Spanish POS: apps/web/app/page.tsx
-"# 
+"#
 }
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
-        "core": "fiscal-core Rust bank-grade v0.2",
-        "tigerbeetle": std::env::var("TIGERBEETLE_CLUSTER").unwrap_or_else(|_| "3000".to_string()),
+        "core": "fiscal-core Rust v0.3",
         "dgii_env": std::env::var("DGII_ENV").unwrap_or_else(|_| "CERT".to_string()),
         "signer": "XAdES-BES RSA-SHA256 C14N Inclusive",
         "builder": "Informe Tecnico v1.0 E31/E32/E33/E34/E41-E47 + RFCE + ARECF/ACECF",
@@ -182,6 +500,8 @@ struct SimpleItem {
     nombre: String,
     cantidad: String,
     precio: String,
+    #[serde(rename = "itbisTipo")]
+    itbis_tipo: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -194,12 +514,12 @@ struct BuildECFResponse {
 
 async fn http_build_ecf(Json(req): Json<BuildECFRequest>) -> Result<Json<BuildECFResponse>, (StatusCode, String)> {
     let ecf = if let Some(simple) = req.simple_pos {
-        let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal)> = simple.items.into_iter().map(|it| {
+        let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String)> = simple.items.into_iter().map(|it| {
             let qty = it.cantidad.parse::<rust_decimal::Decimal>().unwrap_or(rust_decimal::Decimal::ONE);
             let price = it.precio.parse::<rust_decimal::Decimal>().unwrap_or(rust_decimal::Decimal::ZERO);
-            (it.nombre, qty, price)
+            (it.nombre, qty, price, it.itbis_tipo.unwrap_or_else(|| "GRAVADO_18".to_string()))
         }).collect();
-        build_simple_pos_ecf(&simple.tenant_rnc, &simple.razon_social, &simple.direccion, &simple.e_ncf, simple.tipo_ecf, &simple.cliente_rnc, &simple.cliente_nombre, items, &simple.fecha_emision, &simple.fecha_vencimiento)
+        build_simple_pos_ecf(&simple.tenant_rnc, &simple.razon_social, &simple.direccion, &simple.e_ncf, simple.tipo_ecf, &simple.cliente_rnc, &simple.cliente_nombre, items, &simple.fecha_emision, &simple.fecha_vencimiento, None, 0, None)
     } else if let Some(ecf) = req.ecf {
         ecf
     } else {
@@ -233,12 +553,12 @@ struct BuildSignResponse {
 
 async fn http_build_sign_ecf(Json(req): Json<BuildSignRequest>) -> Result<Json<BuildSignResponse>, (StatusCode, String)> {
     let ecf = if let Some(simple) = req.simple_pos {
-        let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal)> = simple.items.into_iter().map(|it| {
+        let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String)> = simple.items.into_iter().map(|it| {
             let qty = it.cantidad.parse().unwrap_or(rust_decimal::Decimal::ONE);
             let price = it.precio.parse().unwrap_or(rust_decimal::Decimal::ZERO);
-            (it.nombre, qty, price)
+            (it.nombre, qty, price, it.itbis_tipo.unwrap_or_else(|| "GRAVADO_18".to_string()))
         }).collect();
-        build_simple_pos_ecf(&simple.tenant_rnc, &simple.razon_social, &simple.direccion, &simple.e_ncf, simple.tipo_ecf, &simple.cliente_rnc, &simple.cliente_nombre, items, &simple.fecha_emision, &simple.fecha_vencimiento)
+        build_simple_pos_ecf(&simple.tenant_rnc, &simple.razon_social, &simple.direccion, &simple.e_ncf, simple.tipo_ecf, &simple.cliente_rnc, &simple.cliente_nombre, items, &simple.fecha_emision, &simple.fecha_vencimiento, None, 0, None)
     } else if let Some(ecf) = req.ecf {
         ecf
     } else {
@@ -279,12 +599,12 @@ struct BuildSignSendResponse {
 
 async fn http_build_sign_send(Json(req): Json<BuildSignSendRequest>) -> Result<Json<BuildSignSendResponse>, (StatusCode, String)> {
     let ecf = if let Some(simple) = req.simple_pos {
-        let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal)> = simple.items.into_iter().map(|it| {
+        let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String)> = simple.items.into_iter().map(|it| {
             let qty = it.cantidad.parse().unwrap_or(rust_decimal::Decimal::ONE);
             let price = it.precio.parse().unwrap_or(rust_decimal::Decimal::ZERO);
-            (it.nombre, qty, price)
+            (it.nombre, qty, price, it.itbis_tipo.unwrap_or_else(|| "GRAVADO_18".to_string()))
         }).collect();
-        build_simple_pos_ecf(&simple.tenant_rnc, &simple.razon_social, &simple.direccion, &simple.e_ncf, simple.tipo_ecf, &simple.cliente_rnc, &simple.cliente_nombre, items, &simple.fecha_emision, &simple.fecha_vencimiento)
+        build_simple_pos_ecf(&simple.tenant_rnc, &simple.razon_social, &simple.direccion, &simple.e_ncf, simple.tipo_ecf, &simple.cliente_rnc, &simple.cliente_nombre, items, &simple.fecha_emision, &simple.fecha_vencimiento, None, 0, None)
     } else if let Some(ecf) = req.ecf {
         ecf
     } else {
@@ -414,51 +734,6 @@ fn generate_self_signed_p12() -> anyhow::Result<Vec<u8>> {
     let cert = builder.build();
     let pkcs12 = Pkcs12::builder().build("password", "test-cert", &pkey, &cert)?;
     Ok(pkcs12.to_der()?)
-}
-
-#[derive(Debug, Deserialize)]
-struct AdvanceHttpReq {
-    #[serde(rename = "tenantId")] tenant_id: String,
-    #[serde(rename = "employeeId")] employee_id: String,
-    amount: String,
-}
-
-async fn http_advance_request(State(state): State<HttpState>, Json(req): Json<AdvanceHttpReq>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let transfer_id = uuid::Uuid::new_v4().as_u128();
-    let _ = state.app_state.tb_client.reserve_advance(&req.tenant_id, &req.employee_id, 300000).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({"requestId": uuid::Uuid::new_v4().to_string(), "status": "PENDING_APPROVAL", "tigerbeetleTransferId": transfer_id.to_string(), "amount": req.amount, "available": "2600.00"})))
-}
-
-async fn http_advance_approve(State(state): State<HttpState>, Json(req): Json<serde_json::Value>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let transfer_id_str = req.get("transferId").and_then(|v| v.as_str()).unwrap_or("0");
-    let transfer_id = transfer_id_str.parse::<u128>().unwrap_or(0);
-    state.app_state.tb_client.post_pending(transfer_id).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "ok": true, "status": "POSTED" })))
-}
-
-async fn http_employee_balance(Path(id): Path<String>, Query(params): Query<std::collections::HashMap<String, String>>) -> Json<serde_json::Value> {
-    let tenant_id = params.get("tenantId").cloned().unwrap_or_else(|| "130793752".to_string());
-    Json(serde_json::json!({"employeeId": id, "tenantId": tenant_id, "accruedNet": "9200.00", "advanceBalance": "2000.00", "availableForAdvance": "2600.00"}))
-}
-
-async fn http_payroll_run(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({"payrollId": uuid::Uuid::new_v4().to_string(), "period": req.get("period").and_then(|v| v.as_str()).unwrap_or("202607"), "grossTotal": "20000.00", "netTotal": "15410.00"}))
-}
-
-async fn http_report_606(Query(params): Query<std::collections::HashMap<String, String>>) -> String {
-    let tenant = params.get("tenantId").cloned().unwrap_or_else(|| "130793752".to_string());
-    let period = params.get("period").cloned().unwrap_or_else(|| "202607".to_string());
-    format!("{}|{}|1\n130000001|B0100000001|15-07-2026|1000.00|180.00|01|01\n", tenant, period)
-}
-
-async fn http_report_607(Query(params): Query<std::collections::HashMap<String, String>>) -> String {
-    let tenant = params.get("tenantId").cloned().unwrap_or_else(|| "130793752".to_string());
-    let period = params.get("period").cloned().unwrap_or_else(|| "202607".to_string());
-    format!("{}|{}|1\n|E310000000001|15-07-2026|1000.00|180.00|01\n", tenant, period)
-}
-
-async fn http_sign_rfce(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({"trackId": format!("RFCE-{}", uuid::Uuid::new_v4()), "status": "RFCE_ACEPTADO", "count": req.get("eNCFList").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)}))
 }
 
 #[derive(Debug, Deserialize)]
@@ -628,23 +903,92 @@ async fn http_login(
     State(state): State<HttpState>,
     Json(req): Json<AuthLoginRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    match state.auth_service.login(req).await {
-        Ok(resp) => Ok(Json(serde_json::json!({
-            "success": true,
-            "mensaje": "Sesión iniciada • JWT 12h • tenant_id = RNC",
-            "token": resp.token,
-            "usuario": resp.usuario,
-            "tenant": resp.tenant
-        }))),
-        Err(e) => Err((StatusCode::UNAUTHORIZED, format!("Login falló: {}", e))),
+    let key = format!("login:{}:{}", req.rnc.as_deref().unwrap_or(""), req.email.to_lowercase());
+    if state.rate_limiter.bloqueado(&key) {
+        return Err((StatusCode::TOO_MANY_REQUESTS, "Demasiados intentos fallidos. Espera unos minutos e intenta de nuevo.".to_string()));
     }
+    match state.auth_service.login(req).await {
+        Ok(resp) => {
+            state.rate_limiter.limpiar(&key);
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "mensaje": "Sesión iniciada • JWT 12h • tenant_id = RNC",
+                "token": resp.token,
+                "usuario": resp.usuario,
+                "tenant": resp.tenant
+            })))
+        }
+        Err(e) => {
+            state.rate_limiter.registrar_fallo(&key);
+            Err((StatusCode::UNAUTHORIZED, format!("Login falló: {}", e)))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ForgotPasswordRequest {
+    rnc: Option<String>,
+    email: String,
+}
+
+/// La respuesta es intencionalmente idéntica exista o no el correo/usuario -
+/// solo así "olvidé mi contraseña" no sirve para enumerar cuentas registradas.
+const FORGOT_PASSWORD_MENSAJE: &str = "Si el correo existe, te enviamos un enlace para restablecer tu contraseña.";
+
+async fn http_forgot_password(
+    State(state): State<HttpState>,
+    Json(req): Json<ForgotPasswordRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let key = format!("forgot:{}", req.email.to_lowercase());
+    if state.rate_limiter.bloqueado(&key) {
+        // Mismo mensaje genérico - ni siquiera el límite de intentos debe
+        // delatar si el correo existe.
+        return Ok(Json(serde_json::json!({ "mensaje": FORGOT_PASSWORD_MENSAJE })));
+    }
+    state.rate_limiter.registrar_fallo(&key);
+
+    match state.auth_service.iniciar_reset_password(req.rnc.as_deref(), &req.email).await {
+        Ok(Some((_, nombre, token))) => {
+            let reset_url = format!("{}/restablecer-password?token={}", state.frontend_url, token);
+            if let Err(e) = state.email_service.send_password_reset(&req.email, &nombre, &reset_url).await {
+                tracing::warn!("Fallo enviando correo de reset a {}: {}", req.email, e);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("Error iniciando reset de contraseña: {}", e),
+    }
+    Ok(Json(serde_json::json!({ "mensaje": FORGOT_PASSWORD_MENSAJE })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ResetPasswordRequest {
+    token: String,
+    new_password: String,
+}
+
+async fn http_reset_password(
+    State(state): State<HttpState>,
+    Json(req): Json<ResetPasswordRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if req.new_password.len() < 8 {
+        return Err((StatusCode::BAD_REQUEST, "La contraseña debe tener al menos 8 caracteres".to_string()));
+    }
+    state.auth_service.completar_reset_password(&req.token, &req.new_password).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true, "mensaje": "Contraseña actualizada. Ya puedes iniciar sesión." })))
 }
 
 async fn http_get_tenant(
     State(state): State<HttpState>,
     Path(rnc): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    match state.auth_service.get_tenant(&rnc.replace("-", "")).await {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let rnc = rnc.replace("-", "");
+    if claims.tenant_id != rnc {
+        return Err((StatusCode::FORBIDDEN, "No tienes acceso a este negocio".to_string()));
+    }
+    match state.auth_service.get_tenant(&rnc).await {
         Ok(tenant) => Ok(Json(serde_json::json!(tenant))),
         Err(e) => Err((StatusCode::NOT_FOUND, format!("Tenant no encontrado: {}", e))),
     }
@@ -653,8 +997,14 @@ async fn http_get_tenant(
 async fn http_list_usuarios(
     State(state): State<HttpState>,
     Path(rnc): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    match state.auth_service.list_usuarios(&rnc.replace("-", "")).await {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let rnc = rnc.replace("-", "");
+    if claims.tenant_id != rnc {
+        return Err((StatusCode::FORBIDDEN, "No tienes acceso a este negocio".to_string()));
+    }
+    match state.auth_service.list_usuarios(&rnc).await {
         Ok(usuarios) => Ok(Json(serde_json::json!({
             "rnc": rnc,
             "total": usuarios.len(),
@@ -667,30 +1017,1701 @@ async fn http_list_usuarios(
 
 async fn http_me(
     State(state): State<HttpState>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let auth_header = headers.get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .ok_or((StatusCode::UNAUTHORIZED, "Falta header Authorization: Bearer <token>".to_string()))?;
-    
-    let token = if auth_header.starts_with("Bearer ") {
-        &auth_header[7..]
-    } else {
-        auth_header
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    Ok(Json(serde_json::json!({
+        "autenticado": true,
+        "usuario_id": claims.sub,
+        "tenant_id": claims.tenant_id,
+        "rol": claims.rol,
+        "email": claims.email,
+        "expira": claims.exp,
+        "mensaje": "Token válido • tenant_id = RNC para multi-tenancy"
+    })))
+}
+
+// ------------------ Licencia de prueba ------------------
+
+async fn http_license_status(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::license_service::LicenseState>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.license_service.check_and_update(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// El vendedor confirma un pago y activa la licencia manualmente, fuera del
+/// flujo normal de tenant/JWT - ver el comentario en el router (`main()`)
+/// sobre por qué este endpoint vive en `public`.
+async fn http_activar_licencia(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(rnc): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let provided = headers.get("X-Vendor-Secret").and_then(|h| h.to_str().ok()).unwrap_or("");
+    if provided.is_empty() || provided != state.vendor_admin_secret {
+        return Err((StatusCode::FORBIDDEN, "X-Vendor-Secret inválido o ausente".to_string()));
+    }
+    let rnc = rnc.replace("-", "");
+    state.license_service.activate(&rnc).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&rnc, None, "LICENCIA_ACTIVADA", "tenant", None, serde_json::json!({})).await;
+    Ok(Json(serde_json::json!({ "ok": true, "mensaje": "Licencia activada" })))
+}
+
+// ------------------ Respaldo local ------------------
+
+async fn http_backup_descargar(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response, (StatusCode, String)> {
+    claims_from_headers(&state.auth_service, &headers)?;
+    let path = state.backup_service.run_backup().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error generando respaldo: {}", e)))?;
+    let bytes = tokio::fs::read(&path).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error leyendo respaldo: {}", e)))?;
+    let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("backup.dump").to_string();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+        .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+        .body(boxed(Full::from(bytes)))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+// ------------------ Bitácora de auditoría ------------------
+
+#[derive(Debug, Deserialize)]
+struct ListAuditoriaParams {
+    #[serde(rename = "usuarioId")] usuario_id: Option<Uuid>,
+    accion: Option<String>,
+    entidad: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+async fn http_list_auditoria(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ListAuditoriaParams>,
+) -> Result<Json<pagination::Page<services::audit_service::AuditoriaEntry>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (entradas, total) = state.audit_service.list(
+        &claims.tenant_id,
+        params.usuario_id,
+        params.accion,
+        params.entidad,
+        params.fecha_desde,
+        params.fecha_hasta,
+        &page,
+        &sort,
+    ).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(10);
+    Ok(Json(pagination::Page::new(entradas, page.page_number(), page_size, total)))
+}
+
+// ------------------ MODULO 2: Categorias y Productos ------------------
+
+async fn http_list_categorias(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let categorias = state.catalog_service.list_categorias(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": categorias.len(), "categorias": categorias })))
+}
+
+async fn http_create_categoria(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::catalog_service::CreateCategoriaRequest>,
+) -> Result<Json<services::catalog_service::Categoria>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.catalog_service.create_categoria(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_update_categoria(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::catalog_service::UpdateCategoriaRequest>,
+) -> Result<Json<services::catalog_service::Categoria>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.catalog_service.update_categoria(&claims.tenant_id, id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_delete_categoria(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.catalog_service.delete_categoria(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListProductosParams {
+    #[serde(rename = "categoriaId")] categoria_id: Option<Uuid>,
+    search: Option<String>,
+    #[serde(rename = "unidadMedida")] unidad_medida: Option<String>,
+    activo: Option<bool>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+async fn http_list_productos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ListProductosParams>,
+) -> Result<Json<pagination::Page<services::catalog_service::Producto>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (productos, total) = state.catalog_service.list_productos(
+        &claims.tenant_id,
+        params.categoria_id,
+        params.search,
+        params.unidad_medida,
+        params.activo,
+        &page,
+        &sort,
+    ).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(productos, page.page_number(), page_size, total)))
+}
+
+async fn http_get_producto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::catalog_service::Producto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.catalog_service.get_producto(&claims.tenant_id, id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+async fn http_create_producto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::catalog_service::CreateProductoRequest>,
+) -> Result<Json<services::catalog_service::Producto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.catalog_service.create_producto(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_update_producto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::catalog_service::UpdateProductoRequest>,
+) -> Result<Json<services::catalog_service::Producto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).ok();
+    let producto = state.catalog_service.update_producto(&claims.tenant_id, id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, usuario_id, "PRODUCTO_ACTUALIZADO", "producto", Some(id),
+        serde_json::json!({ "precio_venta": producto.precio_venta, "costo": producto.costo })).await;
+    Ok(Json(producto))
+}
+
+async fn http_delete_producto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.catalog_service.delete_producto(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ------------------ MODULO 3: Inventario (kardex) ------------------
+
+async fn http_inventario_resumen(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::inventario_service::ResumenInventario>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.inventario_service.resumen(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListMovimientosParams {
+    #[serde(rename = "productoId")] producto_id: Option<Uuid>,
+    tipo: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+async fn http_list_movimientos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ListMovimientosParams>,
+) -> Result<Json<pagination::Page<services::inventario_service::MovimientoConProducto>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (movimientos, total) = state.inventario_service.list_movimientos(
+        &claims.tenant_id,
+        params.producto_id,
+        params.tipo,
+        params.fecha_desde,
+        params.fecha_hasta,
+        &page,
+        &sort,
+    ).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(movimientos, page.page_number(), page_size, total)))
+}
+
+async fn http_create_movimiento(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::inventario_service::CreateMovimientoRequest>,
+) -> Result<Json<services::inventario_service::Movimiento>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let movimiento = state.inventario_service.create_movimiento(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "MOVIMIENTO_INVENTARIO_MANUAL", "producto", Some(movimiento.producto_id),
+        serde_json::json!({ "tipo": movimiento.tipo, "cantidad": movimiento.cantidad })).await;
+    Ok(Json(movimiento))
+}
+
+// ------------------ MODULO 4: Clientes y Proveedores ------------------
+
+#[derive(Debug, Deserialize)]
+struct SearchParams {
+    search: Option<String>,
+}
+
+async fn http_list_clientes(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<SearchParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let clientes = state.partner_service.list_clientes(&claims.tenant_id, params.search).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": clientes.len(), "clientes": clientes })))
+}
+
+async fn http_get_cliente(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::partner_service::Cliente>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.get_cliente(&claims.tenant_id, id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+async fn http_create_cliente(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::partner_service::CreateClienteRequest>,
+) -> Result<Json<services::partner_service::Cliente>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.create_cliente(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_update_cliente(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::partner_service::UpdateClienteRequest>,
+) -> Result<Json<services::partner_service::Cliente>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.update_cliente(&claims.tenant_id, id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_delete_cliente(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.delete_cliente(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn http_registrar_abono(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::partner_service::CreateAbonoRequest>,
+) -> Result<Json<services::partner_service::ClienteAbono>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let abono = state.partner_service.registrar_abono(&claims.tenant_id, id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ABONO_REGISTRADO", "cliente", Some(id),
+        serde_json::json!({ "monto": abono.monto })).await;
+    Ok(Json(abono))
+}
+
+async fn http_list_proveedores(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<SearchParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let proveedores = state.partner_service.list_proveedores(&claims.tenant_id, params.search).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": proveedores.len(), "proveedores": proveedores })))
+}
+
+async fn http_get_proveedor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::partner_service::Proveedor>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.get_proveedor(&claims.tenant_id, id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+async fn http_create_proveedor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::partner_service::CreateProveedorRequest>,
+) -> Result<Json<services::partner_service::Proveedor>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.create_proveedor(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_update_proveedor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::partner_service::UpdateProveedorRequest>,
+) -> Result<Json<services::partner_service::Proveedor>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.update_proveedor(&claims.tenant_id, id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_delete_proveedor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.delete_proveedor(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ------------------ MODULO 5: Ventas / Punto de Venta ------------------
+
+#[derive(Debug, Serialize)]
+struct VentaCompletaResponse {
+    #[serde(flatten)]
+    venta: services::ventas_service::Venta,
+    items: Vec<services::ventas_service::VentaItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListVentasParams {
+    #[serde(rename = "clienteId")] cliente_id: Option<Uuid>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    search: Option<String>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+async fn http_list_ventas(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ListVentasParams>,
+) -> Result<Json<pagination::Page<services::ventas_service::VentaConCliente>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (ventas, total) = state.ventas_service.list_ventas(
+        &claims.tenant_id,
+        params.cliente_id,
+        params.fecha_desde,
+        params.fecha_hasta,
+        params.search,
+        &page,
+        &sort,
+    ).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(ventas, page.page_number(), page_size, total)))
+}
+
+#[derive(Debug, Deserialize)]
+struct AprobacionAdmin {
+    email: String,
+    password: String,
+}
+
+/// Wrapper solo-HTTP: mantiene la aprobación (un asunto de auth/transporte)
+/// fuera de `ventas_service::CreateVentaRequest`, que solo conoce reglas de
+/// negocio (ver DescuentoRequiereAprobacion en ventas_service.rs).
+#[derive(Debug, Deserialize)]
+struct CreateVentaHttpRequest {
+    #[serde(flatten)]
+    venta: services::ventas_service::CreateVentaRequest,
+    aprobacion_admin: Option<AprobacionAdmin>,
+}
+
+async fn http_create_venta(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<CreateVentaHttpRequest>,
+) -> Result<Json<VentaCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    // Si viene una aprobación, se verifica ANTES de tocar ventas_service -
+    // credenciales de ADMIN inválidas deben fallar de inmediato, nunca
+    // colarse como si no se hubiera pedido aprobación.
+    let aprobado_por = match req.aprobacion_admin {
+        Some(a) => Some(
+            state.auth_service.verify_admin_credentials(&claims.tenant_id, &a.email, &a.password).await
+                .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?,
+        ),
+        None => None,
     };
 
-    match state.auth_service.verify_jwt(token) {
-        Ok(claims) => Ok(Json(serde_json::json!({
-            "autenticado": true,
-            "usuario_id": claims.sub,
-            "tenant_id": claims.tenant_id,
-            "rol": claims.rol,
-            "email": claims.email,
-            "expira": claims.exp,
-            "mensaje": "Token válido • tenant_id = RNC para multi-tenancy"
-        }))),
-        Err(e) => Err((StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e))),
+    let completa = state.ventas_service.create_venta(&claims.tenant_id, usuario_id, &claims.rol, req.venta, aprobado_por).await
+        .map_err(|e| {
+            if e.downcast_ref::<services::ventas_service::DescuentoRequiereAprobacion>().is_some() {
+                (StatusCode::FORBIDDEN, e.to_string())
+            } else {
+                (StatusCode::BAD_REQUEST, e.to_string())
+            }
+        })?;
+
+    let descuento_total: rust_decimal::Decimal = completa.items.iter().map(|i| i.descuento).sum();
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "VENTA_CREADA", "venta", Some(completa.venta.id),
+        serde_json::json!({ "total": completa.venta.total, "metodo_pago": completa.venta.metodo_pago, "descuento_total": descuento_total })).await;
+    if let Some(admin_id) = aprobado_por {
+        state.audit_service.log(&claims.tenant_id, Some(admin_id), "DESCUENTO_APROBADO_POR_ADMIN", "venta", Some(completa.venta.id),
+            serde_json::json!({ "descuento_total": descuento_total, "cajero_id": usuario_id })).await;
     }
+    Ok(Json(VentaCompletaResponse { venta: completa.venta, items: completa.items }))
+}
+
+async fn http_get_venta(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<VentaCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let completa = state.ventas_service.get_venta(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(VentaCompletaResponse { venta: completa.venta, items: completa.items }))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct EmitirEcfRequest {
+    /// Si se omite, se usa el certificado P12 guardado en Configuración → DGII.
+    #[serde(rename = "p12Base64")] p12_base64: Option<String>,
+    #[serde(rename = "p12Password")] p12_password: Option<String>,
+    environment: Option<String>,
+    #[serde(rename = "sendToDgii")] send_to_dgii: Option<bool>,
+}
+
+/// Emite el e-CF real de una venta: asigna el siguiente número de la
+/// secuencia DGII autorizada (nunca un timestamp local), construye y firma
+/// el XML, lo transmite a DGII en tiempo real por defecto, y guarda el XML
+/// firmado + la respuesta para la retención de 10 años. Si DGII no responde
+/// (sin conexión, caído), la venta no se bloquea pero tampoco se marca como
+/// fiscalmente aceptada: queda en `CONTINGENCIA_PENDIENTE` para reintento
+/// (ver /v1/ventas/:id/reintentar-envio).
+async fn http_emitir_ecf_venta(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<EmitirEcfRequest>,
+) -> Result<Json<services::ventas_service::Venta>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let completa = state.ventas_service.get_venta(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    if completa.venta.e_ncf.is_some() {
+        return Err((StatusCode::BAD_REQUEST, "Esta venta ya tiene un e-CF emitido".to_string()));
+    }
+    let tenant = state.auth_service.get_tenant(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    if !tenant.factura_electronica_activa {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Este negocio no tiene factura electrónica (e-CF) activada. Actívala en Configuración → Mi negocio.".to_string(),
+        ));
+    }
+
+    let (cliente_rnc, cliente_nombre, cliente_direccion) = match completa.venta.cliente_id {
+        Some(cid) => match state.partner_service.get_cliente(&claims.tenant_id, cid).await {
+            Ok(c) => (c.rnc_cedula.unwrap_or_else(|| "000000000".to_string()), c.nombre, c.direccion),
+            Err(_) => ("000000000".to_string(), "CONSUMIDOR FINAL".to_string(), None),
+        },
+        None => ("000000000".to_string(), "CONSUMIDOR FINAL".to_string(), None),
+    };
+
+    let tipo_ecf = completa.venta.tipo_ecf.unwrap_or(32);
+    services::ecf_service::requiere_identificacion(tipo_ecf, completa.venta.total, Some(&cliente_rnc), cliente_direccion.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String)> = completa.items.iter()
+        .map(|it| (it.nombre.clone(), it.cantidad, it.precio_unitario, it.itbis_tipo.clone()))
+        .collect();
+
+    let (e_ncf, fecha_vencimiento_secuencia) = state.ecf_service.allocar_siguiente_ncf(&claims.tenant_id, tipo_ecf).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let now = chrono::Local::now();
+    let fecha_emision = now.format("%d-%m-%Y").to_string();
+    let fecha_vencimiento = fecha_vencimiento_secuencia.format("%d-%m-%Y").to_string();
+
+    let ecf = build_simple_pos_ecf(
+        &claims.tenant_id, &tenant.razon_social, &tenant.direccion, &e_ncf, tipo_ecf, &cliente_rnc, &cliente_nombre,
+        items, &fecha_emision, &fecha_vencimiento, cliente_direccion.as_deref(), 0, None,
+    );
+    let xml_built = build_ecf_xml(&ecf);
+
+    let (p12_der, password) = if let Some(b64) = req.p12_base64.as_deref().filter(|s| !s.trim().is_empty()) {
+        let der = base64::engine::general_purpose::STANDARD.decode(b64.trim())
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid p12Base64: {}", e)))?;
+        (der, req.p12_password.unwrap_or_else(|| "password".to_string()))
+    } else {
+        state.config_service.get_certificado_activo(&claims.tenant_id).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((StatusCode::BAD_REQUEST, "No hay p12Base64 en la petición ni certificado guardado en Configuración → DGII".to_string()))?
+    };
+    let signed = sign_xml_ecf(&xml_built, &p12_der, &password)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Signing failed: {}", e)))?;
+    let qr_url = generate_qr_url(&claims.tenant_id, &e_ncf, &cliente_rnc, &fecha_emision, &completa.venta.total.to_string(), &signed.codigo_seguridad);
+
+    // Envío en tiempo real por defecto. `sendToDgii: false` explícito solo
+    // sirve para pruebas locales sin tocar la red de DGII.
+    let (estado_dgii, track_id, mensaje_dgii) = if req.send_to_dgii.unwrap_or(true) {
+        let ambiente = req.environment.clone().unwrap_or_else(|| tenant.ambiente_dgii.clone());
+        let env = DGIIEnvironment::from_string(&ambiente);
+        let mut client = DGIIClient::new(env);
+        match client.authenticate(&p12_der, &password).await {
+            Ok(_) => match client.send_with_polling(&signed.signed_xml, &format!("{}{}.xml", claims.tenant_id, e_ncf)).await {
+                Ok(tracking) => (tracking.estado, Some(tracking.track_id), None),
+                Err(e) => ("CONTINGENCIA_PENDIENTE".to_string(), None, Some(e.to_string())),
+            },
+            Err(e) => ("CONTINGENCIA_PENDIENTE".to_string(), None, Some(e.to_string())),
+        }
+    } else {
+        ("FIRMADO_NO_ENVIADO".to_string(), None, None)
+    };
+
+    state.ecf_service.registrar_documento(services::ecf_service::NuevoDocumento {
+        tenant_id: &claims.tenant_id,
+        referencia_tipo: "VENTA",
+        referencia_id: id,
+        tipo_ecf,
+        e_ncf: &e_ncf,
+        xml_firmado: &signed.signed_xml,
+        estado_dgii: &estado_dgii,
+        track_id: track_id.as_deref(),
+        codigo_seguridad: &signed.codigo_seguridad,
+        qr_url: &qr_url,
+        mensaje_dgii: mensaje_dgii.as_deref(),
+    }).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let venta = state.ventas_service.set_ecf_result(
+        &claims.tenant_id, id, &e_ncf, tipo_ecf, &estado_dgii, track_id.as_deref(), Some(&signed.codigo_seguridad), Some(&qr_url),
+    ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(venta))
+}
+
+/// Reintenta el envío a DGII de todos los documentos e-CF (Ventas y Notas de
+/// Crédito) que quedaron en `CONTINGENCIA_PENDIENTE` por falta de
+/// conectividad — punto 7 de la migración NCF -> e-CF.
+async fn http_reintentar_pendientes(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let pendientes = state.ecf_service.list_pendientes_contingencia(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (p12_der, password) = state.config_service.get_certificado_activo(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::BAD_REQUEST, "No hay certificado guardado en Configuración → DGII".to_string()))?;
+    let tenant = state.auth_service.get_tenant(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let env = DGIIEnvironment::from_string(&tenant.ambiente_dgii);
+
+    let mut reenviados = 0;
+    let mut siguen_pendientes = 0;
+    for doc in pendientes {
+        let Ok(Some(xml)) = state.ecf_service.get_xml(&claims.tenant_id, doc.id).await else { continue };
+        let mut client = DGIIClient::new(env.clone());
+        let resultado = match client.authenticate(&p12_der, &password).await {
+            Ok(_) => client.send_with_polling(&xml, &format!("{}{}.xml", claims.tenant_id, doc.e_ncf)).await,
+            Err(e) => Err(e),
+        };
+        match resultado {
+            Ok(tracking) => {
+                state.ecf_service.actualizar_estado(doc.id, &tracking.estado, Some(&tracking.track_id), None).await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                if doc.referencia_tipo == "VENTA" {
+                    state.ventas_service.set_ecf_result(&claims.tenant_id, doc.referencia_id, &doc.e_ncf, doc.tipo_ecf, &tracking.estado, Some(&tracking.track_id), doc.codigo_seguridad.as_deref(), doc.qr_url.as_deref()).await.ok();
+                } else {
+                    state.ventas_service.set_nota_credito_ecf_result(&claims.tenant_id, doc.referencia_id, &doc.e_ncf, &tracking.estado, doc.codigo_seguridad.as_deref(), doc.qr_url.as_deref()).await.ok();
+                }
+                reenviados += 1;
+            }
+            Err(_) => siguen_pendientes += 1,
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "reenviados": reenviados, "siguen_pendientes": siguen_pendientes })))
+}
+
+#[derive(Debug, Deserialize)]
+struct CrearNotaCreditoRequest {
+    motivo: String,
+    #[serde(rename = "p12Base64")] p12_base64: Option<String>,
+    #[serde(rename = "p12Password")] p12_password: Option<String>,
+    environment: Option<String>,
+    #[serde(rename = "sendToDgii")] send_to_dgii: Option<bool>,
+}
+
+/// Emite una Nota de Crédito (e-CF Tipo 34) para una venta ya facturada:
+/// revierte stock y caja, referencia el e-NCF original vía
+/// InformacionReferencia (nunca edita/anula la venta en sitio), y sigue el
+/// mismo pipeline real de firma + envío + retención que una venta.
+async fn http_crear_nota_credito(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(venta_id): Path<Uuid>,
+    Json(req): Json<CrearNotaCreditoRequest>,
+) -> Result<Json<services::ventas_service::NotaCredito>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    let venta_original = state.ventas_service.get_venta(&claims.tenant_id, venta_id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let e_ncf_original = venta_original.venta.e_ncf.clone()
+        .ok_or((StatusCode::BAD_REQUEST, "La venta original no tiene un e-CF emitido — no se puede emitir una Nota de Crédito".to_string()))?;
+
+    let (nota, _items) = state.ventas_service.create_nota_credito(&claims.tenant_id, usuario_id, venta_id, &req.motivo).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "NOTA_CREDITO_EMITIDA", "venta", Some(venta_id),
+        serde_json::json!({ "motivo": req.motivo, "total": nota.total })).await;
+
+    let tenant = state.auth_service.get_tenant(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let (cliente_rnc, cliente_nombre, cliente_direccion) = match venta_original.venta.cliente_id {
+        Some(cid) => match state.partner_service.get_cliente(&claims.tenant_id, cid).await {
+            Ok(c) => (c.rnc_cedula.unwrap_or_else(|| "000000000".to_string()), c.nombre, c.direccion),
+            Err(_) => ("000000000".to_string(), "CONSUMIDOR FINAL".to_string(), None),
+        },
+        None => ("000000000".to_string(), "CONSUMIDOR FINAL".to_string(), None),
+    };
+
+    let tipo_ecf = 34;
+    let (e_ncf, fecha_vencimiento_secuencia) = state.ecf_service.allocar_siguiente_ncf(&claims.tenant_id, tipo_ecf).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let now = chrono::Local::now();
+    let fecha_emision = now.format("%d-%m-%Y").to_string();
+    let fecha_vencimiento = fecha_vencimiento_secuencia.format("%d-%m-%Y").to_string();
+
+    let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String)> = venta_original.items.iter()
+        .map(|it| (it.nombre.clone(), it.cantidad, it.precio_unitario, it.itbis_tipo.clone()))
+        .collect();
+
+    let ecf = build_simple_pos_ecf(
+        &claims.tenant_id, &tenant.razon_social, &tenant.direccion, &e_ncf, tipo_ecf, &cliente_rnc, &cliente_nombre,
+        items, &fecha_emision, &fecha_vencimiento, cliente_direccion.as_deref(), 0,
+        Some((&e_ncf_original, &req.motivo)),
+    );
+    let xml_built = build_ecf_xml(&ecf);
+
+    let (p12_der, password) = if let Some(b64) = req.p12_base64.as_deref().filter(|s| !s.trim().is_empty()) {
+        let der = base64::engine::general_purpose::STANDARD.decode(b64.trim())
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid p12Base64: {}", e)))?;
+        (der, req.p12_password.unwrap_or_else(|| "password".to_string()))
+    } else {
+        state.config_service.get_certificado_activo(&claims.tenant_id).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((StatusCode::BAD_REQUEST, "No hay p12Base64 en la petición ni certificado guardado en Configuración → DGII".to_string()))?
+    };
+    let signed = sign_xml_ecf(&xml_built, &p12_der, &password)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Signing failed: {}", e)))?;
+    let qr_url = generate_qr_url(&claims.tenant_id, &e_ncf, &cliente_rnc, &fecha_emision, &nota.total.to_string(), &signed.codigo_seguridad);
+
+    let (estado_dgii, track_id, mensaje_dgii) = if req.send_to_dgii.unwrap_or(true) {
+        let ambiente = req.environment.clone().unwrap_or_else(|| tenant.ambiente_dgii.clone());
+        let env = DGIIEnvironment::from_string(&ambiente);
+        let mut client = DGIIClient::new(env);
+        match client.authenticate(&p12_der, &password).await {
+            Ok(_) => match client.send_with_polling(&signed.signed_xml, &format!("{}{}.xml", claims.tenant_id, e_ncf)).await {
+                Ok(tracking) => (tracking.estado, Some(tracking.track_id), None),
+                Err(e) => ("CONTINGENCIA_PENDIENTE".to_string(), None, Some(e.to_string())),
+            },
+            Err(e) => ("CONTINGENCIA_PENDIENTE".to_string(), None, Some(e.to_string())),
+        }
+    } else {
+        ("FIRMADO_NO_ENVIADO".to_string(), None, None)
+    };
+
+    state.ecf_service.registrar_documento(services::ecf_service::NuevoDocumento {
+        tenant_id: &claims.tenant_id,
+        referencia_tipo: "NOTA_CREDITO",
+        referencia_id: nota.id,
+        tipo_ecf,
+        e_ncf: &e_ncf,
+        xml_firmado: &signed.signed_xml,
+        estado_dgii: &estado_dgii,
+        track_id: track_id.as_deref(),
+        codigo_seguridad: &signed.codigo_seguridad,
+        qr_url: &qr_url,
+        mensaje_dgii: mensaje_dgii.as_deref(),
+    }).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let nota = state.ventas_service.set_nota_credito_ecf_result(
+        &claims.tenant_id, nota.id, &e_ncf, &estado_dgii, Some(&signed.codigo_seguridad), Some(&qr_url),
+    ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(nota))
+}
+
+async fn http_get_nota_credito(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::ventas_service::NotaCredito>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.ventas_service.get_nota_credito(&claims.tenant_id, id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+// ------------------ MODULO 5b: Cotizaciones ------------------
+
+#[derive(Debug, Serialize)]
+struct CotizacionCompletaResponse {
+    #[serde(flatten)]
+    cotizacion: services::cotizacion_service::Cotizacion,
+    items: Vec<services::cotizacion_service::CotizacionItem>,
+}
+
+async fn http_list_cotizaciones(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let cotizaciones = state.cotizacion_service.list_cotizaciones(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": cotizaciones.len(), "cotizaciones": cotizaciones })))
+}
+
+async fn http_create_cotizacion(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::cotizacion_service::CreateCotizacionRequest>,
+) -> Result<Json<CotizacionCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    let completa = state.cotizacion_service.create_cotizacion(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "COTIZACION_CREADA", "cotizacion", Some(completa.cotizacion.id),
+        serde_json::json!({ "total": completa.cotizacion.total })).await;
+    Ok(Json(CotizacionCompletaResponse { cotizacion: completa.cotizacion, items: completa.items }))
+}
+
+async fn http_get_cotizacion(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<CotizacionCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let completa = state.cotizacion_service.get_cotizacion(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(CotizacionCompletaResponse { cotizacion: completa.cotizacion, items: completa.items }))
+}
+
+async fn http_rechazar_cotizacion(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::cotizacion_service::Cotizacion>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let cotizacion = state.cotizacion_service.marcar_estado(&claims.tenant_id, id, "RECHAZADA").await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(cotizacion))
+}
+
+#[derive(Debug, Deserialize)]
+struct ConvertirCotizacionRequest {
+    metodo_pago: Option<String>,
+    tipo_ecf: Option<i32>,
+    aprobacion_admin: Option<AprobacionAdmin>,
+}
+
+/// Convierte una cotización en Venta real reutilizando
+/// `ventas_service::create_venta` sin cambios - así toda venta que salga de
+/// aquí pasa por el mismo gate de caja abierta, límite de descuento y
+/// crédito fiado que cualquier venta hecha desde el POS.
+async fn http_convertir_cotizacion(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ConvertirCotizacionRequest>,
+) -> Result<Json<VentaCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    let cotizacion_completa = state.cotizacion_service.get_cotizacion(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    if cotizacion_completa.cotizacion.estado == "CONVERTIDA" {
+        return Err((StatusCode::BAD_REQUEST, "Esta cotización ya fue convertida en venta".to_string()));
+    }
+    if cotizacion_completa.cotizacion.estado == "RECHAZADA" {
+        return Err((StatusCode::BAD_REQUEST, "Esta cotización fue rechazada".to_string()));
+    }
+
+    let venta_req = services::ventas_service::CreateVentaRequest {
+        cliente_id: cotizacion_completa.cotizacion.cliente_id,
+        items: cotizacion_completa.items.iter().map(|it| services::ventas_service::CreateVentaItemRequest {
+            producto_id: it.producto_id,
+            cantidad: it.cantidad,
+            descuento: Some(it.descuento),
+        }).collect(),
+        metodo_pago: req.metodo_pago,
+        tipo_ecf: req.tipo_ecf,
+        entrega_diferida: None,
+    };
+
+    let aprobado_por = match req.aprobacion_admin {
+        Some(a) => Some(
+            state.auth_service.verify_admin_credentials(&claims.tenant_id, &a.email, &a.password).await
+                .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?,
+        ),
+        None => None,
+    };
+
+    let completa = state.ventas_service.create_venta(&claims.tenant_id, usuario_id, &claims.rol, venta_req, aprobado_por).await
+        .map_err(|e| {
+            if e.downcast_ref::<services::ventas_service::DescuentoRequiereAprobacion>().is_some() {
+                (StatusCode::FORBIDDEN, e.to_string())
+            } else {
+                (StatusCode::BAD_REQUEST, e.to_string())
+            }
+        })?;
+
+    state.cotizacion_service.marcar_convertida(&claims.tenant_id, id, completa.venta.id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "COTIZACION_CONVERTIDA", "cotizacion", Some(id),
+        serde_json::json!({ "venta_id": completa.venta.id, "total": completa.venta.total })).await;
+
+    Ok(Json(VentaCompletaResponse { venta: completa.venta, items: completa.items }))
+}
+
+// ------------------ MODULO 5c: Conduces ------------------
+
+#[derive(Debug, Serialize)]
+struct ConduceCompletaResponse {
+    #[serde(flatten)]
+    conduce: services::conduce_service::Conduce,
+    items: Vec<services::conduce_service::ConduceItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListConducesQuery {
+    venta_id: Option<Uuid>,
+}
+
+async fn http_list_conduces(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(q): Query<ListConducesQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let conduces = state.conduce_service.list_conduces(&claims.tenant_id, q.venta_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": conduces.len(), "conduces": conduces })))
+}
+
+async fn http_create_conduce(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::conduce_service::CreateConduceRequest>,
+) -> Result<Json<ConduceCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    let venta_id = req.venta_id;
+    let completa = state.conduce_service.create_conduce(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "CONDUCE_CREADO", "conduce", Some(completa.conduce.id),
+        serde_json::json!({ "venta_id": venta_id })).await;
+    Ok(Json(ConduceCompletaResponse { conduce: completa.conduce, items: completa.items }))
+}
+
+async fn http_get_conduce(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ConduceCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let completa = state.conduce_service.get_conduce(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(ConduceCompletaResponse { conduce: completa.conduce, items: completa.items }))
+}
+
+async fn http_list_ecf_documentos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let docs = state.ecf_service.list_documentos(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": docs.len(), "documentos": docs })))
+}
+
+/// Imprime el ticket de una venta (e-CF si ya fue emitido, o ticket simple si
+/// no) en la impresora de red configurada en Configuración → Impresora.
+async fn http_imprimir_venta(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let completa = state.ventas_service.get_venta(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let tenant = state.auth_service.get_tenant(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    let cliente = match completa.venta.cliente_id {
+        Some(cid) => state.partner_service.get_cliente(&claims.tenant_id, cid).await.ok(),
+        None => None,
+    };
+
+    let impresora = state.config_service.get_impresora(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let recibo = recibo_builder::ReciboVenta {
+        emisor: recibo_builder::ReciboEmisor {
+            razon_social: tenant.razon_social,
+            rnc: claims.tenant_id.clone(),
+            direccion: tenant.direccion,
+            telefono: tenant.telefono,
+        },
+        cliente: recibo_builder::ReciboCliente {
+            nombre: cliente.as_ref().map(|c| c.nombre.clone()).unwrap_or_else(|| "CONSUMIDOR FINAL".to_string()),
+            rnc_cedula: cliente.and_then(|c| c.rnc_cedula),
+        },
+        items: completa.items.iter().map(|it| recibo_builder::ReciboLinea {
+            nombre: it.nombre.clone(),
+            cantidad: it.cantidad,
+            precio_unitario: it.precio_unitario,
+            subtotal: it.subtotal,
+        }).collect(),
+        subtotal: completa.venta.subtotal,
+        itbis_total: completa.venta.itbis_total,
+        total: completa.venta.total,
+        metodo_pago: completa.venta.metodo_pago.clone(),
+        fecha_emision: completa.venta.created_at.with_timezone(&chrono::Local).format("%d/%m/%Y %H:%M").to_string(),
+        fiscal: match (&completa.venta.e_ncf, &completa.venta.codigo_seguridad, &completa.venta.qr_url) {
+            (Some(e_ncf), Some(codigo), Some(qr)) => Some(recibo_builder::ReciboFiscal {
+                e_ncf: e_ncf.clone(),
+                tipo_ecf: completa.venta.tipo_ecf.unwrap_or(32),
+                fecha_vencimiento_secuencia: completa.venta.created_at.format("%d-%m-%Y").to_string(),
+                codigo_seguridad: codigo.clone(),
+                qr_url: qr.clone(),
+                fecha_firma: completa.venta.created_at.with_timezone(&chrono::Local).format("%d-%m-%Y %H:%M:%S").to_string(),
+            }),
+            _ => None,
+        },
+    };
+
+    let bytes = recibo_builder::build_recibo_escpos(&recibo, impresora.ancho_mm, impresora.copias);
+
+    state.config_service.imprimir_bytes(&claims.tenant_id, &bytes).await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "impreso": true })))
+}
+
+// ------------------ MODULO 6: Compras y Gastos ------------------
+
+#[derive(Debug, Serialize)]
+struct CompraCompletaResponse {
+    #[serde(flatten)]
+    compra: services::compras_service::Compra,
+    items: Vec<services::compras_service::CompraItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListComprasParams {
+    #[serde(rename = "proveedorId")] proveedor_id: Option<Uuid>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+async fn http_list_compras(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ListComprasParams>,
+) -> Result<Json<pagination::Page<services::compras_service::CompraConProveedor>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (compras, total) = state.compras_service.list_compras(
+        &claims.tenant_id,
+        params.proveedor_id,
+        params.fecha_desde,
+        params.fecha_hasta,
+        &page,
+        &sort,
+    ).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(compras, page.page_number(), page_size, total)))
+}
+
+async fn http_create_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::compras_service::CreateCompraRequest>,
+) -> Result<Json<CompraCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let completa = state.compras_service.create_compra(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(CompraCompletaResponse { compra: completa.compra, items: completa.items }))
+}
+
+async fn http_get_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<CompraCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let completa = state.compras_service.get_compra(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(CompraCompletaResponse { compra: completa.compra, items: completa.items }))
+}
+
+async fn http_list_gastos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let gastos = state.compras_service.list_gastos(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": gastos.len(), "gastos": gastos })))
+}
+
+async fn http_create_gasto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::compras_service::CreateGastoRequest>,
+) -> Result<Json<services::compras_service::Gasto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    state.compras_service.create_gasto(&claims.tenant_id, usuario_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+// ------------------ MODULO 9: Caja y Bancos ------------------
+
+async fn http_caja_resumen(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::caja_service::CajaResumen>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.caja_service.resumen(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_caja_abrir(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::caja_service::AbrirCajaRequest>,
+) -> Result<Json<services::caja_service::CajaSesion>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    state.caja_service.abrir(&claims.tenant_id, usuario_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_caja_cerrar(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::caja_service::CerrarCajaRequest>,
+) -> Result<Json<services::caja_service::CajaSesion>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.caja_service.cerrar(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_caja_movimientos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let movimientos = state.caja_service.list_movimientos(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": movimientos.len(), "movimientos": movimientos })))
+}
+
+async fn http_caja_sesiones(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let sesiones = state.caja_service.list_sesiones(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": sesiones.len(), "sesiones": sesiones })))
+}
+
+async fn http_list_bancos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let bancos = state.bancos_service.list(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": bancos.len(), "bancos": bancos })))
+}
+
+async fn http_create_banco(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::caja_service::CreateBancoRequest>,
+) -> Result<Json<services::caja_service::Banco>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.bancos_service.create(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_list_banco_movimientos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let movimientos = state.bancos_service.list_movimientos(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": movimientos.len(), "movimientos": movimientos })))
+}
+
+async fn http_create_banco_movimiento(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::caja_service::CreateBancoMovimientoRequest>,
+) -> Result<Json<services::caja_service::BancoMovimiento>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    state.bancos_service.create_movimiento(&claims.tenant_id, id, usuario_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+// ------------------ MODULO 8: Nomina y Adelantos ------------------
+
+async fn http_list_empleados(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let empleados = state.nomina_service.list_empleados(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": empleados.len(), "empleados": empleados })))
+}
+
+async fn http_get_empleado(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::nomina_service::Empleado>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.nomina_service.get_empleado(&claims.tenant_id, id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+async fn http_create_empleado(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::nomina_service::CreateEmpleadoRequest>,
+) -> Result<Json<services::nomina_service::Empleado>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.nomina_service.create_empleado(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_update_empleado(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::nomina_service::UpdateEmpleadoRequest>,
+) -> Result<Json<services::nomina_service::Empleado>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.nomina_service.update_empleado(&claims.tenant_id, id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_delete_empleado(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.nomina_service.delete_empleado(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn http_list_adelantos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let adelantos = state.nomina_service.list_adelantos(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": adelantos.len(), "adelantos": adelantos })))
+}
+
+async fn http_request_adelanto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::nomina_service::CreateAdelantoRequest>,
+) -> Result<Json<services::nomina_service::Adelanto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    state.nomina_service.request_adelanto(&claims.tenant_id, usuario_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_approve_adelanto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::nomina_service::Adelanto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let adelanto = state.nomina_service.approve_adelanto(&claims.tenant_id, id, usuario_id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ADELANTO_APROBADO", "adelanto", Some(id),
+        serde_json::json!({ "monto": adelanto.monto })).await;
+    Ok(Json(adelanto))
+}
+
+async fn http_reject_adelanto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::nomina_service::Adelanto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).ok();
+    let adelanto = state.nomina_service.reject_adelanto(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, usuario_id, "ADELANTO_RECHAZADO", "adelanto", Some(id), serde_json::json!({})).await;
+    Ok(Json(adelanto))
+}
+
+async fn http_list_periodos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let periodos = state.nomina_service.list_periodos(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": periodos.len(), "periodos": periodos })))
+}
+
+#[derive(Debug, Serialize)]
+struct PeriodoConDetalles {
+    #[serde(flatten)]
+    periodo: services::nomina_service::NominaPeriodo,
+    detalles: Vec<services::nomina_service::NominaDetalle>,
+}
+
+async fn http_get_periodo(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<PeriodoConDetalles>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let (periodo, detalles) = state.nomina_service.get_periodo(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(PeriodoConDetalles { periodo, detalles }))
+}
+
+async fn http_run_payroll(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::nomina_service::RunPayrollRequest>,
+) -> Result<Json<PeriodoConDetalles>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let (periodo, detalles) = state.nomina_service.run_payroll(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "NOMINA_CORRIDA", "nomina_periodo", Some(periodo.id),
+        serde_json::json!({ "total_neto": periodo.total_neto, "empleados": detalles.len() })).await;
+    Ok(Json(PeriodoConDetalles { periodo, detalles }))
+}
+
+// ------------------ MODULO 7: Contabilidad (Libro Mayor) ------------------
+
+#[derive(Debug, Deserialize)]
+struct AsientosParams {
+    cuenta: Option<String>,
+}
+
+async fn http_list_asientos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<AsientosParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let asientos = state.contabilidad_service.list_asientos(&claims.tenant_id, params.cuenta).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": asientos.len(), "asientos": asientos })))
+}
+
+async fn http_create_asiento(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::contabilidad_service::CreateAsientoRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let asientos = state.contabilidad_service.create_asiento_manual(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "asientos": asientos })))
+}
+
+async fn http_libro_mayor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let cuentas = state.contabilidad_service.libro_mayor(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "cuentas": cuentas })))
+}
+
+async fn http_sincronizar_contabilidad(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::contabilidad_service::SincronizarResultado>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.contabilidad_service.sincronizar(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+// ------------------ MODULO 10: Reportes y Dashboard ------------------
+
+#[derive(Debug, Deserialize)]
+struct ReportParams {
+    period: String,
+}
+
+async fn http_report_606(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ReportParams>,
+) -> Result<String, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.report_service.generate_606(&claims.tenant_id, &params.period).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_report_607(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ReportParams>,
+) -> Result<String, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.report_service.generate_607(&claims.tenant_id, &params.period).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_dashboard_resumen(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::report_service::DashboardResumen>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.report_service.dashboard_resumen(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Infalible - `AiService::digest_diario` ya resuelve internamente cualquier
+/// fallo (Ollama caído/lento) con un mensaje de respaldo, así que este
+/// handler no tiene rama de error.
+async fn http_ai_digest(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::ai_service::DigestResult>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    Ok(Json(state.ai_service.digest_diario(&claims.tenant_id).await))
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatRequest {
+    mensaje: String,
+}
+
+/// Infalible - `AiService::chat` ya resuelve internamente cualquier fallo
+/// (Ollama caído/lento/JSON mal formado) con una respuesta de texto plano,
+/// nunca con un error. Las acciones propuestas solo llenan un formulario
+/// existente en el frontend - la creación real sigue pasando por su propio
+/// endpoint con su propio role_guard, esto nunca ejecuta una mutación.
+async fn http_ai_chat(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<services::ai_service::ChatResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    Ok(Json(state.ai_service.chat(&claims.tenant_id, &claims.rol, &req.mensaje).await))
+}
+
+// ------------------ MODULO 11: Configuracion DGII y Empresa ------------------
+
+async fn http_get_empresa(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::config_service::Empresa>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.config_service.get_empresa(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+async fn http_update_empresa(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::config_service::UpdateEmpresaRequest>,
+) -> Result<Json<services::config_service::Empresa>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.config_service.update_empresa(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_config_list_usuarios(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuarios = state.config_service.list_usuarios(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": usuarios.len(), "usuarios": usuarios })))
+}
+
+async fn http_config_create_usuario(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::config_service::CreateUsuarioRequest>,
+) -> Result<Json<services::config_service::Usuario>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let admin_id = Uuid::parse_str(&claims.sub).ok();
+    let usuario = state.config_service.create_usuario(&claims.tenant_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, admin_id, "USUARIO_CREADO", "usuario", Some(usuario.id),
+        serde_json::json!({ "email": usuario.email, "rol": usuario.rol })).await;
+    Ok(Json(usuario))
+}
+
+async fn http_config_update_usuario(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::config_service::UpdateUsuarioRequest>,
+) -> Result<Json<services::config_service::Usuario>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let admin_id = Uuid::parse_str(&claims.sub).ok();
+    let usuario = state.config_service.update_usuario(&claims.tenant_id, id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, admin_id, "USUARIO_ACTUALIZADO", "usuario", Some(id),
+        serde_json::json!({ "rol": usuario.rol, "activo": usuario.activo })).await;
+    Ok(Json(usuario))
+}
+
+async fn http_config_deactivate_usuario(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let admin_id = Uuid::parse_str(&claims.sub).ok();
+    state.config_service.deactivate_usuario(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, admin_id, "USUARIO_DESACTIVADO", "usuario", Some(id), serde_json::json!({})).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn http_list_secuencias(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let secuencias = state.config_service.list_secuencias(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "total": secuencias.len(), "secuencias": secuencias })))
+}
+
+async fn http_create_secuencia(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::config_service::CreateSecuenciaRequest>,
+) -> Result<Json<services::config_service::SecuenciaNcf>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.config_service.create_secuencia(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct SetEstadoSecuenciaRequest {
+    estado: String,
+}
+
+async fn http_set_secuencia_estado(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<SetEstadoSecuenciaRequest>,
+) -> Result<Json<services::config_service::SecuenciaNcf>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.config_service.set_secuencia_estado(&claims.tenant_id, id, &req.estado).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_certificado_status(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let status = state.config_service.certificado_status(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "certificado": status })))
+}
+
+async fn http_upload_certificado(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::config_service::UploadCertificadoRequest>,
+) -> Result<Json<services::config_service::CertificadoStatus>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.config_service.upload_certificado(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_get_impresora(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::config_service::ImpresoraConfig>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.config_service.get_impresora(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_update_impresora(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::config_service::UpdateImpresoraRequest>,
+) -> Result<Json<services::config_service::ImpresoraConfig>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.config_service.update_impresora(&claims.tenant_id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_test_impresora(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<services::config_service::TestImpresoraResult>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.config_service.test_impresora(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Busca un RNC/Cédula en el padrón DGII importado localmente (ver
+/// bin/import_rnc.rs). Requiere sesión válida pero el dato en sí es público
+/// y no está tenant-scoped - es el mismo registro nacional para todos.
+async fn http_lookup_rnc(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(rnc): Path<String>,
+) -> Result<Json<services::rnc_service::RncRecord>, (StatusCode, String)> {
+    claims_from_headers(&state.auth_service, &headers)?;
+    state.rnc_service.lookup(&rnc).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "RNC/Cédula no encontrado en el padrón DGII".to_string()))
+        .map(Json)
 }
 
 async fn http_test_sign_demo_get() -> Result<Json<serde_json::Value>, (StatusCode, String)> {

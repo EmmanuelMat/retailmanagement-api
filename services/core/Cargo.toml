@@ -6,17 +6,12 @@ description = "Bank-grade Rust core: EventStore + TigerBeetle + DGII e-CF + Payr
 default-run = "fiscal-core"
 
 [dependencies]
-# Async + Web - Use axum 0.6 to match tonic 0.12 http 0.2 (axum 0.7 uses http 1.0 which conflicts with tonic)
+# Async + Web - axum 0.6 (pinned; was chosen to match tonic's http 0.2, tonic is gone now but left as-is for this pass)
 tokio = { version = "1.40", features = ["full"] }
 axum = { version = "0.6", features = ["json"] }
-tonic = { version = "0.12", features = ["transport"] }
-prost = "0.13"
-tokio-stream = { version = "0.1", features = ["net"] }
 tower = "0.4"
 tower-http = { version = "0.4", features = ["cors", "trace"] }
 http = "0.2"
-http-body = "0.4"
-http-body-util = "0.1"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-native-tls","postgres","uuid","json","chrono","rust_decimal"] }
@@ -43,16 +38,15 @@ rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
 mime = "0.3"
 
+# bin/import_rnc: descarga y descomprime el padron DGII_RNC.zip de DGII
+zip = "2"
+
 # Utils
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
 anyhow = "1.0"
 thiserror = "2.0"
-
-[build-dependencies]
-tonic-build = "0.12"
-prost-build = "0.13"
 
 [[bin]]
 name = "fiscal-core"
@@ -61,3 +55,7 @@ path = "src/main.rs"
 [[bin]]
 name = "migrate"
 path = "src/bin/migrate.rs"
+
+[[bin]]
+name = "import_rnc"
+path = "src/bin/import_rnc.rs"

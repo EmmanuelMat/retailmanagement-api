@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parseCoreResponse } from "@/lib/core-proxy";
 
 const CORE_HTTP = process.env.CORE_HTTP_URL || "http://localhost:3001";
 
@@ -11,14 +12,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Email y contraseña requeridos" }, { status: 400 });
     }
 
+    // An empty RNC field must mean "not provided", not an empty-string tenant filter
+    const rncClean = rnc ? rnc.replace(/-/g, "").trim() : "";
+
     const coreRes = await fetch(`${CORE_HTTP}/v1/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: email.toLowerCase().trim(), password, rnc: rnc?.replace(/-/g, "").trim() }),
+      body: JSON.stringify({ email: email.toLowerCase().trim(), password, rnc: rncClean || undefined }),
       cache: "no-store",
     });
 
-    const data = await coreRes.json();
+    const data = await parseCoreResponse(coreRes);
 
     if (!coreRes.ok) {
       return NextResponse.json({ error: data.error || "Credenciales inválidas" }, { status: coreRes.status });

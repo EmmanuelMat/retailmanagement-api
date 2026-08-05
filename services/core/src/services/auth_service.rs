@@ -6,8 +6,11 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
+use base64::Engine as _;
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 use chrono::{Utc, Duration};
@@ -32,6 +35,7 @@ pub struct Tenant {
     pub correo: Option<String>,
     pub logo_url: Option<String>,
     pub ambiente_dgii: String, // TesteCF, CerteCF, eCF
+    pub factura_electronica_activa: bool,
     pub activo: bool,
     pub created_at: chrono::DateTime<Utc>,
 }
@@ -56,6 +60,9 @@ pub struct RegisterRequest {
     pub direccion: String,
     pub telefono: Option<String>,
     pub correo: Option<String>,
+    /// Si el negocio factura e-CF ante la DGII. `None`/ausente = true (comportamiento
+    /// histórico); explícito en el formulario de registro para no asumirlo en silencio.
+    pub factura_electronica_activa: Option<bool>,
     // Admin inicial
     pub admin_nombre: String, // Emmanuel Rosario
     pub admin_email: String,
@@ -189,14 +196,15 @@ impl AuthService {
 
         // 1. Crear tenant
         sqlx::query(
-            r#"INSERT INTO tenants (rnc, razon_social, direccion, telefono, correo, ambiente_dgii, activo, created_at)
-               VALUES ($1, $2, $3, $4, $5, 'TesteCF', true, $6)"#
+            r#"INSERT INTO tenants (rnc, razon_social, direccion, telefono, correo, ambiente_dgii, factura_electronica_activa, activo, created_at)
+               VALUES ($1, $2, $3, $4, $5, 'TesteCF', $6, true, $7)"#
         )
         .bind(&rnc_clean)
         .bind(&req.razon_social)
         .bind(&req.direccion)
         .bind(&req.telefono)
         .bind(&req.correo)
+        .bind(req.factura_electronica_activa.unwrap_or(true))
         .bind(now)
         .execute(&mut *tx)
         .await?;
@@ -330,8 +338,111 @@ impl AuthService {
         })
     }
 
+    /// Verifica email+contraseña de un ADMIN del tenant, sin emitir un JWT ni
+    /// tocar la sesión de quien está pidiendo la verificación (usado para el
+    /// popup de aprobación de descuentos en el POS: el cajero sigue logueado,
+    /// solo se confirma que un ADMIN autorizó la operación puntual). No revela
+    /// si falló por email, contraseña o rol incorrecto - todos lucen iguales.
+    pub async fn verify_admin_credentials(&self, tenant_id: &str, email: &str, password: &str) -> anyhow::Result<Uuid> {
+        let row = sqlx::query_as::<_, UsuarioRow>(
+            "SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at
+             FROM usuarios WHERE email = $1 AND tenant_id = $2 AND activo = true",
+        )
+        .bind(email.to_lowercase())
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Credenciales de administrador inválidas"))?;
+
+        if row.rol != "ADMIN" || !Self::verify_password(&row.password_hash, password)? {
+            anyhow::bail!("Credenciales de administrador inválidas");
+        }
+        Ok(row.id)
+    }
+
+    fn hash_token(token: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Primer paso de "olvidé mi contraseña". `Ok(None)` significa "no existe
+    /// tal usuario (o está inactivo)" - el caller (http_forgot_password) debe
+    /// responder exactamente igual que en el caso `Some` para no revelar qué
+    /// correos están registrados.
+    pub async fn iniciar_reset_password(&self, rnc: Option<&str>, email: &str) -> anyhow::Result<Option<(Uuid, String, String)>> {
+        let usuario_row = if let Some(rnc) = rnc {
+            sqlx::query_as::<_, UsuarioRow>(
+                "SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at
+                 FROM usuarios WHERE email = $1 AND tenant_id = $2 AND activo = true",
+            )
+            .bind(email.to_lowercase())
+            .bind(rnc.replace("-", ""))
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, UsuarioRow>(
+                "SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at
+                 FROM usuarios WHERE email = $1 AND activo = true LIMIT 1",
+            )
+            .bind(email.to_lowercase())
+            .fetch_optional(&self.pool)
+            .await?
+        };
+
+        let Some(row) = usuario_row else { return Ok(None) };
+
+        let mut token_bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut token_bytes);
+        let raw_token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes);
+        let token_hash = Self::hash_token(&raw_token);
+        let expires_at = Utc::now() + Duration::minutes(30);
+
+        sqlx::query("INSERT INTO password_reset_tokens (usuario_id, token_hash, expires_at) VALUES ($1, $2, $3)")
+            .bind(row.id)
+            .bind(&token_hash)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(Some((row.id, row.nombre, raw_token)))
+    }
+
+    /// Segundo paso: consume el token (de un solo uso) y fija la nueva
+    /// contraseña. Un solo mensaje de error para token incorrecto, vencido o
+    /// ya usado - que luzcan idénticos desde afuera es intencional.
+    pub async fn completar_reset_password(&self, token: &str, new_password: &str) -> anyhow::Result<()> {
+        let token_hash = Self::hash_token(token);
+        let mut tx = self.pool.begin().await?;
+
+        let row: Option<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT id, usuario_id FROM password_reset_tokens
+             WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
+             FOR UPDATE",
+        )
+        .bind(&token_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let (token_id, usuario_id) = row.ok_or_else(|| anyhow::anyhow!("Enlace inválido o expirado"))?;
+
+        let new_hash = Self::hash_password(new_password)?;
+        sqlx::query("UPDATE usuarios SET password_hash = $1 WHERE id = $2")
+            .bind(&new_hash)
+            .bind(usuario_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1")
+            .bind(token_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn get_tenant(&self, rnc: &str) -> anyhow::Result<Tenant> {
-        let row = sqlx::query_as::<_, TenantRow>("SELECT rnc, razon_social, nombre_comercial, direccion, telefono, correo, logo_url, ambiente_dgii, activo, created_at FROM tenants WHERE rnc = $1")
+        let row = sqlx::query_as::<_, TenantRow>("SELECT rnc, razon_social, nombre_comercial, direccion, telefono, correo, logo_url, ambiente_dgii, factura_electronica_activa, activo, created_at FROM tenants WHERE rnc = $1")
             .bind(rnc)
             .fetch_optional(&self.pool)
             .await?
@@ -346,6 +457,7 @@ impl AuthService {
             correo: row.correo,
             logo_url: row.logo_url,
             ambiente_dgii: row.ambiente_dgii,
+            factura_electronica_activa: row.factura_electronica_activa,
             activo: row.activo,
             created_at: row.created_at,
         })
@@ -399,6 +511,7 @@ struct TenantRow {
     correo: Option<String>,
     logo_url: Option<String>,
     ambiente_dgii: String,
+    factura_electronica_activa: bool,
     activo: bool,
     created_at: chrono::DateTime<Utc>,
 }
