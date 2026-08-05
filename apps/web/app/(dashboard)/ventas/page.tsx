@@ -1,12 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { Receipt, Search } from "lucide-react";
 import {
   Badge,
-  Card,
-  CardContent,
   Input,
   Select,
   Table,
@@ -17,11 +15,12 @@ import {
   TableHeader,
   TableRow,
   Pagination,
+  ScrollableTableCard,
   formatDOP,
 } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { useServerTable } from "@/lib/use-server-table";
-import { useDebouncedValue } from "@/lib/use-debounced-value";
+import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Venta {
   id: string;
@@ -55,9 +54,15 @@ const DGII_VARIANT: Record<string, "default" | "success" | "warning" | "destruct
 };
 
 export default function VentasPage() {
+  return (
+    <Suspense fallback={null}>
+      <VentasPageContent />
+    </Suspense>
+  );
+}
+
+function VentasPageContent() {
   const [clientes, setClientes] = useState<Cliente[]>([]);
-  const [searchInput, setSearchInput] = useState("");
-  const debouncedSearch = useDebouncedValue(searchInput, 250);
 
   useEffect(() => {
     apiFetch<{ clientes: Cliente[] }>("/api/clientes").then((d) => setClientes(d.clientes)).catch(() => {});
@@ -81,13 +86,10 @@ export default function VentasPage() {
     initialSortDir: "desc",
   });
 
-  useEffect(() => {
-    setFilters({ search: debouncedSearch });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch]);
+  const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Ventas</h1>
         <p className="text-sm text-muted-foreground mt-1">Historial de ventas, e-NCF y estado DGII.</p>
@@ -122,59 +124,50 @@ export default function VentasPage() {
         />
       </div>
 
-      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
-
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : ventas.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <Receipt className="h-6 w-6" />
-              Aún no hay ventas. Regístralas desde el Punto de Venta.
-            </div>
-          ) : (
-            <>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
-                    <TableHead>Cliente</TableHead>
-                    <TableHead>e-NCF</TableHead>
-                    <SortableTableHead column="estado" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Estado DGII</SortableTableHead>
-                    <TableHead>Pago</TableHead>
-                    <SortableTableHead column="total" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Total</SortableTableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {ventas.map((v) => (
-                    <TableRow key={v.id} className="cursor-pointer">
-                      <TableCell className="text-xs text-muted-foreground">
-                        <Link href={`/ventas/${v.id}` as any} className="hover:text-primary">{new Date(v.created_at).toLocaleString("es-DO")}</Link>
-                      </TableCell>
-                      <TableCell>{v.cliente_nombre || "Consumidor final"}</TableCell>
-                      <TableCell className="font-mono text-xs">{v.e_ncf || "—"}</TableCell>
-                      <TableCell>{v.estado_dgii ? <Badge variant={DGII_VARIANT[v.estado_dgii] || "default"}>{v.estado_dgii}</Badge> : <Badge variant="secondary">Sin emitir</Badge>}</TableCell>
-                      <TableCell className="text-muted-foreground">{v.metodo_pago}</TableCell>
-                      <TableCell className="text-right font-mono tabular-nums font-medium">{formatDOP(v.total)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <div className="px-3">
-                <Pagination
-                  page={state.page}
-                  totalPages={totalPages}
-                  total={total}
-                  pageSize={state.pageSize}
-                  onPageChange={setPage}
-                  onPageSizeChange={setPageSize}
-                />
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <ScrollableTableCard
+        loading={loading}
+        error={error}
+        isEmpty={ventas.length === 0}
+        emptyIcon={<Receipt className="h-6 w-6" />}
+        emptyMessage="Aún no hay ventas. Regístralas desde el Punto de Venta."
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+              <TableHead>Cliente</TableHead>
+              <TableHead>e-NCF</TableHead>
+              <SortableTableHead column="estado" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Estado DGII</SortableTableHead>
+              <TableHead>Pago</TableHead>
+              <SortableTableHead column="total" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Total</SortableTableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {ventas.map((v) => (
+              <TableRow key={v.id} className="cursor-pointer">
+                <TableCell className="text-xs text-muted-foreground">
+                  <Link href={`/ventas/${v.id}` as any} className="hover:text-primary">{new Date(v.created_at).toLocaleString("es-DO")}</Link>
+                </TableCell>
+                <TableCell>{v.cliente_nombre || "Consumidor final"}</TableCell>
+                <TableCell className="font-mono text-xs">{v.e_ncf || "—"}</TableCell>
+                <TableCell>{v.estado_dgii ? <Badge variant={DGII_VARIANT[v.estado_dgii] || "default"}>{v.estado_dgii}</Badge> : <Badge variant="secondary">Sin emitir</Badge>}</TableCell>
+                <TableCell className="text-muted-foreground">{v.metodo_pago}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums font-medium">{formatDOP(v.total)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

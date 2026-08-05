@@ -5,5 +5,6 @@ export * from "./select";
 export * from "./badge";
 export * from "./table";
 export * from "./pagination";
+export * from "./scrollable-table-card";
 export * from "./coming-soon";
 export * from "./utils";

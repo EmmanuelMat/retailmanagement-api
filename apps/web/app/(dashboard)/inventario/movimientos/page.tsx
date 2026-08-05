@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Plus, History } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow, Pagination,
+  ScrollableTableCard,
 } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { useServerTable } from "@/lib/use-server-table";
@@ -40,6 +41,14 @@ const TIPO_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
 };
 
 export default function MovimientosPage() {
+  return (
+    <Suspense fallback={null}>
+      <MovimientosPageContent />
+    </Suspense>
+  );
+}
+
+function MovimientosPageContent() {
   const [productos, setProductos] = useState<Producto[]>([]);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
@@ -92,7 +101,7 @@ export default function MovimientosPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Movimientos · Kardex</h1>
         <p className="text-sm text-muted-foreground mt-1">Historial de entradas, salidas (automáticas) y ajustes manuales de inventario.</p>
@@ -130,10 +139,6 @@ export default function MovimientosPage() {
         </CardContent>
       </Card>
 
-      {(error || formError) && (
-        <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error || formError}</div>
-      )}
-
       <div className="flex flex-wrap gap-3">
         <Select
           value={state.filters.productoId || ""}
@@ -169,58 +174,52 @@ export default function MovimientosPage() {
         />
       </div>
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : movimientos.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <History className="h-6 w-6" />
-              Aún no hay movimientos registrados.
-            </div>
-          ) : (
-            <>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
-                    <TableHead>Producto</TableHead>
-                    <TableHead>Tipo</TableHead>
-                    <SortableTableHead column="cantidad" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Cantidad</SortableTableHead>
-                    <TableHead>Motivo</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {movimientos.map((m) => (
-                    <TableRow key={m.id}>
-                      <TableCell className="text-muted-foreground text-xs">{new Date(m.created_at).toLocaleString("es-DO")}</TableCell>
-                      <TableCell>
-                        <span className="font-medium">{m.producto_nombre}</span>{" "}
-                        <span className="text-xs text-muted-foreground font-mono">{m.producto_sku}</span>
-                      </TableCell>
-                      <TableCell><Badge variant={TIPO_VARIANT[m.tipo]}>{m.tipo}</Badge></TableCell>
-                      <TableCell className={`text-right font-mono tabular-nums ${Number(m.cantidad) < 0 ? "text-destructive" : ""}`}>
-                        {Number(m.cantidad) > 0 ? "+" : ""}{m.cantidad}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{m.motivo || "—"}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <div className="px-3">
-                <Pagination
-                  page={state.page}
-                  totalPages={totalPages}
-                  total={total}
-                  pageSize={state.pageSize}
-                  onPageChange={setPage}
-                  onPageSizeChange={setPageSize}
-                />
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <ScrollableTableCard
+        loading={loading}
+        error={error || formError || null}
+        isEmpty={movimientos.length === 0}
+        emptyIcon={<History className="h-6 w-6" />}
+        emptyMessage="Aún no hay movimientos registrados."
+        maxHeight="calc(100vh - 340px)"
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+              <TableHead>Producto</TableHead>
+              <TableHead>Tipo</TableHead>
+              <SortableTableHead column="cantidad" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Cantidad</SortableTableHead>
+              <TableHead>Motivo</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {movimientos.map((m) => (
+              <TableRow key={m.id}>
+                <TableCell className="text-muted-foreground text-xs">{new Date(m.created_at).toLocaleString("es-DO")}</TableCell>
+                <TableCell>
+                  <span className="font-medium">{m.producto_nombre}</span>{" "}
+                  <span className="text-xs text-muted-foreground font-mono">{m.producto_sku}</span>
+                </TableCell>
+                <TableCell><Badge variant={TIPO_VARIANT[m.tipo]}>{m.tipo}</Badge></TableCell>
+                <TableCell className={`text-right font-mono tabular-nums ${Number(m.cantidad) < 0 ? "text-destructive" : ""}`}>
+                  {Number(m.cantidad) > 0 ? "+" : ""}{m.cantidad}
+                </TableCell>
+                <TableCell className="text-muted-foreground">{m.motivo || "—"}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

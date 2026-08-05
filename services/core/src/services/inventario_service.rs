@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-const TIPOS: [&str; 3] = ["ENTRADA", "SALIDA", "AJUSTE"];
-
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Movimiento {
     pub id: Uuid,
@@ -122,37 +120,76 @@ impl InventarioService {
         Ok((rows, total))
     }
 
-    /// Manual movement from the UI (entrada/salida/ajuste form).
+    /// Manual movement from the UI — solo AJUSTE. ENTRADA/SALIDA nunca se
+    /// crean a mano: salen automáticamente de ventas/compras/notas de crédito.
     pub async fn create_movimiento(&self, tenant_id: &str, usuario_id: Uuid, req: CreateMovimientoRequest) -> anyhow::Result<Movimiento> {
-        if !TIPOS.contains(&req.tipo.as_str()) {
-            anyhow::bail!("Tipo inválido: debe ser ENTRADA, SALIDA o AJUSTE");
+        if req.tipo != "AJUSTE" {
+            anyhow::bail!(
+                "Solo se permiten ajustes manuales de inventario; ENTRADA/SALIDA se generan automáticamente por ventas, compras y devoluciones"
+            );
         }
         if req.cantidad == Decimal::ZERO {
             anyhow::bail!("La cantidad no puede ser cero");
         }
-        let signed_cantidad = match req.tipo.as_str() {
-            "ENTRADA" => req.cantidad.abs(),
-            "SALIDA" => -req.cantidad.abs(),
-            _ => req.cantidad, // AJUSTE: el usuario controla el signo
-        };
-        self.apply_movimiento(
+        let mut tx = self.pool.begin().await?;
+        let mov = Self::apply_movimiento_tx(
+            &mut tx,
             tenant_id,
             Some(usuario_id),
             req.producto_id,
             &req.tipo,
-            signed_cantidad,
+            req.cantidad, // AJUSTE: el usuario controla el signo
             req.costo_unitario,
             req.motivo,
             None,
             None,
         )
-        .await
+        .await?;
+        tx.commit().await?;
+        Ok(mov)
     }
 
-    /// Core primitive reused by Ventas/Compras once they exist — `cantidad` here
-    /// is already signed (positive increases stock, negative decreases it).
-    pub async fn apply_movimiento(
-        &self,
+    /// FOR UPDATE + chequeo de stock insuficiente + UPDATE de
+    /// `productos.stock_actual`. `delta` ya viene con signo (positivo
+    /// aumenta stock, negativo lo descuenta). No abre ni cierra transacción:
+    /// corre dentro de la del caller.
+    pub async fn adjust_stock_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+        producto_id: Uuid,
+        delta: Decimal,
+    ) -> anyhow::Result<()> {
+        let current: Option<(Decimal,)> = sqlx::query_as(
+            "SELECT stock_actual FROM productos WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+        )
+        .bind(producto_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let current_stock = current.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?.0;
+        let new_stock = current_stock + delta;
+        if new_stock < Decimal::ZERO {
+            anyhow::bail!(
+                "Stock insuficiente: disponible {}, se intenta descontar {}",
+                current_stock,
+                delta.abs()
+            );
+        }
+
+        sqlx::query("UPDATE productos SET stock_actual = $1, updated_at = NOW() WHERE id = $2")
+            .bind(new_stock)
+            .bind(producto_id)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Únicamente el INSERT en `movimientos_inventario` — no toca stock.
+    /// Compartido por ventas/compras/ajustes para no duplicar el shape del
+    /// INSERT en cada service. No abre ni cierra transacción.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_movimiento_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         tenant_id: &str,
         usuario_id: Option<Uuid>,
         producto_id: Uuid,
@@ -163,31 +200,6 @@ impl InventarioService {
         referencia_tipo: Option<&str>,
         referencia_id: Option<Uuid>,
     ) -> anyhow::Result<Movimiento> {
-        let mut tx = self.pool.begin().await?;
-
-        let current: Option<(Decimal,)> = sqlx::query_as(
-            "SELECT stock_actual FROM productos WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-        )
-        .bind(producto_id)
-        .bind(tenant_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let current_stock = current.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?.0;
-        let new_stock = current_stock + cantidad;
-        if new_stock < Decimal::ZERO {
-            anyhow::bail!(
-                "Stock insuficiente: disponible {}, se intenta descontar {}",
-                current_stock,
-                cantidad.abs()
-            );
-        }
-
-        sqlx::query("UPDATE productos SET stock_actual = $1, updated_at = NOW() WHERE id = $2")
-            .bind(new_stock)
-            .bind(producto_id)
-            .execute(&mut *tx)
-            .await?;
-
         let mov = sqlx::query_as::<_, Movimiento>(
             r#"INSERT INTO movimientos_inventario (tenant_id, producto_id, tipo, cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, usuario_id)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -202,11 +214,45 @@ impl InventarioService {
         .bind(referencia_tipo)
         .bind(referencia_id)
         .bind(usuario_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
-
-        tx.commit().await?;
         Ok(mov)
+    }
+
+    /// Compone `adjust_stock_tx` + `insert_movimiento_tx` para el caso simple
+    /// de un solo paso (ajuste manual, nota de crédito): mueve stock e
+    /// inserta el movimiento en la misma llamada, dentro de la tx del caller.
+    /// Ventas/Compras NO usan esto — su UPDATE de stock está fusionado con
+    /// otra lectura/cálculo (precio+lock, costo promedio) y ocurre antes de
+    /// que exista el id de referencia, así que llaman los dos helpers por
+    /// separado en pasos distintos.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_movimiento_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+        usuario_id: Option<Uuid>,
+        producto_id: Uuid,
+        tipo: &str,
+        cantidad: Decimal,
+        costo_unitario: Option<Decimal>,
+        motivo: Option<String>,
+        referencia_tipo: Option<&str>,
+        referencia_id: Option<Uuid>,
+    ) -> anyhow::Result<Movimiento> {
+        Self::adjust_stock_tx(tx, tenant_id, producto_id, cantidad).await?;
+        Self::insert_movimiento_tx(
+            tx,
+            tenant_id,
+            usuario_id,
+            producto_id,
+            tipo,
+            cantidad,
+            costo_unitario,
+            motivo,
+            referencia_tipo,
+            referencia_id,
+        )
+        .await
     }
 
     pub async fn resumen(&self, tenant_id: &str) -> anyhow::Result<ResumenInventario> {

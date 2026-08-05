@@ -296,16 +296,18 @@ impl VentasService {
             items.push(vi);
 
             if !entrega_diferida {
-                sqlx::query(
-                    r#"INSERT INTO movimientos_inventario (tenant_id, producto_id, tipo, cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, usuario_id)
-                       VALUES ($1, $2, 'SALIDA', $3, NULL, 'Venta POS', 'VENTA', $4, $5)"#,
+                crate::services::inventario_service::InventarioService::insert_movimiento_tx(
+                    &mut tx,
+                    tenant_id,
+                    Some(usuario_id),
+                    producto_id,
+                    "SALIDA",
+                    -cantidad,
+                    None,
+                    Some("Venta POS".to_string()),
+                    Some("VENTA"),
+                    Some(venta.id),
                 )
-                .bind(tenant_id)
-                .bind(producto_id)
-                .bind(-cantidad)
-                .bind(venta.id)
-                .bind(usuario_id)
-                .execute(&mut *tx)
                 .await?;
             }
         }
@@ -490,22 +492,18 @@ impl VentasService {
             if item.cantidad_entregada <= Decimal::ZERO {
                 continue;
             }
-            sqlx::query("UPDATE productos SET stock_actual = stock_actual + $1, updated_at = NOW() WHERE id = $2")
-                .bind(item.cantidad_entregada)
-                .bind(item.producto_id)
-                .execute(&mut *tx)
-                .await?;
-
-            sqlx::query(
-                r#"INSERT INTO movimientos_inventario (tenant_id, producto_id, tipo, cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, usuario_id)
-                   VALUES ($1, $2, 'ENTRADA', $3, NULL, 'Nota de Crédito', 'NOTA_CREDITO', $4, $5)"#,
+            crate::services::inventario_service::InventarioService::apply_movimiento_tx(
+                &mut tx,
+                tenant_id,
+                Some(usuario_id),
+                item.producto_id,
+                "ENTRADA",
+                item.cantidad_entregada,
+                None,
+                Some("Nota de Crédito".to_string()),
+                Some("NOTA_CREDITO"),
+                Some(venta_id),
             )
-            .bind(tenant_id)
-            .bind(item.producto_id)
-            .bind(item.cantidad_entregada)
-            .bind(venta_id)
-            .bind(usuario_id)
-            .execute(&mut *tx)
             .await?;
         }
 

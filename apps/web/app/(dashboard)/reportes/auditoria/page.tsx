@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { History, Search } from "lucide-react";
 import {
-  Badge, Card, CardContent, Input, Select,
+  Badge, Input, Select,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow, Pagination,
+  ScrollableTableCard,
 } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { useServerTable } from "@/lib/use-server-table";
-import { useDebouncedValue } from "@/lib/use-debounced-value";
+import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface AuditoriaEntry {
   id: string;
@@ -46,9 +47,15 @@ const ACCION_VARIANT: Record<string, "default" | "success" | "warning" | "destru
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
 export default function AuditoriaPage() {
+  return (
+    <Suspense fallback={null}>
+      <AuditoriaPageContent />
+    </Suspense>
+  );
+}
+
+function AuditoriaPageContent() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
-  const [accionInput, setAccionInput] = useState("");
-  const debouncedAccion = useDebouncedValue(accionInput, 250);
 
   useEffect(() => {
     apiFetch<{ usuarios: Usuario[] }>("/api/config/usuarios").then((d) => setUsuarios(d.usuarios)).catch(() => {});
@@ -73,15 +80,12 @@ export default function AuditoriaPage() {
     pollIntervalMs: FIVE_MINUTES_MS,
   });
 
-  useEffect(() => {
-    setFilters({ accion: debouncedAccion });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedAccion]);
+  const [accionInput, setAccionInput] = useSearchFilterSync(state.filters.accion || "", (accion) => setFilters({ accion }));
 
   const usuarioNombre = (id: string | null) => usuarios.find((u) => u.id === id)?.nombre || "—";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Auditoría</h1>
         <p className="text-sm text-muted-foreground mt-1">Quién hizo qué — ventas, descuentos, inventario, usuarios, nómina y licencia. Se actualiza automáticamente cada 5 minutos.</p>
@@ -122,62 +126,53 @@ export default function AuditoriaPage() {
         />
       </div>
 
-      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
-
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : entradas.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <History className="h-6 w-6" />
-              Todavía no hay actividad registrada.
-            </div>
-          ) : (
-            <>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
-                    <TableHead>Usuario</TableHead>
-                    <SortableTableHead column="accion" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Acción</SortableTableHead>
-                    <SortableTableHead column="entidad" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Entidad</SortableTableHead>
-                    <TableHead>Detalle</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {entradas.map((e) => (
-                    <TableRow key={e.id}>
-                      <TableCell className="text-muted-foreground whitespace-nowrap">
-                        {new Date(e.created_at).toLocaleString("es-DO", { dateStyle: "short", timeStyle: "short" })}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{usuarioNombre(e.usuario_id)}</TableCell>
-                      <TableCell>
-                        <Badge variant={ACCION_VARIANT[e.accion] || "default"}>{e.accion.replaceAll("_", " ")}</Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{e.entidad}</TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground max-w-md truncate">
-                        {Object.keys(e.detalle || {}).length > 0 ? JSON.stringify(e.detalle) : "—"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <div className="px-3">
-                <Pagination
-                  page={state.page}
-                  totalPages={totalPages}
-                  total={total}
-                  pageSize={state.pageSize}
-                  onPageChange={setPage}
-                  onPageSizeChange={setPageSize}
-                  pageSizeOptions={[10, 20, 50, 100]}
-                />
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <ScrollableTableCard
+        loading={loading}
+        error={error}
+        isEmpty={entradas.length === 0}
+        emptyIcon={<History className="h-6 w-6" />}
+        emptyMessage="Todavía no hay actividad registrada."
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            pageSizeOptions={[10, 20, 50, 100]}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+              <TableHead>Usuario</TableHead>
+              <SortableTableHead column="accion" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Acción</SortableTableHead>
+              <SortableTableHead column="entidad" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Entidad</SortableTableHead>
+              <TableHead>Detalle</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {entradas.map((e) => (
+              <TableRow key={e.id}>
+                <TableCell className="text-muted-foreground whitespace-nowrap">
+                  {new Date(e.created_at).toLocaleString("es-DO", { dateStyle: "short", timeStyle: "short" })}
+                </TableCell>
+                <TableCell className="text-muted-foreground">{usuarioNombre(e.usuario_id)}</TableCell>
+                <TableCell>
+                  <Badge variant={ACCION_VARIANT[e.accion] || "default"}>{e.accion.replaceAll("_", " ")}</Badge>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{e.entidad}</TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground max-w-md truncate">
+                  {Object.keys(e.detalle || {}).length > 0 ? JSON.stringify(e.detalle) : "—"}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

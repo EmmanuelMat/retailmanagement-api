@@ -1,12 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { Plus, ShoppingBag } from "lucide-react";
 import {
   Button,
-  Card,
-  CardContent,
   Input,
   Select,
   Table,
@@ -17,6 +15,7 @@ import {
   TableHeader,
   TableRow,
   Pagination,
+  ScrollableTableCard,
   formatDOP,
 } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
@@ -42,6 +41,14 @@ interface ComprasFilters {
 }
 
 export default function ComprasPage() {
+  return (
+    <Suspense fallback={null}>
+      <ComprasPageContent />
+    </Suspense>
+  );
+}
+
+function ComprasPageContent() {
   const [proveedores, setProveedores] = useState<Proveedor[]>([]);
 
   useEffect(() => {
@@ -67,7 +74,7 @@ export default function ComprasPage() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold font-serif tracking-tight">Compras</h1>
@@ -103,53 +110,44 @@ export default function ComprasPage() {
         />
       </div>
 
-      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
-
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : compras.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <ShoppingBag className="h-6 w-6" />
-              No hay compras registradas todavía.
-            </div>
-          ) : (
-            <>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
-                    <TableHead>Proveedor</TableHead>
-                    <TableHead>Pago</TableHead>
-                    <SortableTableHead column="total" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Total</SortableTableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {compras.map((c) => (
-                    <TableRow key={c.id}>
-                      <TableCell className="text-xs text-muted-foreground">{new Date(c.created_at).toLocaleString("es-DO")}</TableCell>
-                      <TableCell className="font-medium">{c.proveedor_nombre || "—"}</TableCell>
-                      <TableCell className="text-muted-foreground">{c.metodo_pago}</TableCell>
-                      <TableCell className="text-right font-mono tabular-nums font-medium">{formatDOP(c.total)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <div className="px-3">
-                <Pagination
-                  page={state.page}
-                  totalPages={totalPages}
-                  total={total}
-                  pageSize={state.pageSize}
-                  onPageChange={setPage}
-                  onPageSizeChange={setPageSize}
-                />
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <ScrollableTableCard
+        loading={loading}
+        error={error}
+        isEmpty={compras.length === 0}
+        emptyIcon={<ShoppingBag className="h-6 w-6" />}
+        emptyMessage="No hay compras registradas todavía."
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+              <TableHead>Proveedor</TableHead>
+              <TableHead>Pago</TableHead>
+              <SortableTableHead column="total" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Total</SortableTableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {compras.map((c) => (
+              <TableRow key={c.id}>
+                <TableCell className="text-xs text-muted-foreground">{new Date(c.created_at).toLocaleString("es-DO")}</TableCell>
+                <TableCell className="font-medium">{c.proveedor_nombre || "—"}</TableCell>
+                <TableCell className="text-muted-foreground">{c.metodo_pago}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums font-medium">{formatDOP(c.total)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

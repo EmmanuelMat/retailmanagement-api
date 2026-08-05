@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, ApiError } from "./api";
 
 export type SortDir = "asc" | "desc";
@@ -46,6 +47,24 @@ export interface UseServerTableResult<T, F extends Record<string, any>> {
   refresh: () => void;
 }
 
+const RESERVED_QUERY_KEYS = new Set(["page", "pageSize", "sortBy", "sortDir"]);
+
+/** Shared by the fetch call and the URL sync so the query-string shape never drifts between the two. */
+function buildQueryString<F extends Record<string, any>>(state: ServerTableState<F>): URLSearchParams {
+  const qs = new URLSearchParams();
+  qs.set("page", String(state.page));
+  qs.set("pageSize", String(state.pageSize));
+  if (state.sortBy) {
+    qs.set("sortBy", state.sortBy);
+    qs.set("sortDir", state.sortDir);
+  }
+  for (const [key, value] of Object.entries(state.filters)) {
+    if (value === undefined || value === null || value === "") continue;
+    qs.set(key, String(value));
+  }
+  return qs;
+}
+
 export function useServerTable<T = any, F extends Record<string, any> = Record<string, never>>(
   opts: UseServerTableOptions<F>
 ): UseServerTableResult<T, F> {
@@ -58,12 +77,31 @@ export function useServerTable<T = any, F extends Record<string, any> = Record<s
     pollIntervalMs,
   } = opts;
 
-  const [state, setState] = useState<ServerTableState<F>>({
-    page: 1,
-    pageSize: initialPageSize,
-    sortBy: initialSortBy,
-    sortDir: initialSortDir,
-    filters: initialFilters,
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // Seeded once from the URL on mount so filters/sort/page survive navigating
+  // away and back (e.g. browser back button) instead of always resetting to
+  // the page's defaults.
+  const [state, setState] = useState<ServerTableState<F>>(() => {
+    const urlPage = Number(searchParams.get("page"));
+    const urlPageSize = Number(searchParams.get("pageSize"));
+    const urlSortDir = searchParams.get("sortDir");
+    const filters = { ...initialFilters } as Record<string, any>;
+    for (const [key, value] of searchParams.entries()) {
+      if (RESERVED_QUERY_KEYS.has(key)) continue;
+      filters[key] = value;
+    }
+    return {
+      page: urlPage > 0 ? urlPage : 1,
+      pageSize: urlPageSize > 0 ? urlPageSize : initialPageSize,
+      sortBy: searchParams.get("sortBy") || initialSortBy,
+      sortDir: urlSortDir === "asc" || urlSortDir === "desc" ? urlSortDir : initialSortDir,
+      filters: filters as F,
+    };
+    // Only read the URL on first mount - after that `state` is the source of truth.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   });
 
   const [items, setItems] = useState<T[]>([]);
@@ -79,19 +117,8 @@ export function useServerTable<T = any, F extends Record<string, any> = Record<s
     async (silent: boolean) => {
       if (!silent) setLoading(true);
       setError(null);
-      const qs = new URLSearchParams();
-      qs.set("page", String(state.page));
-      qs.set("pageSize", String(state.pageSize));
-      if (state.sortBy) {
-        qs.set("sortBy", state.sortBy);
-        qs.set("sortDir", state.sortDir);
-      }
-      for (const [key, value] of Object.entries(state.filters)) {
-        if (value === undefined || value === null || value === "") continue;
-        qs.set(key, String(value));
-      }
       try {
-        const res = await apiFetch<CoreListResponse<T>>(`${path}?${qs.toString()}`);
+        const res = await apiFetch<CoreListResponse<T>>(`${path}?${buildQueryString(state).toString()}`);
         setItems(res.items);
         setTotal(res.total);
         setTotalPages(res.total_pages);
@@ -109,6 +136,15 @@ export function useServerTable<T = any, F extends Record<string, any> = Record<s
     fetchPage(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchPage, refreshTick]);
+
+  // Keep the URL in sync (replace, not push, so this doesn't spam history)
+  // so page/pageSize/sortBy/sortDir/filters are restored on back-navigation.
+  // Polling refreshes (refreshTick/silent fetches) don't touch `state`, so
+  // they never trigger this.
+  useEffect(() => {
+    router.replace(`${pathname}?${buildQueryString(state).toString()}` as any, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateKey, pathname]);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {

@@ -223,9 +223,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     .toUpperCase();
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="flex">
-        <aside className="hidden lg:flex lg:flex-col w-[248px] shrink-0 border-r border-border bg-surface min-h-screen sticky top-0">
+    <div className="h-screen overflow-hidden bg-background">
+      <div className="flex h-full">
+        <aside className="hidden lg:flex lg:flex-col w-[248px] shrink-0 border-r border-border bg-surface h-full overflow-y-auto">
           <Link href="/dashboard" className="flex items-center gap-2.5 px-5 h-16 border-b border-border shrink-0">
             {tenant?.logo_url ? (
               <img src={tenant.logo_url} alt="" className="h-8 w-8 rounded-md object-cover shrink-0 border border-border" />
@@ -293,7 +293,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </aside>
 
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 h-full overflow-y-auto">
           <header className="h-16 border-b border-border bg-surface/90 backdrop-blur-sm sticky top-0 z-20 flex items-center justify-between px-5">
             <div className="lg:hidden flex items-center gap-2 min-w-0">
               {tenant?.logo_url ? (

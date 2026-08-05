@@ -188,17 +188,18 @@ impl ComprasService {
             .await?;
             items.push(ci);
 
-            sqlx::query(
-                r#"INSERT INTO movimientos_inventario (tenant_id, producto_id, tipo, cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, usuario_id)
-                   VALUES ($1, $2, 'ENTRADA', $3, $4, 'Compra a proveedor', 'COMPRA', $5, $6)"#,
+            crate::services::inventario_service::InventarioService::insert_movimiento_tx(
+                &mut tx,
+                tenant_id,
+                Some(usuario_id),
+                producto_id,
+                "ENTRADA",
+                cantidad,
+                Some(costo_unitario),
+                Some("Compra a proveedor".to_string()),
+                Some("COMPRA"),
+                Some(compra.id),
             )
-            .bind(tenant_id)
-            .bind(producto_id)
-            .bind(cantidad)
-            .bind(costo_unitario)
-            .bind(compra.id)
-            .bind(usuario_id)
-            .execute(&mut *tx)
             .await?;
         }
 
