@@ -58,7 +58,7 @@ function AuditoriaPageContent() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
 
   useEffect(() => {
-    apiFetch<{ usuarios: Usuario[] }>("/api/config/usuarios").then((d) => setUsuarios(d.usuarios)).catch(() => {});
+    apiFetch<{ items: Usuario[] }>("/api/config/usuarios?pageSize=1000").then((d) => setUsuarios(d.items)).catch(() => {});
   }, []);
 
   const {

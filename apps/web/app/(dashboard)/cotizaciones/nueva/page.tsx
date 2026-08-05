@@ -39,7 +39,7 @@ export default function NuevaCotizacionPage() {
 
   useEffect(() => {
     apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
-    apiFetch<{ clientes: Cliente[] }>("/api/clientes").then((d) => setClientes(d.clientes)).catch(() => {});
+    apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
   }, []);
 
   function updateLinea(i: number, patch: Partial<Linea>) {

@@ -40,7 +40,7 @@ export default function NuevaCompraPage() {
 
   useEffect(() => {
     apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
-    apiFetch<{ proveedores: Proveedor[] }>("/api/proveedores").then((d) => setProveedores(d.proveedores)).catch(() => {});
+    apiFetch<{ items: Proveedor[] }>("/api/proveedores?pageSize=1000&activo=true").then((d) => setProveedores(d.items)).catch(() => {});
   }, []);
 
   function updateLinea(i: number, patch: Partial<Linea>) {

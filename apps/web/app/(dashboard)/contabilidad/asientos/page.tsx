@@ -1,9 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 import { Plus, Trash2, ScrollText } from "lucide-react";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import {
+  Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
+  Pagination, ScrollableTableCard, formatDOP,
+} from "@repo/ui";
 import { apiFetch } from "@/lib/api";
+import { useServerTable } from "@/lib/use-server-table";
 
 interface Asiento {
   id: string;
@@ -21,29 +26,45 @@ interface Linea {
   haber: string;
 }
 
+interface AsientosFilters {
+  cuenta?: string;
+  referenciaTipo?: string;
+  fechaDesde?: string;
+  fechaHasta?: string;
+}
+
 export default function AsientosPage() {
-  const [asientos, setAsientos] = useState<Asiento[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  return (
+    <Suspense fallback={null}>
+      <AsientosPageContent />
+    </Suspense>
+  );
+}
+
+function AsientosPageContent() {
+  const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [descripcion, setDescripcion] = useState("");
   const [lineas, setLineas] = useState<Linea[]>([{ cuenta: "", debe: "", haber: "" }, { cuenta: "", debe: "", haber: "" }]);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await apiFetch<{ asientos: Asiento[] }>("/api/contabilidad/asientos");
-      setAsientos(data.asientos);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
+  const {
+    items: asientos,
+    total,
+    totalPages,
+    loading,
+    error,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+    refresh,
+  } = useServerTable<Asiento, AsientosFilters>({
+    path: "/api/contabilidad/asientos",
+    initialPageSize: 20,
+    initialSortBy: "fecha",
+    initialSortDir: "desc",
+  });
 
   function updateLinea(i: number, patch: Partial<Linea>) {
     setLineas((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
@@ -65,7 +86,7 @@ export default function AsientosPage() {
     e.preventDefault();
     if (!descripcion.trim() || !cuadra) return;
     setSaving(true);
-    setError("");
+    setFormError("");
     try {
       await apiFetch("/api/contabilidad/asientos", {
         method: "POST",
@@ -76,16 +97,16 @@ export default function AsientosPage() {
       });
       setDescripcion("");
       setLineas([{ cuenta: "", debe: "", haber: "" }, { cuenta: "", debe: "", haber: "" }]);
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e.message);
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Libro diario</h1>
         <p className="text-sm text-muted-foreground mt-1">Asientos automáticos (Ventas/Compras/Nómina) y manuales.</p>
@@ -113,49 +134,76 @@ export default function AsientosPage() {
                 Debe {formatDOP(totalDebe)} · Haber {formatDOP(totalHaber)} {cuadra && "✓ Cuadra"}
               </p>
             </div>
-            {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
+            {formError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{formError}</div>}
             <Button type="submit" disabled={saving || !cuadra}>{saving ? "Guardando..." : "Registrar asiento"}</Button>
           </form>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : asientos.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <ScrollText className="h-6 w-6" />
-              Sin asientos todavía.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Fecha</TableHead>
-                  <TableHead>Cuenta</TableHead>
-                  <TableHead>Descripción</TableHead>
-                  <TableHead>Origen</TableHead>
-                  <TableHead className="text-right">Debe</TableHead>
-                  <TableHead className="text-right">Haber</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {asientos.map((a) => (
-                  <TableRow key={a.id}>
-                    <TableCell className="text-xs text-muted-foreground">{a.fecha}</TableCell>
-                    <TableCell className="font-medium">{a.cuenta}</TableCell>
-                    <TableCell className="text-muted-foreground">{a.descripcion}</TableCell>
-                    <TableCell>{a.referencia_tipo && <Badge variant="secondary">{a.referencia_tipo}</Badge>}</TableCell>
-                    <TableCell className="text-right tabular-nums">{Number(a.debe) > 0 ? formatDOP(a.debe) : "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums">{Number(a.haber) > 0 ? formatDOP(a.haber) : "—"}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <div className="flex flex-wrap gap-3">
+        <Input
+          value={state.filters.cuenta || ""}
+          onChange={(e) => setFilters({ cuenta: e.target.value || undefined })}
+          placeholder="Cuenta exacta (ej. 1100 Caja y Bancos)"
+          className="max-w-[260px]"
+        />
+        <Input
+          type="date"
+          value={state.filters.fechaDesde || ""}
+          onChange={(e) => setFilters({ fechaDesde: e.target.value || undefined })}
+          className="max-w-[160px]"
+        />
+        <Input
+          type="date"
+          value={state.filters.fechaHasta || ""}
+          onChange={(e) => setFilters({ fechaHasta: e.target.value || undefined })}
+          className="max-w-[160px]"
+        />
+      </div>
+
+      <ScrollableTableCard
+        loading={loading}
+        error={error}
+        isEmpty={asientos.length === 0}
+        emptyIcon={<ScrollText className="h-6 w-6" />}
+        emptyMessage="Sin asientos todavía."
+        maxHeight="calc(100vh - 480px)"
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="fecha" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+              <SortableTableHead column="cuenta" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Cuenta</SortableTableHead>
+              <TableHead>Descripción</TableHead>
+              <TableHead>Origen</TableHead>
+              <TableHead className="text-right">Debe</TableHead>
+              <TableHead className="text-right">Haber</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {asientos.map((a) => (
+              <TableRow key={a.id}>
+                <TableCell className="text-xs text-muted-foreground">{a.fecha}</TableCell>
+                <TableCell className="font-medium">{a.cuenta}</TableCell>
+                <TableCell className="text-muted-foreground">{a.descripcion}</TableCell>
+                <TableCell>{a.referencia_tipo && <Badge variant="secondary">{a.referencia_tipo}</Badge>}</TableCell>
+                <TableCell className="text-right tabular-nums">{Number(a.debe) > 0 ? formatDOP(a.debe) : "—"}</TableCell>
+                <TableCell className="text-right tabular-nums">{Number(a.haber) > 0 ? formatDOP(a.haber) : "—"}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

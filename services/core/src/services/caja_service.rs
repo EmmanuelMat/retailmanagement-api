@@ -135,26 +135,100 @@ impl CajaService {
         Ok(actualizado)
     }
 
-    pub async fn list_movimientos(&self, tenant_id: &str) -> anyhow::Result<Vec<CajaMovimiento>> {
-        let rows = sqlx::query_as::<_, CajaMovimiento>(
+    const MOVIMIENTOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("created_at", "created_at"),
+        ("monto", "monto"),
+    ];
+
+    pub async fn list_movimientos(
+        &self,
+        tenant_id: &str,
+        tipo: Option<String>,
+        referencia_tipo: Option<String>,
+        fecha_desde: Option<chrono::NaiveDate>,
+        fecha_hasta: Option<chrono::NaiveDate>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<CajaMovimiento>, i64)> {
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::text IS NULL OR tipo = $2)
+               AND ($3::text IS NULL OR referencia_tipo = $3)
+               AND ($4::date IS NULL OR created_at::date >= $4)
+               AND ($5::date IS NULL OR created_at::date <= $5)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM caja_movimientos {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(&tipo)
+            .bind(&referencia_tipo)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::MOVIMIENTOS_SORTABLE, "created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
             r#"SELECT id, tipo, concepto, monto, metodo_pago, referencia_tipo, created_at
-               FROM caja_movimientos WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 200"#,
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+               FROM caja_movimientos
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $6 OFFSET $7"#
+        );
+        let rows = sqlx::query_as::<_, CajaMovimiento>(&query)
+            .bind(tenant_id)
+            .bind(&tipo)
+            .bind(&referencia_tipo)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
-    pub async fn list_sesiones(&self, tenant_id: &str) -> anyhow::Result<Vec<CajaSesion>> {
-        let rows = sqlx::query_as::<_, CajaSesion>(
+    const SESIONES_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("abierta_at", "abierta_at"),
+        ("diferencia", "diferencia"),
+    ];
+
+    pub async fn list_sesiones(
+        &self,
+        tenant_id: &str,
+        estado: Option<String>,
+        usuario_id: Option<Uuid>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<CajaSesion>, i64)> {
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::text IS NULL OR estado = $2)
+               AND ($3::uuid IS NULL OR usuario_id = $3)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM caja_sesiones {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(&estado)
+            .bind(usuario_id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::SESIONES_SORTABLE, "abierta_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
             r#"SELECT id, tenant_id, usuario_id, monto_inicial, monto_final, monto_esperado, diferencia, estado, abierta_at, cerrada_at
-               FROM caja_sesiones WHERE tenant_id = $1 ORDER BY abierta_at DESC LIMIT 50"#,
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+               FROM caja_sesiones
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $4 OFFSET $5"#
+        );
+        let rows = sqlx::query_as::<_, CajaSesion>(&query)
+            .bind(tenant_id)
+            .bind(&estado)
+            .bind(usuario_id)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 }
 
@@ -206,14 +280,54 @@ impl BancosService {
         Self { pool }
     }
 
-    pub async fn list(&self, tenant_id: &str) -> anyhow::Result<Vec<Banco>> {
-        let rows = sqlx::query_as::<_, Banco>(
-            "SELECT id, tenant_id, nombre_banco, numero_cuenta, tipo_cuenta, saldo, activo, created_at FROM bancos WHERE tenant_id = $1 AND activo = true ORDER BY nombre_banco",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+    const BANCOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("nombre_banco", "nombre_banco"),
+        ("saldo", "saldo"),
+        ("created_at", "created_at"),
+    ];
+
+    pub async fn list(
+        &self,
+        tenant_id: &str,
+        search: Option<String>,
+        activo: Option<bool>,
+        tipo_cuenta: Option<String>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<Banco>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::bool IS NULL OR activo = $2)
+               AND ($3::text IS NULL OR tipo_cuenta = $3)
+               AND ($4::text IS NULL OR LOWER(nombre_banco) LIKE $4 OR numero_cuenta LIKE $4)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM bancos {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&tipo_cuenta)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::BANCOS_SORTABLE, "nombre_banco ASC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT id, tenant_id, nombre_banco, numero_cuenta, tipo_cuenta, saldo, activo, created_at
+               FROM bancos
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $5 OFFSET $6"#
+        );
+        let rows = sqlx::query_as::<_, Banco>(&query)
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&tipo_cuenta)
+            .bind(&pattern)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn create(&self, tenant_id: &str, req: CreateBancoRequest) -> anyhow::Result<Banco> {
@@ -235,16 +349,43 @@ impl BancosService {
         Ok(banco)
     }
 
-    pub async fn list_movimientos(&self, tenant_id: &str, banco_id: Uuid) -> anyhow::Result<Vec<BancoMovimiento>> {
-        let rows = sqlx::query_as::<_, BancoMovimiento>(
-            r#"SELECT id, banco_id, tipo, concepto, monto, created_at FROM banco_movimientos
-               WHERE banco_id = $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 100"#,
-        )
-        .bind(banco_id)
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+    const BANCO_MOVIMIENTOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("created_at", "created_at"),
+        ("monto", "monto"),
+    ];
+
+    pub async fn list_movimientos(
+        &self,
+        tenant_id: &str,
+        banco_id: Uuid,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<BancoMovimiento>, i64)> {
+        const WHERE_CLAUSE: &str = "WHERE banco_id = $1 AND tenant_id = $2";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM banco_movimientos {WHERE_CLAUSE}"))
+            .bind(banco_id)
+            .bind(tenant_id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::BANCO_MOVIMIENTOS_SORTABLE, "created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT id, banco_id, tipo, concepto, monto, created_at
+               FROM banco_movimientos
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $3 OFFSET $4"#
+        );
+        let rows = sqlx::query_as::<_, BancoMovimiento>(&query)
+            .bind(banco_id)
+            .bind(tenant_id)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn create_movimiento(&self, tenant_id: &str, banco_id: Uuid, usuario_id: Uuid, req: CreateBancoMovimientoRequest) -> anyhow::Result<BancoMovimiento> {

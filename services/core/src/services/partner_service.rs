@@ -106,20 +106,50 @@ impl PartnerService {
 
     // ---- Clientes ----
 
-    pub async fn list_clientes(&self, tenant_id: &str, search: Option<String>) -> anyhow::Result<Vec<Cliente>> {
+    const CLIENTES_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("nombre", "nombre"),
+        ("saldo_pendiente", "saldo_pendiente"),
+        ("created_at", "created_at"),
+    ];
+
+    pub async fn list_clientes(
+        &self,
+        tenant_id: &str,
+        search: Option<String>,
+        activo: Option<bool>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<Cliente>, i64)> {
         let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
-        let rows = sqlx::query_as::<_, Cliente>(
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::bool IS NULL OR activo = $2)
+               AND ($3::text IS NULL OR LOWER(nombre) LIKE $3 OR rnc_cedula LIKE $3)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM clientes {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::CLIENTES_SORTABLE, "nombre ASC");
+        let limit = page.limit(20);
+        let query = format!(
             r#"SELECT id, tenant_id, nombre, rnc_cedula, telefono, email, direccion, saldo_pendiente, limite_credito, activo, created_at
                FROM clientes
-               WHERE tenant_id = $1 AND activo = true
-                 AND ($2::text IS NULL OR LOWER(nombre) LIKE $2 OR rnc_cedula LIKE $2)
-               ORDER BY nombre ASC"#,
-        )
-        .bind(tenant_id)
-        .bind(&pattern)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $4 OFFSET $5"#
+        );
+        let rows = sqlx::query_as::<_, Cliente>(&query)
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&pattern)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn get_cliente(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<Cliente> {
@@ -250,20 +280,49 @@ impl PartnerService {
 
     // ---- Proveedores ----
 
-    pub async fn list_proveedores(&self, tenant_id: &str, search: Option<String>) -> anyhow::Result<Vec<Proveedor>> {
+    const PROVEEDORES_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("nombre", "nombre"),
+        ("created_at", "created_at"),
+    ];
+
+    pub async fn list_proveedores(
+        &self,
+        tenant_id: &str,
+        search: Option<String>,
+        activo: Option<bool>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<Proveedor>, i64)> {
         let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
-        let rows = sqlx::query_as::<_, Proveedor>(
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::bool IS NULL OR activo = $2)
+               AND ($3::text IS NULL OR LOWER(nombre) LIKE $3 OR rnc LIKE $3)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM proveedores {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::PROVEEDORES_SORTABLE, "nombre ASC");
+        let limit = page.limit(20);
+        let query = format!(
             r#"SELECT id, tenant_id, nombre, rnc, telefono, email, direccion, contacto, activo, created_at
                FROM proveedores
-               WHERE tenant_id = $1 AND activo = true
-                 AND ($2::text IS NULL OR LOWER(nombre) LIKE $2 OR rnc LIKE $2)
-               ORDER BY nombre ASC"#,
-        )
-        .bind(tenant_id)
-        .bind(&pattern)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $4 OFFSET $5"#
+        );
+        let rows = sqlx::query_as::<_, Proveedor>(&query)
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&pattern)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn get_proveedor(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<Proveedor> {

@@ -21,8 +21,8 @@ export default function NominaPage() {
   const [adelantos, setAdelantos] = useState<Adelanto[]>([]);
 
   useEffect(() => {
-    apiFetch<{ empleados: Empleado[] }>("/api/empleados").then((d) => setEmpleados(d.empleados)).catch(() => {});
-    apiFetch<{ adelantos: Adelanto[] }>("/api/nomina/adelantos").then((d) => setAdelantos(d.adelantos)).catch(() => {});
+    apiFetch<{ items: Empleado[] }>("/api/empleados?pageSize=1000&activo=true").then((d) => setEmpleados(d.items)).catch(() => {});
+    apiFetch<{ items: Adelanto[] }>("/api/nomina/adelantos?pageSize=1000").then((d) => setAdelantos(d.items)).catch(() => {});
   }, []);
 
   const nomina = empleados.reduce((sum, e) => sum + Number(e.salario_mensual), 0);

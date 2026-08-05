@@ -5,7 +5,8 @@ const CORE_HTTP = process.env.CORE_HTTP_URL || "http://localhost:3001";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const res = await fetch(`${CORE_HTTP}/v1/bancos/${id}/movimientos`, {
+  const qs = req.nextUrl.search;
+  const res = await fetch(`${CORE_HTTP}/v1/bancos/${id}/movimientos${qs}`, {
     headers: { Authorization: req.headers.get("authorization") || "" },
     cache: "no-store",
   });

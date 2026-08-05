@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Plus, Receipt } from "lucide-react";
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Suspense, useEffect, useState } from "react";
+import { Plus, Receipt, Search } from "lucide-react";
+import {
+  Button, Card, CardHeader, CardTitle, CardContent, Input, Label, Select,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
+  Pagination, ScrollableTableCard, formatDOP,
+} from "@repo/ui";
 import { apiFetch } from "@/lib/api";
+import { useServerTable } from "@/lib/use-server-table";
+import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Gasto {
   id: string;
@@ -13,11 +19,24 @@ interface Gasto {
   created_at: string;
 }
 
+interface GastosFilters {
+  categoria?: string;
+  search?: string;
+  fechaDesde?: string;
+  fechaHasta?: string;
+}
+
 export default function GastosPage() {
-  const [gastos, setGastos] = useState<Gasto[]>([]);
-  const [loading, setLoading] = useState(true);
+  return (
+    <Suspense fallback={null}>
+      <GastosPageContent />
+    </Suspense>
+  );
+}
+
+function GastosPageContent() {
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+  const [formError, setFormError] = useState("");
   const [concepto, setConcepto] = useState("");
   const [categoria, setCategoria] = useState("OTROS");
   const [monto, setMonto] = useState("");
@@ -37,41 +56,46 @@ export default function GastosPage() {
     } catch {}
   }, []);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await apiFetch<{ gastos: Gasto[] }>("/api/gastos");
-      setGastos(data.gastos);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const {
+    items: gastos,
+    total,
+    totalPages,
+    loading,
+    error,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+    refresh,
+  } = useServerTable<Gasto, GastosFilters>({
+    path: "/api/gastos",
+    initialPageSize: 20,
+    initialSortBy: "created_at",
+    initialSortDir: "desc",
+  });
 
-  useEffect(() => {
-    load();
-  }, []);
+  const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!concepto.trim() || !monto) return;
     setSaving(true);
-    setError("");
+    setFormError("");
     try {
       await apiFetch("/api/gastos", { method: "POST", body: JSON.stringify({ concepto, categoria, monto }) });
       setConcepto("");
       setMonto("");
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e.message);
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Gastos</h1>
         <p className="text-sm text-muted-foreground mt-1">Gastos operativos que no pasan por inventario (alquiler, servicios, transporte).</p>
@@ -105,44 +129,79 @@ export default function GastosPage() {
               Registrar
             </Button>
           </form>
+          {formError && <p className="text-sm text-destructive mt-2">{formError}</p>}
         </CardContent>
       </Card>
 
-      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
+      <div className="flex flex-wrap gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Buscar por concepto..." className="pl-9" />
+        </div>
+        <Select
+          value={state.filters.categoria || ""}
+          onChange={(e) => setFilters({ categoria: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="">Todas las categorías</option>
+          <option value="ALQUILER">Alquiler</option>
+          <option value="SERVICIOS">Servicios</option>
+          <option value="TRANSPORTE">Transporte</option>
+          <option value="OTROS">Otros</option>
+        </Select>
+        <Input
+          type="date"
+          value={state.filters.fechaDesde || ""}
+          onChange={(e) => setFilters({ fechaDesde: e.target.value || undefined })}
+          className="max-w-[160px]"
+        />
+        <Input
+          type="date"
+          value={state.filters.fechaHasta || ""}
+          onChange={(e) => setFilters({ fechaHasta: e.target.value || undefined })}
+          className="max-w-[160px]"
+        />
+      </div>
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : gastos.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <Receipt className="h-6 w-6" />
-              No hay gastos registrados.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Fecha</TableHead>
-                  <TableHead>Concepto</TableHead>
-                  <TableHead>Categoría</TableHead>
-                  <TableHead className="text-right">Monto</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {gastos.map((g) => (
-                  <TableRow key={g.id}>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(g.created_at).toLocaleDateString("es-DO")}</TableCell>
-                    <TableCell className="font-medium">{g.concepto}</TableCell>
-                    <TableCell className="text-muted-foreground">{g.categoria}</TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">{formatDOP(g.monto)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <ScrollableTableCard
+        loading={loading}
+        error={error}
+        isEmpty={gastos.length === 0}
+        emptyIcon={<Receipt className="h-6 w-6" />}
+        emptyMessage="No hay gastos registrados."
+        maxHeight="calc(100vh - 460px)"
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+              <TableHead>Concepto</TableHead>
+              <TableHead>Categoría</TableHead>
+              <SortableTableHead column="monto" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Monto</SortableTableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {gastos.map((g) => (
+              <TableRow key={g.id}>
+                <TableCell className="text-xs text-muted-foreground">{new Date(g.created_at).toLocaleDateString("es-DO")}</TableCell>
+                <TableCell className="font-medium">{g.concepto}</TableCell>
+                <TableCell className="text-muted-foreground">{g.categoria}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{formatDOP(g.monto)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

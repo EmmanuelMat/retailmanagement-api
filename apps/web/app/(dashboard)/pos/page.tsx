@@ -93,7 +93,7 @@ export default function PosPage() {
 
   useEffect(() => {
     apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
-    apiFetch<{ clientes: Cliente[] }>("/api/clientes").then((d) => setClientes(d.clientes)).catch(() => {});
+    apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
     apiFetch<{ sesion: unknown | null }>("/api/caja/resumen").then((d) => setCajaAbierta(!!d.sesion)).catch(() => {});
     try {
       const raw = localStorage.getItem("tenant");

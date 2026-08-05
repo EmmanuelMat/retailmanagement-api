@@ -29,8 +29,8 @@ export default function BancosPage() {
   async function load() {
     setLoading(true);
     try {
-      const data = await apiFetch<{ bancos: Banco[] }>("/api/bancos");
-      setBancos(data.bancos);
+      const data = await apiFetch<{ items: Banco[] }>("/api/bancos?pageSize=200&activo=true");
+      setBancos(data.items);
     } catch (e: any) {
       setError(e.message);
     } finally {

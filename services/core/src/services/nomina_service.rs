@@ -119,20 +119,62 @@ impl NominaService {
 
     // ---- Empleados ----
 
-    pub async fn list_empleados(&self, tenant_id: &str) -> anyhow::Result<Vec<EmpleadoConDisponible>> {
-        let empleados = sqlx::query_as::<_, Empleado>(
-            "SELECT id, tenant_id, nombre, cedula, puesto, salario_mensual, fecha_ingreso, activo, created_at FROM empleados WHERE tenant_id = $1 AND activo = true ORDER BY nombre",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
+    const EMPLEADOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("nombre", "nombre"),
+        ("salario_mensual", "salario_mensual"),
+        ("fecha_ingreso", "fecha_ingreso"),
+        ("created_at", "created_at"),
+    ];
 
+    pub async fn list_empleados(
+        &self,
+        tenant_id: &str,
+        search: Option<String>,
+        puesto: Option<String>,
+        activo: Option<bool>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<EmpleadoConDisponible>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::bool IS NULL OR activo = $2)
+               AND ($3::text IS NULL OR puesto = $3)
+               AND ($4::text IS NULL OR LOWER(nombre) LIKE $4 OR cedula LIKE $4)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM empleados {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&puesto)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::EMPLEADOS_SORTABLE, "nombre ASC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT id, tenant_id, nombre, cedula, puesto, salario_mensual, fecha_ingreso, activo, created_at
+               FROM empleados
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $5 OFFSET $6"#
+        );
+        let empleados = sqlx::query_as::<_, Empleado>(&query)
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&puesto)
+            .bind(&pattern)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+
+        // Enriquecimiento N+1 solo sobre la página actual, no la tabla entera.
         let mut out = Vec::with_capacity(empleados.len());
         for empleado in empleados {
             let disponible = self.disponible_adelanto(&empleado).await?;
             out.push(EmpleadoConDisponible { empleado, disponible_adelanto: disponible });
         }
-        Ok(out)
+        Ok((out, total))
     }
 
     pub async fn get_empleado(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<Empleado> {
@@ -211,16 +253,63 @@ impl NominaService {
         Ok(if disponible < Decimal::ZERO { Decimal::ZERO } else { disponible })
     }
 
-    pub async fn list_adelantos(&self, tenant_id: &str) -> anyhow::Result<Vec<AdelantoConEmpleado>> {
-        let rows = sqlx::query_as::<_, AdelantoConEmpleado>(
+    const ADELANTOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("created_at", "a.created_at"),
+        ("monto", "a.monto"),
+    ];
+
+    pub async fn list_adelantos(
+        &self,
+        tenant_id: &str,
+        estado: Option<String>,
+        empleado_id: Option<Uuid>,
+        search: Option<String>,
+        fecha_desde: Option<chrono::NaiveDate>,
+        fecha_hasta: Option<chrono::NaiveDate>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<AdelantoConEmpleado>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE a.tenant_id = $1
+               AND ($2::text IS NULL OR a.estado = $2)
+               AND ($3::uuid IS NULL OR a.empleado_id = $3)
+               AND ($4::text IS NULL OR LOWER(e.nombre) LIKE $4)
+               AND ($5::date IS NULL OR a.created_at::date >= $5)
+               AND ($6::date IS NULL OR a.created_at::date <= $6)";
+
+        let total: i64 = sqlx::query_scalar(&format!(
+            r#"SELECT COUNT(*) FROM nomina_adelantos a JOIN empleados e ON e.id = a.empleado_id {WHERE_CLAUSE}"#
+        ))
+        .bind(tenant_id)
+        .bind(&estado)
+        .bind(empleado_id)
+        .bind(&pattern)
+        .bind(fecha_desde)
+        .bind(fecha_hasta)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let order_by = sort.resolve(Self::ADELANTOS_SORTABLE, "a.created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
             r#"SELECT a.id, a.empleado_id, e.nombre AS empleado_nombre, a.monto, a.motivo, a.estado, a.created_at
                FROM nomina_adelantos a JOIN empleados e ON e.id = a.empleado_id
-               WHERE a.tenant_id = $1 ORDER BY a.created_at DESC LIMIT 200"#,
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $7 OFFSET $8"#
+        );
+        let rows = sqlx::query_as::<_, AdelantoConEmpleado>(&query)
+            .bind(tenant_id)
+            .bind(&estado)
+            .bind(empleado_id)
+            .bind(&pattern)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn request_adelanto(&self, tenant_id: &str, usuario_id: Uuid, req: CreateAdelantoRequest) -> anyhow::Result<Adelanto> {

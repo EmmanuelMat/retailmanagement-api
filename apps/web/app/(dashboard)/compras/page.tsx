@@ -52,7 +52,7 @@ function ComprasPageContent() {
   const [proveedores, setProveedores] = useState<Proveedor[]>([]);
 
   useEffect(() => {
-    apiFetch<{ proveedores: Proveedor[] }>("/api/proveedores").then((d) => setProveedores(d.proveedores)).catch(() => {});
+    apiFetch<{ items: Proveedor[] }>("/api/proveedores?pageSize=1000&activo=true").then((d) => setProveedores(d.items)).catch(() => {});
   }, []);
 
   const {

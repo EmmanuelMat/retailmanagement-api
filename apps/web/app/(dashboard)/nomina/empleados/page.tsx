@@ -1,10 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense } from "react";
 import Link from "next/link";
-import { Plus, Pencil, Trash2, Users2 } from "lucide-react";
-import { Button, Card, CardContent, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Plus, Pencil, Trash2, Users2, Search } from "lucide-react";
+import {
+  Button, Input, Select,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
+  Pagination, ScrollableTableCard, formatDOP,
+} from "@repo/ui";
 import { apiFetch } from "@/lib/api";
+import { useServerTable } from "@/lib/use-server-table";
+import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Empleado {
   id: string;
@@ -14,39 +20,54 @@ interface Empleado {
   disponible_adelanto: string;
 }
 
+interface EmpleadosFilters {
+  search?: string;
+  activo?: string;
+}
+
 export default function EmpleadosPage() {
-  const [empleados, setEmpleados] = useState<Empleado[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  return (
+    <Suspense fallback={null}>
+      <EmpleadosPageContent />
+    </Suspense>
+  );
+}
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await apiFetch<{ empleados: Empleado[] }>("/api/empleados");
-      setEmpleados(data.empleados);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
+function EmpleadosPageContent() {
+  const {
+    items: empleados,
+    total,
+    totalPages,
+    loading,
+    error,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+    refresh,
+  } = useServerTable<Empleado, EmpleadosFilters>({
+    path: "/api/empleados",
+    initialPageSize: 20,
+    initialSortBy: "nombre",
+    initialSortDir: "asc",
+    initialFilters: { activo: "true" },
+  });
 
-  useEffect(() => {
-    load();
-  }, []);
+  const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
 
   async function handleDelete(id: string) {
     if (!confirm("¿Desactivar este empleado?")) return;
     try {
       await apiFetch(`/api/empleados/${id}`, { method: "DELETE" });
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      alert(e.message);
     }
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold font-serif tracking-tight">Empleados</h1>
@@ -57,50 +78,69 @@ export default function EmpleadosPage() {
         </Link>
       </div>
 
-      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
+      <div className="flex flex-wrap gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Buscar por nombre o cédula..." className="pl-9" />
+        </div>
+        <Select
+          value={state.filters.activo ?? ""}
+          onChange={(e) => setFilters({ activo: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="true">Activos</option>
+          <option value="false">Inactivos</option>
+          <option value="">Todos</option>
+        </Select>
+      </div>
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : empleados.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <Users2 className="h-6 w-6" />
-              No hay empleados registrados.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Nombre</TableHead>
-                  <TableHead>Puesto</TableHead>
-                  <TableHead className="text-right">Salario mensual</TableHead>
-                  <TableHead className="text-right">Disponible adelanto</TableHead>
-                  <TableHead className="w-24 text-right">Acciones</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {empleados.map((e) => (
-                  <TableRow key={e.id}>
-                    <TableCell className="font-medium">{e.nombre}</TableCell>
-                    <TableCell className="text-muted-foreground">{e.puesto || "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatDOP(e.salario_mensual)}</TableCell>
-                    <TableCell className="text-right tabular-nums text-success">{formatDOP(e.disponible_adelanto)}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Link href={`/nomina/empleados/${e.id}` as any}>
-                          <Button size="icon" variant="ghost"><Pencil className="h-4 w-4" /></Button>
-                        </Link>
-                        <Button size="icon" variant="ghost" onClick={() => handleDelete(e.id)}><Trash2 className="h-4 w-4" /></Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <ScrollableTableCard
+        loading={loading}
+        error={error}
+        isEmpty={empleados.length === 0}
+        emptyIcon={<Users2 className="h-6 w-6" />}
+        emptyMessage="No hay empleados registrados."
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="nombre" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Nombre</SortableTableHead>
+              <TableHead>Puesto</TableHead>
+              <SortableTableHead column="salario_mensual" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Salario mensual</SortableTableHead>
+              <TableHead className="text-right">Disponible adelanto</TableHead>
+              <TableHead className="w-24 text-right">Acciones</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {empleados.map((e) => (
+              <TableRow key={e.id}>
+                <TableCell className="font-medium">{e.nombre}</TableCell>
+                <TableCell className="text-muted-foreground">{e.puesto || "—"}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatDOP(e.salario_mensual)}</TableCell>
+                <TableCell className="text-right tabular-nums text-success">{formatDOP(e.disponible_adelanto)}</TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-1">
+                    <Link href={`/nomina/empleados/${e.id}` as any}>
+                      <Button size="icon" variant="ghost"><Pencil className="h-4 w-4" /></Button>
+                    </Link>
+                    <Button size="icon" variant="ghost" onClick={() => handleDelete(e.id)}><Trash2 className="h-4 w-4" /></Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

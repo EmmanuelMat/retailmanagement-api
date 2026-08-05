@@ -65,7 +65,7 @@ function ProductosPageContent() {
   const [actionError, setActionError] = useState("");
 
   useEffect(() => {
-    apiFetch<{ categorias: Categoria[] }>("/api/categorias").then((d) => setCategorias(d.categorias)).catch(() => {});
+    apiFetch<{ items: Categoria[] }>("/api/categorias?pageSize=1000&activo=true").then((d) => setCategorias(d.items)).catch(() => {});
   }, []);
 
   const {

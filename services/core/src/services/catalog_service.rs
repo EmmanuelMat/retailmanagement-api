@@ -101,16 +101,50 @@ impl CatalogService {
 
     // ---- Categorías ----
 
-    pub async fn list_categorias(&self, tenant_id: &str) -> anyhow::Result<Vec<Categoria>> {
-        let rows = sqlx::query_as::<_, Categoria>(
-            "SELECT id, tenant_id, nombre, color, icono, orden, activo, created_at
-             FROM categorias WHERE tenant_id = $1 AND activo = true
-             ORDER BY orden ASC, nombre ASC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+    const CATEGORIAS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("nombre", "nombre"),
+        ("orden", "orden"),
+        ("created_at", "created_at"),
+    ];
+
+    pub async fn list_categorias(
+        &self,
+        tenant_id: &str,
+        search: Option<String>,
+        activo: Option<bool>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<Categoria>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::bool IS NULL OR activo = $2)
+               AND ($3::text IS NULL OR LOWER(nombre) LIKE $3)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM categorias {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::CATEGORIAS_SORTABLE, "orden ASC, nombre ASC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT id, tenant_id, nombre, color, icono, orden, activo, created_at
+               FROM categorias
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $4 OFFSET $5"#
+        );
+        let rows = sqlx::query_as::<_, Categoria>(&query)
+            .bind(tenant_id)
+            .bind(activo)
+            .bind(&pattern)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn create_categoria(&self, tenant_id: &str, req: CreateCategoriaRequest) -> anyhow::Result<Categoria> {

@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Plus, Check, X, HandCoins } from "lucide-react";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Label, Select, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Suspense, useEffect, useState } from "react";
+import { Plus, Check, X, HandCoins, Search } from "lucide-react";
+import {
+  Badge, Button, Card, CardHeader, CardTitle, CardContent, Label, Select, Input,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
+  Pagination, ScrollableTableCard, formatDOP,
+} from "@repo/ui";
 import { apiFetch } from "@/lib/api";
+import { useServerTable } from "@/lib/use-server-table";
+import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Empleado {
   id: string;
@@ -21,6 +27,14 @@ interface Adelanto {
   created_at: string;
 }
 
+interface AdelantosFilters {
+  estado?: string;
+  empleadoId?: string;
+  search?: string;
+  fechaDesde?: string;
+  fechaHasta?: string;
+}
+
 const ESTADO_VARIANT: Record<string, "default" | "secondary" | "success" | "destructive"> = {
   PENDIENTE: "default",
   APROBADO: "success",
@@ -29,40 +43,51 @@ const ESTADO_VARIANT: Record<string, "default" | "secondary" | "success" | "dest
 };
 
 export default function AdelantosPage() {
+  return (
+    <Suspense fallback={null}>
+      <AdelantosPageContent />
+    </Suspense>
+  );
+}
+
+function AdelantosPageContent() {
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
-  const [adelantos, setAdelantos] = useState<Adelanto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [formError, setFormError] = useState("");
   const [empleadoId, setEmpleadoId] = useState("");
   const [monto, setMonto] = useState("");
   const [motivo, setMotivo] = useState("");
   const [saving, setSaving] = useState(false);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const [e, a] = await Promise.all([
-        apiFetch<{ empleados: Empleado[] }>("/api/empleados"),
-        apiFetch<{ adelantos: Adelanto[] }>("/api/nomina/adelantos"),
-      ]);
-      setEmpleados(e.empleados);
-      setAdelantos(a.adelantos);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   useEffect(() => {
-    load();
+    apiFetch<{ items: Empleado[] }>("/api/empleados?pageSize=1000&activo=true").then((d) => setEmpleados(d.items)).catch(() => {});
   }, []);
+
+  const {
+    items: adelantos,
+    total,
+    totalPages,
+    loading,
+    error,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+    refresh,
+  } = useServerTable<Adelanto, AdelantosFilters>({
+    path: "/api/nomina/adelantos",
+    initialPageSize: 20,
+    initialSortBy: "created_at",
+    initialSortDir: "desc",
+  });
+
+  const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!empleadoId || !monto) return;
     setSaving(true);
-    setError("");
+    setFormError("");
     try {
       await apiFetch("/api/nomina/adelantos", {
         method: "POST",
@@ -70,9 +95,9 @@ export default function AdelantosPage() {
       });
       setMonto("");
       setMotivo("");
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e.message);
     } finally {
       setSaving(false);
     }
@@ -81,25 +106,25 @@ export default function AdelantosPage() {
   async function handleAprobar(id: string) {
     try {
       await apiFetch(`/api/nomina/adelantos/${id}/aprobar`, { method: "POST" });
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e.message);
     }
   }
 
   async function handleRechazar(id: string) {
     try {
       await apiFetch(`/api/nomina/adelantos/${id}/rechazar`, { method: "POST" });
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e.message);
     }
   }
 
   const selectedDisponible = empleados.find((e) => e.id === empleadoId)?.disponible_adelanto;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Adelantos de nómina</h1>
         <p className="text-sm text-muted-foreground mt-1">Regla del 50% del sueldo mensual, sin intereses.</p>
@@ -127,55 +152,86 @@ export default function AdelantosPage() {
             </div>
             <Button type="submit" disabled={saving} className="sm:col-span-4 sm:w-fit"><Plus className="h-4 w-4" />Solicitar</Button>
           </form>
+          {formError && <p className="text-sm text-destructive mt-2">{formError}</p>}
         </CardContent>
       </Card>
 
-      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
+      <div className="flex flex-wrap gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Buscar por empleado..." className="pl-9" />
+        </div>
+        <Select
+          value={state.filters.empleadoId || ""}
+          onChange={(e) => setFilters({ empleadoId: e.target.value || undefined })}
+          className="max-w-[200px]"
+        >
+          <option value="">Todos los empleados</option>
+          {empleados.map((e) => <option key={e.id} value={e.id}>{e.nombre}</option>)}
+        </Select>
+        <Select
+          value={state.filters.estado || ""}
+          onChange={(e) => setFilters({ estado: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="">Todos los estados</option>
+          <option value="PENDIENTE">Pendiente</option>
+          <option value="APROBADO">Aprobado</option>
+          <option value="RECHAZADO">Rechazado</option>
+          <option value="DESCONTADO">Descontado</option>
+        </Select>
+      </div>
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : adelantos.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <HandCoins className="h-6 w-6" />
-              No hay adelantos registrados.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Fecha</TableHead>
-                  <TableHead>Empleado</TableHead>
-                  <TableHead>Motivo</TableHead>
-                  <TableHead className="text-right">Monto</TableHead>
-                  <TableHead>Estado</TableHead>
-                  <TableHead className="w-20 text-right">Acciones</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {adelantos.map((a) => (
-                  <TableRow key={a.id}>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(a.created_at).toLocaleDateString("es-DO")}</TableCell>
-                    <TableCell className="font-medium">{a.empleado_nombre}</TableCell>
-                    <TableCell className="text-muted-foreground">{a.motivo || "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatDOP(a.monto)}</TableCell>
-                    <TableCell><Badge variant={ESTADO_VARIANT[a.estado]}>{a.estado}</Badge></TableCell>
-                    <TableCell className="text-right">
-                      {a.estado === "PENDIENTE" && (
-                        <div className="flex justify-end gap-1">
-                          <Button size="icon" variant="ghost" onClick={() => handleAprobar(a.id)}><Check className="h-4 w-4" /></Button>
-                          <Button size="icon" variant="ghost" onClick={() => handleRechazar(a.id)}><X className="h-4 w-4" /></Button>
-                        </div>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <ScrollableTableCard
+        loading={loading}
+        error={error}
+        isEmpty={adelantos.length === 0}
+        emptyIcon={<HandCoins className="h-6 w-6" />}
+        emptyMessage="No hay adelantos registrados."
+        maxHeight="calc(100vh - 460px)"
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+              <TableHead>Empleado</TableHead>
+              <TableHead>Motivo</TableHead>
+              <SortableTableHead column="monto" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Monto</SortableTableHead>
+              <TableHead>Estado</TableHead>
+              <TableHead className="w-20 text-right">Acciones</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {adelantos.map((a) => (
+              <TableRow key={a.id}>
+                <TableCell className="text-xs text-muted-foreground">{new Date(a.created_at).toLocaleDateString("es-DO")}</TableCell>
+                <TableCell className="font-medium">{a.empleado_nombre}</TableCell>
+                <TableCell className="text-muted-foreground">{a.motivo || "—"}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatDOP(a.monto)}</TableCell>
+                <TableCell><Badge variant={ESTADO_VARIANT[a.estado]}>{a.estado}</Badge></TableCell>
+                <TableCell className="text-right">
+                  {a.estado === "PENDIENTE" && (
+                    <div className="flex justify-end gap-1">
+                      <Button size="icon" variant="ghost" onClick={() => handleAprobar(a.id)}><Check className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="ghost" onClick={() => handleRechazar(a.id)}><X className="h-4 w-4" /></Button>
+                    </div>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

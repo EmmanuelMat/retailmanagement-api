@@ -84,7 +84,7 @@ export default function VentaDetallePage() {
   }
 
   function cargarConduces() {
-    apiFetch<{ conduces: ConduceResumen[] }>(`/api/conduces?venta_id=${params.id}`).then((d) => setConduces(d.conduces)).catch(() => {});
+    apiFetch<{ items: ConduceResumen[] }>(`/api/conduces?venta_id=${params.id}&pageSize=100`).then((d) => setConduces(d.items)).catch(() => {});
   }
 
   useEffect(() => {

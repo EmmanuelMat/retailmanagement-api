@@ -174,15 +174,65 @@ impl EcfService {
         Ok(())
     }
 
-    pub async fn list_documentos(&self, tenant_id: &str) -> Result<Vec<EcfDocumento>> {
-        let rows = sqlx::query_as::<_, EcfDocumento>(
-            "SELECT id, referencia_tipo, referencia_id, tipo_ecf, e_ncf, estado_dgii, track_id, codigo_seguridad, qr_url, mensaje_dgii, created_at
-             FROM ecf_documentos WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 200",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+    const DOCUMENTOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("created_at", "created_at"),
+        ("tipo_ecf", "tipo_ecf"),
+    ];
+
+    pub async fn list_documentos(
+        &self,
+        tenant_id: &str,
+        estado_dgii: Option<String>,
+        tipo_ecf: Option<i32>,
+        referencia_tipo: Option<String>,
+        search: Option<String>,
+        fecha_desde: Option<chrono::NaiveDate>,
+        fecha_hasta: Option<chrono::NaiveDate>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> Result<(Vec<EcfDocumento>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::text IS NULL OR estado_dgii = $2)
+               AND ($3::int IS NULL OR tipo_ecf = $3)
+               AND ($4::text IS NULL OR referencia_tipo = $4)
+               AND ($5::text IS NULL OR LOWER(e_ncf) LIKE $5)
+               AND ($6::date IS NULL OR created_at::date >= $6)
+               AND ($7::date IS NULL OR created_at::date <= $7)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM ecf_documentos {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(&estado_dgii)
+            .bind(tipo_ecf)
+            .bind(&referencia_tipo)
+            .bind(&pattern)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::DOCUMENTOS_SORTABLE, "created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT id, referencia_tipo, referencia_id, tipo_ecf, e_ncf, estado_dgii, track_id, codigo_seguridad, qr_url, mensaje_dgii, created_at
+               FROM ecf_documentos
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $8 OFFSET $9"#
+        );
+        let rows = sqlx::query_as::<_, EcfDocumento>(&query)
+            .bind(tenant_id)
+            .bind(&estado_dgii)
+            .bind(tipo_ecf)
+            .bind(&referencia_tipo)
+            .bind(&pattern)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn list_pendientes_contingencia(&self, tenant_id: &str) -> Result<Vec<EcfDocumento>> {

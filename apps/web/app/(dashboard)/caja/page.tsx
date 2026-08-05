@@ -1,9 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Lock, Unlock, Wallet } from "lucide-react";
-import { Badge, Button, Card, CardContent, Input, Label, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import {
+  Badge, Button, Card, CardContent, Input, Label, Select,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
+  Pagination, ScrollableTableCard, formatDOP,
+} from "@repo/ui";
 import { apiFetch } from "@/lib/api";
+import { useServerTable } from "@/lib/use-server-table";
 
 interface CajaSesion {
   id: string;
@@ -31,30 +36,56 @@ interface CajaResumen {
   saldo_actual: string;
 }
 
+interface MovimientosFilters {
+  tipo?: string;
+}
+
 export default function CajaPage() {
+  return (
+    <Suspense fallback={null}>
+      <CajaPageContent />
+    </Suspense>
+  );
+}
+
+function CajaPageContent() {
   const [resumen, setResumen] = useState<CajaResumen | null>(null);
-  const [movimientos, setMovimientos] = useState<CajaMovimiento[]>([]);
   const [montoInicial, setMontoInicial] = useState("");
   const [montoFinal, setMontoFinal] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [cierreResultado, setCierreResultado] = useState<CajaSesion | null>(null);
 
-  async function load() {
+  const {
+    items: movimientos,
+    total,
+    totalPages,
+    loading: movimientosLoading,
+    error: movimientosError,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+    refresh: refreshMovimientos,
+  } = useServerTable<CajaMovimiento, MovimientosFilters>({
+    path: "/api/caja/movimientos",
+    initialPageSize: 20,
+    initialSortBy: "created_at",
+    initialSortDir: "desc",
+  });
+
+  async function loadResumen() {
     try {
-      const [r, m] = await Promise.all([
-        apiFetch<CajaResumen>("/api/caja/resumen"),
-        apiFetch<{ movimientos: CajaMovimiento[] }>("/api/caja/movimientos"),
-      ]);
+      const r = await apiFetch<CajaResumen>("/api/caja/resumen");
       setResumen(r);
-      setMovimientos(m.movimientos.slice(0, 20));
     } catch (e: any) {
       setError(e.message);
     }
   }
 
   useEffect(() => {
-    load();
+    loadResumen();
   }, []);
 
   async function handleAbrir(e: React.FormEvent) {
@@ -64,7 +95,8 @@ export default function CajaPage() {
     try {
       await apiFetch("/api/caja/abrir", { method: "POST", body: JSON.stringify({ monto_inicial: montoInicial || "0" }) });
       setMontoInicial("");
-      await load();
+      await loadResumen();
+      refreshMovimientos();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -80,7 +112,8 @@ export default function CajaPage() {
       const result = await apiFetch<CajaSesion>("/api/caja/cerrar", { method: "POST", body: JSON.stringify({ monto_final: montoFinal || "0" }) });
       setCierreResultado(result);
       setMontoFinal("");
-      await load();
+      await loadResumen();
+      refreshMovimientos();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -91,7 +124,7 @@ export default function CajaPage() {
   if (!resumen) return <p className="text-sm text-muted-foreground">Cargando...</p>;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Caja</h1>
         <p className="text-sm text-muted-foreground mt-1">Apertura, movimientos del turno y cierre.</p>
@@ -177,37 +210,56 @@ export default function CajaPage() {
         </>
       )}
 
-      <Card>
-        <CardContent className="p-0">
-          {movimientos.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <Wallet className="h-6 w-6" />
-              Sin movimientos de caja todavía.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Fecha</TableHead>
-                  <TableHead>Concepto</TableHead>
-                  <TableHead>Tipo</TableHead>
-                  <TableHead className="text-right">Monto</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {movimientos.map((m) => (
-                  <TableRow key={m.id}>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(m.created_at).toLocaleString("es-DO")}</TableCell>
-                    <TableCell>{m.concepto}</TableCell>
-                    <TableCell><Badge variant={m.tipo === "INGRESO" ? "success" : "destructive"}>{m.tipo}</Badge></TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">{formatDOP(m.monto)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <div className="flex flex-wrap gap-3">
+        <Select
+          value={state.filters.tipo || ""}
+          onChange={(e) => setFilters({ tipo: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="">Todos los tipos</option>
+          <option value="INGRESO">Ingreso</option>
+          <option value="EGRESO">Egreso</option>
+        </Select>
+      </div>
+
+      <ScrollableTableCard
+        loading={movimientosLoading}
+        error={movimientosError}
+        isEmpty={movimientos.length === 0}
+        emptyIcon={<Wallet className="h-6 w-6" />}
+        emptyMessage="Sin movimientos de caja todavía."
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="created_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Fecha</SortableTableHead>
+              <TableHead>Concepto</TableHead>
+              <TableHead>Tipo</TableHead>
+              <SortableTableHead column="monto" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Monto</SortableTableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {movimientos.map((m) => (
+              <TableRow key={m.id}>
+                <TableCell className="text-xs text-muted-foreground">{new Date(m.created_at).toLocaleString("es-DO")}</TableCell>
+                <TableCell>{m.concepto}</TableCell>
+                <TableCell><Badge variant={m.tipo === "INGRESO" ? "success" : "destructive"}>{m.tipo}</Badge></TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{formatDOP(m.monto)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

@@ -61,30 +61,104 @@ impl ContabilidadService {
         Self { pool }
     }
 
-    pub async fn list_asientos(&self, tenant_id: &str, cuenta: Option<String>) -> anyhow::Result<Vec<Asiento>> {
-        let rows = sqlx::query_as::<_, Asiento>(
+    const ASIENTOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("fecha", "fecha"),
+        ("cuenta", "cuenta"),
+        ("created_at", "created_at"),
+    ];
+
+    pub async fn list_asientos(
+        &self,
+        tenant_id: &str,
+        cuenta: Option<String>,
+        referencia_tipo: Option<String>,
+        fecha_desde: Option<NaiveDate>,
+        fecha_hasta: Option<NaiveDate>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<Asiento>, i64)> {
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::text IS NULL OR cuenta = $2)
+               AND ($3::text IS NULL OR referencia_tipo = $3)
+               AND ($4::date IS NULL OR fecha >= $4)
+               AND ($5::date IS NULL OR fecha <= $5)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM asientos_contables {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(&cuenta)
+            .bind(&referencia_tipo)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::ASIENTOS_SORTABLE, "fecha DESC, created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
             r#"SELECT id, fecha, cuenta, descripcion, debe, haber, referencia_tipo, referencia_id, created_at
                FROM asientos_contables
-               WHERE tenant_id = $1 AND ($2::text IS NULL OR cuenta = $2)
-               ORDER BY fecha DESC, created_at DESC LIMIT 500"#,
-        )
-        .bind(tenant_id)
-        .bind(&cuenta)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $6 OFFSET $7"#
+        );
+        let rows = sqlx::query_as::<_, Asiento>(&query)
+            .bind(tenant_id)
+            .bind(&cuenta)
+            .bind(&referencia_tipo)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
-    pub async fn libro_mayor(&self, tenant_id: &str) -> anyhow::Result<Vec<CuentaResumen>> {
-        let rows: Vec<(String, Decimal, Decimal)> = sqlx::query_as(
-            r#"SELECT cuenta, COALESCE(SUM(debe),0), COALESCE(SUM(haber),0)
-               FROM asientos_contables WHERE tenant_id = $1
-               GROUP BY cuenta ORDER BY cuenta"#,
-        )
+    const LIBRO_MAYOR_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("cuenta", "cuenta"),
+        ("debe", "debe"),
+        ("haber", "haber"),
+    ];
+
+    pub async fn libro_mayor(
+        &self,
+        tenant_id: &str,
+        search: Option<String>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<CuentaResumen>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1 AND ($2::text IS NULL OR LOWER(cuenta) LIKE $2)";
+
+        let total: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(DISTINCT cuenta) FROM asientos_contables {WHERE_CLAUSE}"
+        ))
         .bind(tenant_id)
-        .fetch_all(&self.pool)
+        .bind(&pattern)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(|(cuenta, debe, haber)| CuentaResumen { saldo: debe - haber, cuenta, debe, haber }).collect())
+
+        let order_by = sort.resolve(Self::LIBRO_MAYOR_SORTABLE, "cuenta ASC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT cuenta, COALESCE(SUM(debe),0) AS debe, COALESCE(SUM(haber),0) AS haber
+               FROM asientos_contables
+               {WHERE_CLAUSE}
+               GROUP BY cuenta
+               ORDER BY {order_by}
+               LIMIT $3 OFFSET $4"#
+        );
+        let rows: Vec<(String, Decimal, Decimal)> = sqlx::query_as(&query)
+            .bind(tenant_id)
+            .bind(&pattern)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((
+            rows.into_iter().map(|(cuenta, debe, haber)| CuentaResumen { saldo: debe - haber, cuenta, debe, haber }).collect(),
+            total,
+        ))
     }
 
     /// Asiento manual: la suma de debe debe igualar la suma de haber.

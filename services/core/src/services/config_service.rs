@@ -234,15 +234,54 @@ impl ConfigService {
 
     // ---- Usuarios ----
 
-    pub async fn list_usuarios(&self, tenant_id: &str) -> Result<Vec<Usuario>> {
-        let rows = sqlx::query_as::<_, Usuario>(
-            "SELECT id, tenant_id, nombre, email, rol, descuento_maximo_sin_aprobacion, activo, created_at
-             FROM usuarios WHERE tenant_id = $1 ORDER BY created_at ASC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+    const USUARIOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("nombre", "nombre"),
+        ("rol", "rol"),
+        ("created_at", "created_at"),
+    ];
+
+    pub async fn list_usuarios(
+        &self,
+        tenant_id: &str,
+        search: Option<String>,
+        rol: Option<String>,
+        activo: Option<bool>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> Result<(Vec<Usuario>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::text IS NULL OR rol = $2)
+               AND ($3::bool IS NULL OR activo = $3)
+               AND ($4::text IS NULL OR LOWER(nombre) LIKE $4 OR LOWER(email) LIKE $4)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM usuarios {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(&rol)
+            .bind(activo)
+            .bind(&pattern)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::USUARIOS_SORTABLE, "created_at ASC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT id, tenant_id, nombre, email, rol, descuento_maximo_sin_aprobacion, activo, created_at
+               FROM usuarios
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $5 OFFSET $6"#
+        );
+        let rows = sqlx::query_as::<_, Usuario>(&query)
+            .bind(tenant_id)
+            .bind(&rol)
+            .bind(activo)
+            .bind(&pattern)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn create_usuario(&self, tenant_id: &str, req: CreateUsuarioRequest) -> Result<Usuario> {

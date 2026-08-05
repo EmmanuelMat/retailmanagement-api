@@ -169,19 +169,66 @@ impl CotizacionService {
         Ok(CotizacionCompleta { cotizacion, items })
     }
 
-    pub async fn list_cotizaciones(&self, tenant_id: &str) -> anyhow::Result<Vec<CotizacionConCliente>> {
-        let rows = sqlx::query_as::<_, CotizacionConCliente>(
+    const COTIZACIONES_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("created_at", "c.created_at"),
+        ("total", "c.total"),
+        ("fecha_vencimiento", "c.fecha_vencimiento"),
+        ("estado", "c.estado"),
+    ];
+
+    pub async fn list_cotizaciones(
+        &self,
+        tenant_id: &str,
+        estado: Option<String>,
+        cliente_id: Option<Uuid>,
+        search: Option<String>,
+        fecha_desde: Option<chrono::NaiveDate>,
+        fecha_hasta: Option<chrono::NaiveDate>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<CotizacionConCliente>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE c.tenant_id = $1
+               AND ($2::text IS NULL OR c.estado = $2)
+               AND ($3::uuid IS NULL OR c.cliente_id = $3)
+               AND ($4::text IS NULL OR LOWER(cl.nombre) LIKE $4)
+               AND ($5::date IS NULL OR c.created_at::date >= $5)
+               AND ($6::date IS NULL OR c.created_at::date <= $6)";
+
+        let total: i64 = sqlx::query_scalar(&format!(
+            r#"SELECT COUNT(*) FROM cotizaciones c LEFT JOIN clientes cl ON cl.id = c.cliente_id {WHERE_CLAUSE}"#
+        ))
+        .bind(tenant_id)
+        .bind(&estado)
+        .bind(cliente_id)
+        .bind(&pattern)
+        .bind(fecha_desde)
+        .bind(fecha_hasta)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let order_by = sort.resolve(Self::COTIZACIONES_SORTABLE, "c.created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
             r#"SELECT c.id, cl.nombre AS cliente_nombre, c.total, c.estado, c.fecha_vencimiento, c.created_at
                FROM cotizaciones c
                LEFT JOIN clientes cl ON cl.id = c.cliente_id
-               WHERE c.tenant_id = $1
-               ORDER BY c.created_at DESC
-               LIMIT 200"#,
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $7 OFFSET $8"#
+        );
+        let rows = sqlx::query_as::<_, CotizacionConCliente>(&query)
+            .bind(tenant_id)
+            .bind(&estado)
+            .bind(cliente_id)
+            .bind(&pattern)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn get_cotizacion(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<CotizacionCompleta> {

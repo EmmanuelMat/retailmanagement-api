@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Tags } from "lucide-react";
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@repo/ui";
+import { Suspense, useState } from "react";
+import { Plus, Pencil, Trash2, Tags, Search } from "lucide-react";
+import {
+  Button, Card, CardHeader, CardTitle, CardContent, Input, Label, Select,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
+  Pagination, ScrollableTableCard,
+} from "@repo/ui";
 import { apiFetch } from "@/lib/api";
+import { useServerTable } from "@/lib/use-server-table";
+import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Categoria {
   id: string;
@@ -14,45 +20,62 @@ interface Categoria {
   activo: boolean;
 }
 
+interface CategoriasFilters {
+  search?: string;
+  activo?: string;
+}
+
 export default function CategoriasPage() {
-  const [categorias, setCategorias] = useState<Categoria[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  return (
+    <Suspense fallback={null}>
+      <CategoriasPageContent />
+    </Suspense>
+  );
+}
+
+function CategoriasPageContent() {
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [nombre, setNombre] = useState("");
   const [icono, setIcono] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editNombre, setEditNombre] = useState("");
 
-  async function load() {
-    setLoading(true);
-    setError("");
-    try {
-      const data = await apiFetch<{ categorias: Categoria[] }>("/api/categorias");
-      setCategorias(data.categorias);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const {
+    items: categorias,
+    total,
+    totalPages,
+    loading,
+    error,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+    refresh,
+  } = useServerTable<Categoria, CategoriasFilters>({
+    path: "/api/categorias",
+    initialPageSize: 20,
+    initialSortBy: "orden",
+    initialSortDir: "asc",
+    initialFilters: { activo: "true" },
+  });
 
-  useEffect(() => {
-    load();
-  }, []);
+  const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!nombre.trim()) return;
     setSaving(true);
-    setError("");
+    setFormError("");
     try {
       await apiFetch("/api/categorias", { method: "POST", body: JSON.stringify({ nombre, icono: icono || undefined }) });
       setNombre("");
       setIcono("");
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e.message);
     } finally {
       setSaving(false);
     }
@@ -67,9 +90,9 @@ export default function CategoriasPage() {
     try {
       await apiFetch(`/api/categorias/${id}`, { method: "PUT", body: JSON.stringify({ nombre: editNombre }) });
       setEditingId(null);
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setActionError(e.message);
     }
   }
 
@@ -77,14 +100,14 @@ export default function CategoriasPage() {
     if (!confirm("¿Desactivar esta categoría?")) return;
     try {
       await apiFetch(`/api/categorias/${id}`, { method: "DELETE" });
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setActionError(e.message);
     }
   }
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-3xl space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Categorías</h1>
         <p className="text-sm text-muted-foreground mt-1">Organiza tus productos por categoría (Víveres, Bebidas, Limpieza, etc).</p>
@@ -109,65 +132,85 @@ export default function CategoriasPage() {
               Agregar
             </Button>
           </form>
+          {formError && <p className="text-sm text-destructive mt-2">{formError}</p>}
         </CardContent>
       </Card>
 
-      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
+      <div className="flex flex-wrap gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Buscar por nombre..." className="pl-9" />
+        </div>
+        <Select
+          value={state.filters.activo ?? ""}
+          onChange={(e) => setFilters({ activo: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="true">Activas</option>
+          <option value="false">Inactivas</option>
+          <option value="">Todas</option>
+        </Select>
+      </div>
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : categorias.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <Tags className="h-6 w-6" />
-              Aún no hay categorías. Crea la primera arriba.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Categoría</TableHead>
-                  <TableHead className="w-32 text-right">Acciones</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {categorias.map((cat) => (
-                  <TableRow key={cat.id}>
-                    <TableCell>
-                      {editingId === cat.id ? (
-                        <Input value={editNombre} onChange={(e) => setEditNombre(e.target.value)} className="h-8 max-w-xs" />
-                      ) : (
-                        <span className="flex items-center gap-2">
-                          {cat.icono && <span>{cat.icono}</span>}
-                          {cat.nombre}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {editingId === cat.id ? (
-                        <div className="flex justify-end gap-2">
-                          <Button size="sm" variant="secondary" onClick={() => setEditingId(null)}>Cancelar</Button>
-                          <Button size="sm" onClick={() => saveEdit(cat.id)}>Guardar</Button>
-                        </div>
-                      ) : (
-                        <div className="flex justify-end gap-1">
-                          <Button size="icon" variant="ghost" onClick={() => startEdit(cat)}>
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button size="icon" variant="ghost" onClick={() => handleDelete(cat.id)}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <ScrollableTableCard
+        loading={loading}
+        error={error || actionError || null}
+        isEmpty={categorias.length === 0}
+        emptyIcon={<Tags className="h-6 w-6" />}
+        emptyMessage="Aún no hay categorías. Crea la primera arriba."
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="nombre" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Categoría</SortableTableHead>
+              <TableHead className="w-32 text-right">Acciones</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {categorias.map((cat) => (
+              <TableRow key={cat.id}>
+                <TableCell>
+                  {editingId === cat.id ? (
+                    <Input value={editNombre} onChange={(e) => setEditNombre(e.target.value)} className="h-8 max-w-xs" />
+                  ) : (
+                    <span className="flex items-center gap-2">
+                      {cat.icono && <span>{cat.icono}</span>}
+                      {cat.nombre}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell className="text-right">
+                  {editingId === cat.id ? (
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => setEditingId(null)}>Cancelar</Button>
+                      <Button size="sm" onClick={() => saveEdit(cat.id)}>Guardar</Button>
+                    </div>
+                  ) : (
+                    <div className="flex justify-end gap-1">
+                      <Button size="icon" variant="ghost" onClick={() => startEdit(cat)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button size="icon" variant="ghost" onClick={() => handleDelete(cat.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

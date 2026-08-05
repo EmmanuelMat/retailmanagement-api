@@ -1,9 +1,15 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
-import { Plus, Trash2, UserCog, KeyRound } from "lucide-react";
-import { Badge, Button, Card, CardContent, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@repo/ui";
+import { Fragment, Suspense, useState } from "react";
+import { Plus, Trash2, UserCog, KeyRound, Search } from "lucide-react";
+import {
+  Badge, Button, Card, CardContent, Input, Label, Select,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
+  Pagination, ScrollableTableCard,
+} from "@repo/ui";
 import { apiFetch } from "@/lib/api";
+import { useServerTable } from "@/lib/use-server-table";
+import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Usuario {
   id: string;
@@ -14,14 +20,27 @@ interface Usuario {
   activo: boolean;
 }
 
+interface UsuariosFilters {
+  search?: string;
+  rol?: string;
+  activo?: string;
+}
+
 const ROLES = ["ADMIN", "CAJERO", "ALMACEN", "CONTADOR"];
 
 const EMPTY_NEW = { nombre: "", email: "", password: "", rol: "CAJERO", descuento_maximo_sin_aprobacion: "0" };
 
 export default function UsuariosPage() {
-  const [usuarios, setUsuarios] = useState<Usuario[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  return (
+    <Suspense fallback={null}>
+      <UsuariosPageContent />
+    </Suspense>
+  );
+}
+
+function UsuariosPageContent() {
+  const [formError, setFormError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [nuevo, setNuevo] = useState(EMPTY_NEW);
   const [saving, setSaving] = useState(false);
@@ -30,33 +49,38 @@ export default function UsuariosPage() {
   const [resetSaving, setResetSaving] = useState(false);
   const [resetError, setResetError] = useState("");
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await apiFetch<{ usuarios: Usuario[] }>("/api/config/usuarios");
-      setUsuarios(data.usuarios);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const {
+    items: usuarios,
+    total,
+    totalPages,
+    loading,
+    error,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+    refresh,
+  } = useServerTable<Usuario, UsuariosFilters>({
+    path: "/api/config/usuarios",
+    initialPageSize: 20,
+    initialSortBy: "created_at",
+    initialSortDir: "asc",
+  });
 
-  useEffect(() => {
-    load();
-  }, []);
+  const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    setError("");
+    setFormError("");
     try {
       await apiFetch("/api/config/usuarios", { method: "POST", body: JSON.stringify(nuevo) });
       setNuevo(EMPTY_NEW);
       setShowForm(false);
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e.message);
     } finally {
       setSaving(false);
     }
@@ -65,9 +89,9 @@ export default function UsuariosPage() {
   async function handleRolChange(u: Usuario, rol: string) {
     try {
       await apiFetch(`/api/config/usuarios/${u.id}`, { method: "PUT", body: JSON.stringify({ nombre: u.nombre, rol, activo: u.activo }) });
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setActionError(e.message);
     }
   }
 
@@ -77,18 +101,18 @@ export default function UsuariosPage() {
         method: "PUT",
         body: JSON.stringify({ nombre: u.nombre, rol: u.rol, activo: u.activo, descuento_maximo_sin_aprobacion: value || "0" }),
       });
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setActionError(e.message);
     }
   }
 
   async function handleToggleActivo(u: Usuario) {
     try {
       await apiFetch(`/api/config/usuarios/${u.id}`, { method: "PUT", body: JSON.stringify({ nombre: u.nombre, rol: u.rol, activo: !u.activo }) });
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setActionError(e.message);
     }
   }
 
@@ -122,14 +146,14 @@ export default function UsuariosPage() {
     if (!confirm("¿Desactivar este usuario?")) return;
     try {
       await apiFetch(`/api/config/usuarios/${id}`, { method: "DELETE" });
-      await load();
+      refresh();
     } catch (e: any) {
-      setError(e.message);
+      setActionError(e.message);
     }
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold font-serif tracking-tight">Usuarios y roles</h1>
@@ -137,8 +161,6 @@ export default function UsuariosPage() {
         </div>
         <Button onClick={() => setShowForm((s) => !s)}><Plus className="h-4 w-4" />Nuevo usuario</Button>
       </div>
-
-      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
 
       {showForm && (
         <Card className="max-w-xl">
@@ -176,6 +198,7 @@ export default function UsuariosPage() {
                 />
                 <p className="text-xs text-muted-foreground">Por encima de este monto, el POS pedirá aprobación de un administrador. No aplica a rol ADMIN.</p>
               </div>
+              {formError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{formError}</div>}
               <div className="flex gap-3">
                 <Button type="submit" disabled={saving}>{saving ? "Creando..." : "Crear usuario"}</Button>
                 <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>Cancelar</Button>
@@ -185,97 +208,126 @@ export default function UsuariosPage() {
         </Card>
       )}
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : usuarios.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <UserCog className="h-6 w-6" />
-              No hay usuarios registrados.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
+      <div className="flex flex-wrap gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Buscar por nombre o correo..." className="pl-9" />
+        </div>
+        <Select
+          value={state.filters.rol || ""}
+          onChange={(e) => setFilters({ rol: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="">Todos los roles</option>
+          {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+        </Select>
+        <Select
+          value={state.filters.activo ?? ""}
+          onChange={(e) => setFilters({ activo: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="">Todos</option>
+          <option value="true">Activos</option>
+          <option value="false">Inactivos</option>
+        </Select>
+      </div>
+
+      <ScrollableTableCard
+        loading={loading}
+        error={error || actionError || null}
+        isEmpty={usuarios.length === 0}
+        emptyIcon={<UserCog className="h-6 w-6" />}
+        emptyMessage="No hay usuarios registrados."
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="nombre" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Nombre</SortableTableHead>
+              <TableHead>Correo</TableHead>
+              <SortableTableHead column="rol" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Rol</SortableTableHead>
+              <TableHead>Límite descuento (RD$)</TableHead>
+              <TableHead>Estado</TableHead>
+              <TableHead className="w-24 text-right">Acciones</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {usuarios.map((u) => (
+              <Fragment key={u.id}>
                 <TableRow>
-                  <TableHead>Nombre</TableHead>
-                  <TableHead>Correo</TableHead>
-                  <TableHead>Rol</TableHead>
-                  <TableHead>Límite descuento (RD$)</TableHead>
-                  <TableHead>Estado</TableHead>
-                  <TableHead className="w-24 text-right">Acciones</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {usuarios.map((u) => (
-                  <Fragment key={u.id}>
-                    <TableRow>
-                      <TableCell className="font-medium">{u.nombre}</TableCell>
-                      <TableCell className="text-muted-foreground">{u.email}</TableCell>
-                      <TableCell>
-                        <Select value={u.rol} onChange={(e) => handleRolChange(u, e.target.value)} className="h-8 w-36">
-                          {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        {u.rol === "ADMIN" ? (
-                          <span className="text-xs text-muted-foreground">Ilimitado</span>
-                        ) : (
-                          <Input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            defaultValue={u.descuento_maximo_sin_aprobacion}
-                            onBlur={(e) => e.target.value !== u.descuento_maximo_sin_aprobacion && handleDescuentoChange(u, e.target.value)}
-                            className="h-8 w-28 text-sm"
-                          />
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <button onClick={() => handleToggleActivo(u)}>
-                          <Badge variant={u.activo ? "success" : "secondary"}>{u.activo ? "Activo" : "Inactivo"}</Badge>
-                        </button>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button size="icon" variant="ghost" title="Restablecer contraseña" onClick={() => abrirReset(u.id)}>
-                            <KeyRound className="h-4 w-4" />
-                          </Button>
-                          <Button size="icon" variant="ghost" onClick={() => handleDeactivate(u.id)}><Trash2 className="h-4 w-4" /></Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                    {resetId === u.id && (
-                      <TableRow>
-                        <TableCell colSpan={6} className="bg-muted/30">
-                          <div className="flex flex-wrap items-end gap-2 py-1">
-                            <div className="space-y-1">
-                              <label className="text-xs text-muted-foreground">Nueva contraseña para {u.nombre}</label>
-                              <Input
-                                type="password"
-                                minLength={8}
-                                value={resetPassword}
-                                onChange={(e) => setResetPassword(e.target.value)}
-                                placeholder="Mínimo 8 caracteres"
-                                className="h-8 w-48 text-sm"
-                              />
-                            </div>
-                            <Button size="sm" disabled={resetSaving} onClick={() => handleReset(u)}>
-                              {resetSaving ? "Guardando..." : "Restablecer"}
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={() => setResetId(null)}>Cancelar</Button>
-                            {resetError && <span className="text-xs text-destructive">{resetError}</span>}
-                          </div>
-                        </TableCell>
-                      </TableRow>
+                  <TableCell className="font-medium">{u.nombre}</TableCell>
+                  <TableCell className="text-muted-foreground">{u.email}</TableCell>
+                  <TableCell>
+                    <Select value={u.rol} onChange={(e) => handleRolChange(u, e.target.value)} className="h-8 w-36">
+                      {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </Select>
+                  </TableCell>
+                  <TableCell>
+                    {u.rol === "ADMIN" ? (
+                      <span className="text-xs text-muted-foreground">Ilimitado</span>
+                    ) : (
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        defaultValue={u.descuento_maximo_sin_aprobacion}
+                        onBlur={(e) => e.target.value !== u.descuento_maximo_sin_aprobacion && handleDescuentoChange(u, e.target.value)}
+                        className="h-8 w-28 text-sm"
+                      />
                     )}
-                  </Fragment>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+                  </TableCell>
+                  <TableCell>
+                    <button onClick={() => handleToggleActivo(u)}>
+                      <Badge variant={u.activo ? "success" : "secondary"}>{u.activo ? "Activo" : "Inactivo"}</Badge>
+                    </button>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button size="icon" variant="ghost" title="Restablecer contraseña" onClick={() => abrirReset(u.id)}>
+                        <KeyRound className="h-4 w-4" />
+                      </Button>
+                      <Button size="icon" variant="ghost" onClick={() => handleDeactivate(u.id)}><Trash2 className="h-4 w-4" /></Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+                {resetId === u.id && (
+                  <TableRow>
+                    <TableCell colSpan={6} className="bg-muted/30">
+                      <div className="flex flex-wrap items-end gap-2 py-1">
+                        <div className="space-y-1">
+                          <label className="text-xs text-muted-foreground">Nueva contraseña para {u.nombre}</label>
+                          <Input
+                            type="password"
+                            minLength={8}
+                            value={resetPassword}
+                            onChange={(e) => setResetPassword(e.target.value)}
+                            placeholder="Mínimo 8 caracteres"
+                            className="h-8 w-48 text-sm"
+                          />
+                        </div>
+                        <Button size="sm" disabled={resetSaving} onClick={() => handleReset(u)}>
+                          {resetSaving ? "Guardando..." : "Restablecer"}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setResetId(null)}>Cancelar</Button>
+                        {resetError && <span className="text-xs text-destructive">{resetError}</span>}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

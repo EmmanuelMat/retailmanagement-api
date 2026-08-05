@@ -1122,14 +1122,28 @@ async fn http_list_auditoria(
 
 // ------------------ MODULO 2: Categorias y Productos ------------------
 
+#[derive(Debug, Deserialize)]
+struct ListCategoriasParams {
+    search: Option<String>,
+    activo: Option<bool>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_list_categorias(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListCategoriasParams>,
+) -> Result<Json<pagination::Page<services::catalog_service::Categoria>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let categorias = state.catalog_service.list_categorias(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (categorias, total) = state.catalog_service.list_categorias(&claims.tenant_id, params.search, params.activo, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": categorias.len(), "categorias": categorias })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(categorias, page.page_number(), page_size, total)))
 }
 
 async fn http_create_categoria(
@@ -1308,22 +1322,40 @@ async fn http_create_movimiento(
     Ok(Json(movimiento))
 }
 
+/// Query params shared by list endpoints with no entity-specific filters —
+/// just pagination + sort.
+#[derive(Debug, Deserialize)]
+struct PageSortParams {
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 // ------------------ MODULO 4: Clientes y Proveedores ------------------
 
 #[derive(Debug, Deserialize)]
 struct SearchParams {
     search: Option<String>,
+    activo: Option<bool>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
 }
 
 async fn http_list_clientes(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<pagination::Page<services::partner_service::Cliente>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let clientes = state.partner_service.list_clientes(&claims.tenant_id, params.search).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (clientes, total) = state.partner_service.list_clientes(&claims.tenant_id, params.search, params.activo, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": clientes.len(), "clientes": clientes })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(clientes, page.page_number(), page_size, total)))
 }
 
 async fn http_get_cliente(
@@ -1390,11 +1422,14 @@ async fn http_list_proveedores(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<pagination::Page<services::partner_service::Proveedor>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let proveedores = state.partner_service.list_proveedores(&claims.tenant_id, params.search).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (proveedores, total) = state.partner_service.list_proveedores(&claims.tenant_id, params.search, params.activo, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": proveedores.len(), "proveedores": proveedores })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(proveedores, page.page_number(), page_size, total)))
 }
 
 async fn http_get_proveedor(
@@ -1842,14 +1877,33 @@ struct CotizacionCompletaResponse {
     items: Vec<services::cotizacion_service::CotizacionItem>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListCotizacionesParams {
+    estado: Option<String>,
+    #[serde(rename = "clienteId")] cliente_id: Option<Uuid>,
+    search: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_list_cotizaciones(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListCotizacionesParams>,
+) -> Result<Json<pagination::Page<services::cotizacion_service::CotizacionConCliente>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let cotizaciones = state.cotizacion_service.list_cotizaciones(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (cotizaciones, total) = state.cotizacion_service.list_cotizaciones(
+        &claims.tenant_id, params.estado, params.cliente_id, params.search, params.fecha_desde, params.fecha_hasta, &page, &sort,
+    ).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": cotizaciones.len(), "cotizaciones": cotizaciones })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(cotizaciones, page.page_number(), page_size, total)))
 }
 
 async fn http_create_cotizacion(
@@ -1968,17 +2022,29 @@ struct ConduceCompletaResponse {
 #[derive(Debug, Deserialize)]
 struct ListConducesQuery {
     venta_id: Option<Uuid>,
+    search: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
 }
 
 async fn http_list_conduces(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(q): Query<ListConducesQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<pagination::Page<services::conduce_service::ConduceConVenta>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let conduces = state.conduce_service.list_conduces(&claims.tenant_id, q.venta_id).await
+    let page = pagination::PageParams { page: q.page, page_size: q.page_size };
+    let sort = pagination::SortParams { sort_by: q.sort_by, sort_dir: q.sort_dir };
+    let (conduces, total) = state.conduce_service.list_conduces(
+        &claims.tenant_id, q.venta_id, q.search, q.fecha_desde, q.fecha_hasta, &page, &sort,
+    ).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": conduces.len(), "conduces": conduces })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(conduces, page.page_number(), page_size, total)))
 }
 
 async fn http_create_conduce(
@@ -2009,14 +2075,34 @@ async fn http_get_conduce(
     Ok(Json(ConduceCompletaResponse { conduce: completa.conduce, items: completa.items }))
 }
 
+#[derive(Debug, Deserialize)]
+struct ListEcfDocumentosParams {
+    #[serde(rename = "estadoDgii")] estado_dgii: Option<String>,
+    #[serde(rename = "tipoEcf")] tipo_ecf: Option<i32>,
+    #[serde(rename = "referenciaTipo")] referencia_tipo: Option<String>,
+    search: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_list_ecf_documentos(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListEcfDocumentosParams>,
+) -> Result<Json<pagination::Page<services::ecf_service::EcfDocumento>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let docs = state.ecf_service.list_documentos(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (docs, total) = state.ecf_service.list_documentos(
+        &claims.tenant_id, params.estado_dgii, params.tipo_ecf, params.referencia_tipo, params.search, params.fecha_desde, params.fecha_hasta, &page, &sort,
+    ).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": docs.len(), "documentos": docs })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(docs, page.page_number(), page_size, total)))
 }
 
 /// Imprime el ticket de una venta (e-CF si ya fue emitido, o ticket simple si
@@ -2147,14 +2233,33 @@ async fn http_get_compra(
     Ok(Json(CompraCompletaResponse { compra: completa.compra, items: completa.items }))
 }
 
+#[derive(Debug, Deserialize)]
+struct ListGastosParams {
+    categoria: Option<String>,
+    #[serde(rename = "proveedorId")] proveedor_id: Option<Uuid>,
+    search: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_list_gastos(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListGastosParams>,
+) -> Result<Json<pagination::Page<services::compras_service::Gasto>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let gastos = state.compras_service.list_gastos(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (gastos, total) = state.compras_service.list_gastos(
+        &claims.tenant_id, params.categoria, params.proveedor_id, params.search, params.fecha_desde, params.fecha_hasta, &page, &sort,
+    ).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": gastos.len(), "gastos": gastos })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(gastos, page.page_number(), page_size, total)))
 }
 
 async fn http_create_gasto(
@@ -2204,34 +2309,81 @@ async fn http_caja_cerrar(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
+#[derive(Debug, Deserialize)]
+struct ListCajaMovimientosParams {
+    tipo: Option<String>,
+    #[serde(rename = "referenciaTipo")] referencia_tipo: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_caja_movimientos(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListCajaMovimientosParams>,
+) -> Result<Json<pagination::Page<services::caja_service::CajaMovimiento>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let movimientos = state.caja_service.list_movimientos(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (movimientos, total) = state.caja_service.list_movimientos(
+        &claims.tenant_id, params.tipo, params.referencia_tipo, params.fecha_desde, params.fecha_hasta, &page, &sort,
+    ).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": movimientos.len(), "movimientos": movimientos })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(movimientos, page.page_number(), page_size, total)))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListCajaSesionesParams {
+    estado: Option<String>,
+    #[serde(rename = "usuarioId")] usuario_id: Option<Uuid>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
 }
 
 async fn http_caja_sesiones(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListCajaSesionesParams>,
+) -> Result<Json<pagination::Page<services::caja_service::CajaSesion>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let sesiones = state.caja_service.list_sesiones(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (sesiones, total) = state.caja_service.list_sesiones(&claims.tenant_id, params.estado, params.usuario_id, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": sesiones.len(), "sesiones": sesiones })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(sesiones, page.page_number(), page_size, total)))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListBancosParams {
+    search: Option<String>,
+    activo: Option<bool>,
+    #[serde(rename = "tipoCuenta")] tipo_cuenta: Option<String>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
 }
 
 async fn http_list_bancos(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListBancosParams>,
+) -> Result<Json<pagination::Page<services::caja_service::Banco>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let bancos = state.bancos_service.list(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (bancos, total) = state.bancos_service.list(&claims.tenant_id, params.search, params.activo, params.tipo_cuenta, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": bancos.len(), "bancos": bancos })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(bancos, page.page_number(), page_size, total)))
 }
 
 async fn http_create_banco(
@@ -2249,11 +2401,15 @@ async fn http_list_banco_movimientos(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<PageSortParams>,
+) -> Result<Json<pagination::Page<services::caja_service::BancoMovimiento>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let movimientos = state.bancos_service.list_movimientos(&claims.tenant_id, id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (movimientos, total) = state.bancos_service.list_movimientos(&claims.tenant_id, id, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": movimientos.len(), "movimientos": movimientos })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(movimientos, page.page_number(), page_size, total)))
 }
 
 async fn http_create_banco_movimiento(
@@ -2271,14 +2427,29 @@ async fn http_create_banco_movimiento(
 
 // ------------------ MODULO 8: Nomina y Adelantos ------------------
 
+#[derive(Debug, Deserialize)]
+struct ListEmpleadosParams {
+    search: Option<String>,
+    puesto: Option<String>,
+    activo: Option<bool>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_list_empleados(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListEmpleadosParams>,
+) -> Result<Json<pagination::Page<services::nomina_service::EmpleadoConDisponible>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let empleados = state.nomina_service.list_empleados(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (empleados, total) = state.nomina_service.list_empleados(&claims.tenant_id, params.search, params.puesto, params.activo, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": empleados.len(), "empleados": empleados })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(empleados, page.page_number(), page_size, total)))
 }
 
 async fn http_get_empleado(
@@ -2326,14 +2497,33 @@ async fn http_delete_empleado(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+#[derive(Debug, Deserialize)]
+struct ListAdelantosParams {
+    estado: Option<String>,
+    #[serde(rename = "empleadoId")] empleado_id: Option<Uuid>,
+    search: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_list_adelantos(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListAdelantosParams>,
+) -> Result<Json<pagination::Page<services::nomina_service::AdelantoConEmpleado>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let adelantos = state.nomina_service.list_adelantos(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (adelantos, total) = state.nomina_service.list_adelantos(
+        &claims.tenant_id, params.estado, params.empleado_id, params.search, params.fecha_desde, params.fecha_hasta, &page, &sort,
+    ).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": adelantos.len(), "adelantos": adelantos })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(adelantos, page.page_number(), page_size, total)))
 }
 
 async fn http_request_adelanto(
@@ -2422,17 +2612,29 @@ async fn http_run_payroll(
 #[derive(Debug, Deserialize)]
 struct AsientosParams {
     cuenta: Option<String>,
+    #[serde(rename = "referenciaTipo")] referencia_tipo: Option<String>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
 }
 
 async fn http_list_asientos(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(params): Query<AsientosParams>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<pagination::Page<services::contabilidad_service::Asiento>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let asientos = state.contabilidad_service.list_asientos(&claims.tenant_id, params.cuenta).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (asientos, total) = state.contabilidad_service.list_asientos(
+        &claims.tenant_id, params.cuenta, params.referencia_tipo, params.fecha_desde, params.fecha_hasta, &page, &sort,
+    ).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": asientos.len(), "asientos": asientos })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(asientos, page.page_number(), page_size, total)))
 }
 
 async fn http_create_asiento(
@@ -2447,14 +2649,27 @@ async fn http_create_asiento(
     Ok(Json(serde_json::json!({ "asientos": asientos })))
 }
 
+#[derive(Debug, Deserialize)]
+struct LibroMayorParams {
+    search: Option<String>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_libro_mayor(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<LibroMayorParams>,
+) -> Result<Json<pagination::Page<services::contabilidad_service::CuentaResumen>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let cuentas = state.contabilidad_service.libro_mayor(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (cuentas, total) = state.contabilidad_service.libro_mayor(&claims.tenant_id, params.search, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "cuentas": cuentas })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(cuentas, page.page_number(), page_size, total)))
 }
 
 async fn http_sincronizar_contabilidad(
@@ -2557,14 +2772,29 @@ async fn http_update_empresa(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
+#[derive(Debug, Deserialize)]
+struct ListUsuariosParams {
+    search: Option<String>,
+    rol: Option<String>,
+    activo: Option<bool>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
 async fn http_config_list_usuarios(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Query(params): Query<ListUsuariosParams>,
+) -> Result<Json<pagination::Page<services::config_service::Usuario>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let usuarios = state.config_service.list_usuarios(&claims.tenant_id).await
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (usuarios, total) = state.config_service.list_usuarios(&claims.tenant_id, params.search, params.rol, params.activo, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "total": usuarios.len(), "usuarios": usuarios })))
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(usuarios, page.page_number(), page_size, total)))
 }
 
 async fn http_config_create_usuario(

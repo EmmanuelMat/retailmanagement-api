@@ -293,14 +293,61 @@ impl ComprasService {
 
     // ---- Gastos ----
 
-    pub async fn list_gastos(&self, tenant_id: &str) -> anyhow::Result<Vec<Gasto>> {
-        let rows = sqlx::query_as::<_, Gasto>(
-            "SELECT id, tenant_id, concepto, categoria, monto, proveedor_id, created_at FROM gastos WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 200",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+    const GASTOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("created_at", "created_at"),
+        ("monto", "monto"),
+    ];
+
+    pub async fn list_gastos(
+        &self,
+        tenant_id: &str,
+        categoria: Option<String>,
+        proveedor_id: Option<Uuid>,
+        search: Option<String>,
+        fecha_desde: Option<chrono::NaiveDate>,
+        fecha_hasta: Option<chrono::NaiveDate>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<Gasto>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
+               AND ($2::text IS NULL OR categoria = $2)
+               AND ($3::uuid IS NULL OR proveedor_id = $3)
+               AND ($4::text IS NULL OR LOWER(concepto) LIKE $4)
+               AND ($5::date IS NULL OR created_at::date >= $5)
+               AND ($6::date IS NULL OR created_at::date <= $6)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM gastos {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(&categoria)
+            .bind(proveedor_id)
+            .bind(&pattern)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::GASTOS_SORTABLE, "created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT id, tenant_id, concepto, categoria, monto, proveedor_id, created_at
+               FROM gastos
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $7 OFFSET $8"#
+        );
+        let rows = sqlx::query_as::<_, Gasto>(&query)
+            .bind(tenant_id)
+            .bind(&categoria)
+            .bind(proveedor_id)
+            .bind(&pattern)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn create_gasto(&self, tenant_id: &str, usuario_id: Uuid, req: CreateGastoRequest) -> anyhow::Result<Gasto> {

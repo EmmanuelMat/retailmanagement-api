@@ -209,21 +209,61 @@ impl ConduceService {
         Ok(ConduceCompleta { conduce, items })
     }
 
-    pub async fn list_conduces(&self, tenant_id: &str, venta_id: Option<Uuid>) -> anyhow::Result<Vec<ConduceConVenta>> {
-        let rows = sqlx::query_as::<_, ConduceConVenta>(
+    const CONDUCES_SORTABLE: &'static [(&'static str, &'static str)] = &[("created_at", "c.created_at")];
+
+    pub async fn list_conduces(
+        &self,
+        tenant_id: &str,
+        venta_id: Option<Uuid>,
+        search: Option<String>,
+        fecha_desde: Option<chrono::NaiveDate>,
+        fecha_hasta: Option<chrono::NaiveDate>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<ConduceConVenta>, i64)> {
+        let pattern = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| format!("%{}%", s));
+        const WHERE_CLAUSE: &str = "WHERE c.tenant_id = $1
+               AND ($2::uuid IS NULL OR c.venta_id = $2)
+               AND ($3::text IS NULL OR LOWER(cl.nombre) LIKE $3 OR LOWER(c.direccion_entrega) LIKE $3)
+               AND ($4::date IS NULL OR c.created_at::date >= $4)
+               AND ($5::date IS NULL OR c.created_at::date <= $5)";
+
+        let total: i64 = sqlx::query_scalar(&format!(
+            r#"SELECT COUNT(*) FROM conduces c
+               JOIN ventas v ON v.id = c.venta_id
+               LEFT JOIN clientes cl ON cl.id = v.cliente_id
+               {WHERE_CLAUSE}"#
+        ))
+        .bind(tenant_id)
+        .bind(venta_id)
+        .bind(&pattern)
+        .bind(fecha_desde)
+        .bind(fecha_hasta)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let order_by = sort.resolve(Self::CONDUCES_SORTABLE, "c.created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
             r#"SELECT c.id, c.venta_id, cl.nombre AS cliente_nombre, c.direccion_entrega, c.created_at
                FROM conduces c
                JOIN ventas v ON v.id = c.venta_id
                LEFT JOIN clientes cl ON cl.id = v.cliente_id
-               WHERE c.tenant_id = $1 AND ($2::uuid IS NULL OR c.venta_id = $2)
-               ORDER BY c.created_at DESC
-               LIMIT 200"#,
-        )
-        .bind(tenant_id)
-        .bind(venta_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $6 OFFSET $7"#
+        );
+        let rows = sqlx::query_as::<_, ConduceConVenta>(&query)
+            .bind(tenant_id)
+            .bind(venta_id)
+            .bind(&pattern)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn get_conduce(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<ConduceCompleta> {

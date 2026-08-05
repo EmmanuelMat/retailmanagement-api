@@ -65,7 +65,7 @@ function VentasPageContent() {
   const [clientes, setClientes] = useState<Cliente[]>([]);
 
   useEffect(() => {
-    apiFetch<{ clientes: Cliente[] }>("/api/clientes").then((d) => setClientes(d.clientes)).catch(() => {});
+    apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
   }, []);
 
   const {

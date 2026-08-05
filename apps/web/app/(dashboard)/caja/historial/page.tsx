@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense } from "react";
 import { History } from "lucide-react";
-import { Badge, Card, CardContent, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
-import { apiFetch } from "@/lib/api";
+import {
+  Badge, Input, Select,
+  Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
+  Pagination, ScrollableTableCard, formatDOP,
+} from "@repo/ui";
+import { useServerTable } from "@/lib/use-server-table";
 
 interface CajaSesion {
   id: string;
@@ -16,60 +20,100 @@ interface CajaSesion {
   cerrada_at: string | null;
 }
 
-export default function HistorialCajaPage() {
-  const [sesiones, setSesiones] = useState<CajaSesion[]>([]);
-  const [loading, setLoading] = useState(true);
+interface SesionesFilters {
+  estado?: string;
+}
 
-  useEffect(() => {
-    apiFetch<{ sesiones: CajaSesion[] }>("/api/caja/sesiones").then((d) => setSesiones(d.sesiones)).finally(() => setLoading(false));
-  }, []);
+export default function HistorialCajaPage() {
+  return (
+    <Suspense fallback={null}>
+      <HistorialCajaPageContent />
+    </Suspense>
+  );
+}
+
+function HistorialCajaPageContent() {
+  const {
+    items: sesiones,
+    total,
+    totalPages,
+    loading,
+    error,
+    state,
+    setPage,
+    setPageSize,
+    toggleSort,
+    setFilters,
+  } = useServerTable<CajaSesion, SesionesFilters>({
+    path: "/api/caja/sesiones",
+    initialPageSize: 20,
+    initialSortBy: "abierta_at",
+    initialSortDir: "desc",
+  });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Historial de caja</h1>
         <p className="text-sm text-muted-foreground mt-1">Arqueos de cada turno abierto y cerrado.</p>
       </div>
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <p className="p-5 text-sm text-muted-foreground">Cargando...</p>
-          ) : sesiones.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
-              <History className="h-6 w-6" />
-              Sin sesiones de caja todavía.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Apertura</TableHead>
-                  <TableHead>Cierre</TableHead>
-                  <TableHead className="text-right">Inicial</TableHead>
-                  <TableHead className="text-right">Contado</TableHead>
-                  <TableHead className="text-right">Diferencia</TableHead>
-                  <TableHead>Estado</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sesiones.map((s) => (
-                  <TableRow key={s.id}>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(s.abierta_at).toLocaleString("es-DO")}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{s.cerrada_at ? new Date(s.cerrada_at).toLocaleString("es-DO") : "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatDOP(s.monto_inicial)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{s.monto_final ? formatDOP(s.monto_final) : "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums ${s.diferencia && Number(s.diferencia) !== 0 ? "text-destructive" : ""}`}>
-                      {s.diferencia ? formatDOP(s.diferencia) : "—"}
-                    </TableCell>
-                    <TableCell><Badge variant={s.estado === "ABIERTA" ? "default" : "secondary"}>{s.estado}</Badge></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <div className="flex flex-wrap gap-3">
+        <Select
+          value={state.filters.estado || ""}
+          onChange={(e) => setFilters({ estado: e.target.value || undefined })}
+          className="max-w-[160px]"
+        >
+          <option value="">Todos los estados</option>
+          <option value="ABIERTA">Abierta</option>
+          <option value="CERRADA">Cerrada</option>
+        </Select>
+      </div>
+
+      <ScrollableTableCard
+        loading={loading}
+        error={error}
+        isEmpty={sesiones.length === 0}
+        emptyIcon={<History className="h-6 w-6" />}
+        emptyMessage="Sin sesiones de caja todavía."
+        pagination={
+          <Pagination
+            page={state.page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={state.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableTableHead column="abierta_at" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Apertura</SortableTableHead>
+              <TableHead>Cierre</TableHead>
+              <TableHead className="text-right">Inicial</TableHead>
+              <TableHead className="text-right">Contado</TableHead>
+              <SortableTableHead column="diferencia" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Diferencia</SortableTableHead>
+              <TableHead>Estado</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sesiones.map((s) => (
+              <TableRow key={s.id}>
+                <TableCell className="text-xs text-muted-foreground">{new Date(s.abierta_at).toLocaleString("es-DO")}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{s.cerrada_at ? new Date(s.cerrada_at).toLocaleString("es-DO") : "—"}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatDOP(s.monto_inicial)}</TableCell>
+                <TableCell className="text-right tabular-nums">{s.monto_final ? formatDOP(s.monto_final) : "—"}</TableCell>
+                <TableCell className={`text-right tabular-nums ${s.diferencia && Number(s.diferencia) !== 0 ? "text-destructive" : ""}`}>
+                  {s.diferencia ? formatDOP(s.diferencia) : "—"}
+                </TableCell>
+                <TableCell><Badge variant={s.estado === "ABIERTA" ? "default" : "secondary"}>{s.estado}</Badge></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableTableCard>
     </div>
   );
 }

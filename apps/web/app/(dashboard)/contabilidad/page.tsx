@@ -23,8 +23,8 @@ export default function ContabilidadPage() {
   async function load() {
     setLoading(true);
     try {
-      const data = await apiFetch<{ cuentas: CuentaResumen[] }>("/api/contabilidad/libro-mayor");
-      setCuentas(data.cuentas);
+      const data = await apiFetch<{ items: CuentaResumen[] }>("/api/contabilidad/libro-mayor?pageSize=1000");
+      setCuentas(data.items);
     } catch (e: any) {
       setError(e.message);
     } finally {
