@@ -2,16 +2,19 @@
 name = "fiscal-core"
 version = "0.1.0"
 edition = "2021"
-description = "Bank-grade Rust core: EventStore + TigerBeetle + DGII e-CF + Payroll Advance"
+description = "Rust core: Postgres double-entry ledger + DGII e-CF + Payroll Advance"
 default-run = "fiscal-core"
 
 [dependencies]
 # Async + Web - axum 0.6 (pinned; was chosen to match tonic's http 0.2, tonic is gone now but left as-is for this pass)
 tokio = { version = "1.40", features = ["full"] }
-axum = { version = "0.6", features = ["json"] }
+axum = { version = "0.6", features = ["json", "multipart"] }
 tower = "0.4"
-tower-http = { version = "0.4", features = ["cors", "trace"] }
+tower-http = { version = "0.4", features = ["cors", "trace", "fs"] }
 http = "0.2"
+
+# Miniaturas de imágenes de producto (ver services/image_service.rs)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-native-tls","postgres","uuid","json","chrono","rust_decimal"] }

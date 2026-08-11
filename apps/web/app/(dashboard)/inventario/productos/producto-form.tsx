@@ -2,10 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ImagePlus } from "lucide-react";
 import { Button, Card, CardContent, Input, Label, Select } from "@repo/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, imagenSrc, uploadProductoImagen } from "@/lib/api";
 
 interface Categoria {
+  id: string;
+  nombre: string;
+}
+
+interface Proveedor {
   id: string;
   nombre: string;
 }
@@ -14,6 +20,7 @@ export interface ProductoFormValues {
   sku: string;
   nombre: string;
   categoria_id: string;
+  proveedor_id: string;
   descripcion: string;
   itbis_tipo: string;
   unidad_medida: string;
@@ -27,6 +34,7 @@ const EMPTY: ProductoFormValues = {
   sku: "",
   nombre: "",
   categoria_id: "",
+  proveedor_id: "",
   descripcion: "",
   itbis_tipo: "GRAVADO_18",
   unidad_medida: "43",
@@ -40,19 +48,46 @@ export function ProductoForm({
   initial,
   submitLabel,
   onSubmit,
+  productoId,
+  imagenUrl,
 }: {
   initial?: Partial<ProductoFormValues>;
   submitLabel: string;
   onSubmit: (values: ProductoFormValues) => Promise<void>;
+  // La foto solo puede subirse una vez el producto existe (el endpoint
+  // necesita su id) - por eso es opcional y solo se muestra al editar.
+  productoId?: string;
+  imagenUrl?: string | null;
 }) {
   const router = useRouter();
   const [categorias, setCategorias] = useState<Categoria[]>([]);
+  const [proveedores, setProveedores] = useState<Proveedor[]>([]);
   const [values, setValues] = useState<ProductoFormValues>({ ...EMPTY, ...initial });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [imagen, setImagen] = useState(imagenUrl || null);
+  const [uploadingImagen, setUploadingImagen] = useState(false);
+  const [imagenError, setImagenError] = useState("");
+
+  async function handleImagenChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !productoId) return;
+    setUploadingImagen(true);
+    setImagenError("");
+    try {
+      const { imagen_url } = await uploadProductoImagen(productoId, file);
+      setImagen(imagen_url);
+    } catch (err: any) {
+      setImagenError(err.message);
+    } finally {
+      setUploadingImagen(false);
+      e.target.value = "";
+    }
+  }
 
   useEffect(() => {
     apiFetch<{ items: Categoria[] }>("/api/categorias?pageSize=1000&activo=true").then((d) => setCategorias(d.items)).catch(() => {});
+    apiFetch<{ items: Proveedor[] }>("/api/proveedores?pageSize=1000&activo=true").then((d) => setProveedores(d.items)).catch(() => {});
   }, []);
 
   function set<K extends keyof ProductoFormValues>(key: K, value: ProductoFormValues[K]) {
@@ -77,6 +112,24 @@ export function ProductoForm({
     <Card className="max-w-2xl">
       <CardContent className="pt-5">
         <form onSubmit={handleSubmit} className="space-y-4">
+          {productoId && (
+            <div className="flex items-center gap-4">
+              <div className="h-20 w-20 rounded-md border border-border bg-surface flex items-center justify-center overflow-hidden shrink-0">
+                {imagen ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={imagenSrc(imagen) || undefined} alt="Foto del producto" className="h-full w-full object-cover" />
+                ) : (
+                  <ImagePlus className="h-6 w-6 text-muted-foreground" />
+                )}
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="imagen">Foto del producto</Label>
+                <Input id="imagen" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleImagenChange} disabled={uploadingImagen} className="max-w-xs" />
+                {uploadingImagen && <p className="text-xs text-muted-foreground">Subiendo...</p>}
+                {imagenError && <p className="text-xs text-destructive">{imagenError}</p>}
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="sku">SKU *</Label>
@@ -88,6 +141,15 @@ export function ProductoForm({
                 <option value="">Sin categoría</option>
                 {categorias.map((c) => (
                   <option key={c.id} value={c.id}>{c.nombre}</option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="proveedor">Proveedor</Label>
+              <Select id="proveedor" value={values.proveedor_id} onChange={(e) => set("proveedor_id", e.target.value)}>
+                <option value="">Sin proveedor</option>
+                {proveedores.map((p) => (
+                  <option key={p.id} value={p.id}>{p.nombre}</option>
                 ))}
               </Select>
             </div>

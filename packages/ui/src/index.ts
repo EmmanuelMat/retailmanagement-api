@@ -6,5 +6,8 @@ export * from "./badge";
 export * from "./table";
 export * from "./pagination";
 export * from "./scrollable-table-card";
+export * from "./async-combobox";
+export * from "./query-search";
+export * from "./query-search-input";
 export * from "./coming-soon";
 export * from "./utils";

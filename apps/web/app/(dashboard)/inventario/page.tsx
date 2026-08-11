@@ -35,7 +35,7 @@ export default function InventarioPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card>
+        <Card className="h-full">
           <CardContent className="pt-5 flex items-start justify-between">
             <div>
               <p className="text-xs text-muted-foreground">Productos activos</p>
@@ -46,7 +46,7 @@ export default function InventarioPage() {
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="h-full">
           <CardContent className="pt-5 flex items-start justify-between">
             <div>
               <p className="text-xs text-muted-foreground">Valor de inventario</p>
@@ -57,7 +57,7 @@ export default function InventarioPage() {
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="h-full">
           <CardContent className="pt-5 flex items-start justify-between">
             <div>
               <p className="text-xs text-muted-foreground">Bajo stock mínimo</p>

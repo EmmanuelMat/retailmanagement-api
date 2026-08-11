@@ -13,7 +13,7 @@ mod xml_c14n;
 
 use axum::{
     body::{boxed, Full},
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{HeaderMap, Method, Request, StatusCode},
     middleware::{self, Next},
     response::Response,
@@ -41,6 +41,7 @@ use services::contabilidad_service::ContabilidadService;
 use services::ai_service::AiService;
 use services::ecf_service::EcfService;
 use services::email_service::EmailService;
+use services::image_service::ImageService;
 use services::inventario_service::InventarioService;
 use services::license_service::{EstadoLicencia, LicenseService};
 use services::nomina_service::NominaService;
@@ -73,6 +74,7 @@ struct HttpState {
     license_service: Arc<LicenseService>,
     backup_service: Arc<BackupService>,
     audit_service: Arc<AuditService>,
+    image_service: Arc<ImageService>,
     vendor_admin_secret: String,
     rate_limiter: Arc<RateLimiter>,
     email_service: Arc<EmailService>,
@@ -242,6 +244,11 @@ async fn main() -> anyhow::Result<()> {
     let license_service = Arc::new(LicenseService::new(pool.clone()));
     let backup_service = Arc::new(BackupService::new(database_url.clone()));
     let audit_service = Arc::new(AuditService::new(pool.clone()));
+    // Miniaturas de fotos de producto - solo la ruta se guarda en Postgres,
+    // el JPEG reescalado vive en disco bajo este directorio (servido
+    // estáticamente vía ServeDir en /uploads, ver más abajo).
+    let uploads_dir = std::env::var("UPLOADS_DIR").unwrap_or_else(|_| "uploads".to_string());
+    let image_service = Arc::new(ImageService::new(uploads_dir.clone()));
     // 5 fallos -> bloqueado 15 min. Compartido entre login y forgot-password
     // (claves con prefijo distinto, ver http_login / http_forgot_password).
     let rate_limiter = Arc::new(RateLimiter::new(5, Duration::from_secs(15 * 60)));
@@ -252,7 +259,9 @@ async fn main() -> anyhow::Result<()> {
     let ai_service = Arc::new(AiService::new(
         pool.clone(),
         std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string()),
-        std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2:3b".to_string()),
+        // 1b en vez de 3b por defecto: menos RAM/CPU en hardware modesto de
+        // colmado. Cambiar solo requiere OLLAMA_MODEL en .env, sin tocar código.
+        std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2:1b".to_string()),
     ));
 
     // Respaldo automático cada 24h - ver backup_service.rs. No hay cron
@@ -291,6 +300,7 @@ async fn main() -> anyhow::Result<()> {
         license_service,
         backup_service,
         audit_service,
+        image_service,
         vendor_admin_secret,
         rate_limiter,
         email_service,
@@ -309,6 +319,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/categorias/:id", axum::routing::put(http_update_categoria).delete(http_delete_categoria))
         .route("/v1/productos", get(http_list_productos).post(http_create_producto))
         .route("/v1/productos/:id", get(http_get_producto).put(http_update_producto).delete(http_delete_producto))
+        .route("/v1/productos/:id/imagen", post(http_upload_producto_imagen))
         // MODULO 3: Inventario (kardex)
         .route("/v1/inventario/resumen", get(http_inventario_resumen))
         .route("/v1/inventario/movimientos", get(http_list_movimientos).post(http_create_movimiento))
@@ -360,6 +371,8 @@ async fn main() -> anyhow::Result<()> {
         // MODULO 10: Reportes y Dashboard
         .route("/v1/reports/606", get(http_report_606))
         .route("/v1/reports/607", get(http_report_607))
+        .route("/v1/reports/606/csv", get(http_report_606_csv))
+        .route("/v1/reports/607/csv", get(http_report_607_csv))
         .route("/v1/reports/dashboard", get(http_dashboard_resumen))
         .route("/v1/ai/digest", get(http_ai_digest))
         .route("/v1/ai/chat", post(http_ai_chat))
@@ -413,6 +426,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/tenants/:rnc/activar-licencia", post(http_activar_licencia))
         .merge(protected)
         .with_state(http_state)
+        // Miniaturas de producto: servidas como archivos estáticos, sin JWT.
+        // Deliberado - son fotos de producto, no datos sensibles del tenant.
+        .nest_service("/uploads", tower_http::services::ServeDir::new(&uploads_dir))
         .layer(
             tower_http::cors::CorsLayer::new()
                 .allow_origin(
@@ -1248,6 +1264,37 @@ async fn http_update_producto(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     state.audit_service.log(&claims.tenant_id, usuario_id, "PRODUCTO_ACTUALIZADO", "producto", Some(id),
         serde_json::json!({ "precio_venta": producto.precio_venta, "costo": producto.costo })).await;
+    Ok(Json(producto))
+}
+
+async fn http_upload_producto_imagen(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> Result<Json<services::catalog_service::Producto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).ok();
+
+    let mut bytes: Option<Vec<u8>> = None;
+    while let Some(field) = multipart.next_field().await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Multipart inválido: {}", e)))?
+    {
+        if field.name() == Some("imagen") {
+            bytes = Some(field.bytes().await
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("No se pudo leer el archivo: {}", e)))?
+                .to_vec());
+        }
+    }
+    let bytes = bytes.ok_or((StatusCode::BAD_REQUEST, "Falta el campo 'imagen' en el formulario".to_string()))?;
+
+    let imagen_url = state.image_service.save_thumbnail(&claims.tenant_id, id, bytes).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let producto = state.catalog_service.set_imagen(&claims.tenant_id, id, &imagen_url).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, usuario_id, "PRODUCTO_IMAGEN_ACTUALIZADA", "producto", Some(id),
+        serde_json::json!({ "imagen_url": imagen_url })).await;
     Ok(Json(producto))
 }
 
@@ -2707,6 +2754,43 @@ async fn http_report_607(
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     state.report_service.generate_607(&claims.tenant_id, &params.period).await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReportCsvParams {
+    #[serde(rename = "fechaDesde")] fecha_desde: chrono::NaiveDate,
+    #[serde(rename = "fechaHasta")] fecha_hasta: chrono::NaiveDate,
+}
+
+fn csv_response(csv: String, filename: &str) -> Result<Response, (StatusCode, String)> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")
+        .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+        .body(boxed(Full::from(csv)))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_report_606_csv(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ReportCsvParams>,
+) -> Result<Response, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let csv = state.report_service.generate_606_csv(&claims.tenant_id, params.fecha_desde, params.fecha_hasta).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    csv_response(csv, &format!("606_{}_{}.csv", params.fecha_desde, params.fecha_hasta))
+}
+
+async fn http_report_607_csv(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ReportCsvParams>,
+) -> Result<Response, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let csv = state.report_service.generate_607_csv(&claims.tenant_id, params.fecha_desde, params.fecha_hasta).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    csv_response(csv, &format!("607_{}_{}.csv", params.fecha_desde, params.fecha_hasta))
 }
 
 async fn http_dashboard_resumen(

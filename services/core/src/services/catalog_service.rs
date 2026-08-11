@@ -44,6 +44,7 @@ pub struct Producto {
     pub id: Uuid,
     pub tenant_id: String,
     pub categoria_id: Option<Uuid>,
+    pub proveedor_id: Option<Uuid>,
     pub sku: String,
     pub codigo_barras: Option<String>,
     pub nombre: String,
@@ -55,6 +56,7 @@ pub struct Producto {
     pub stock_actual: Decimal,
     pub stock_minimo: Decimal,
     pub activo: bool,
+    pub imagen_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -62,6 +64,7 @@ pub struct Producto {
 #[derive(Debug, Deserialize)]
 pub struct CreateProductoRequest {
     pub categoria_id: Option<Uuid>,
+    pub proveedor_id: Option<Uuid>,
     pub sku: String,
     pub codigo_barras: Option<String>,
     pub nombre: String,
@@ -77,6 +80,7 @@ pub struct CreateProductoRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateProductoRequest {
     pub categoria_id: Option<Uuid>,
+    pub proveedor_id: Option<Uuid>,
     pub sku: Option<String>,
     pub codigo_barras: Option<String>,
     pub nombre: Option<String>,
@@ -208,7 +212,7 @@ impl CatalogService {
 
     // ---- Productos ----
 
-    const PRODUCTO_COLUMNS: &'static str = "id, tenant_id, categoria_id, sku, codigo_barras, nombre, descripcion, unidad_medida, itbis_tipo, costo, precio_venta, stock_actual, stock_minimo, activo, created_at, updated_at";
+    const PRODUCTO_COLUMNS: &'static str = "id, tenant_id, categoria_id, proveedor_id, sku, codigo_barras, nombre, descripcion, unidad_medida, itbis_tipo, costo, precio_venta, stock_actual, stock_minimo, activo, imagen_url, created_at, updated_at";
 
     const PRODUCTOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
         ("nombre", "nombre"),
@@ -228,15 +232,16 @@ impl CatalogService {
         page: &crate::pagination::PageParams,
         sort: &crate::pagination::SortParams,
     ) -> anyhow::Result<(Vec<Producto>, i64)> {
-        let search_pattern = search
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("%{}%", s));
+        let search_raw = search.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let search_pattern = search_raw.as_ref().map(|s| format!("%{}%", s.to_lowercase()));
         let unidad_medida = unidad_medida.filter(|s| !s.trim().is_empty());
 
+        // Nombre/SKU: coincidencia parcial (LIKE). Código de barras: exacto —
+        // así el flujo de escáner (que manda el código completo) no depende
+        // de coincidencias parciales accidentales entre dos códigos.
         const WHERE_CLAUSE: &str = "WHERE tenant_id = $1
                AND ($2::uuid IS NULL OR categoria_id = $2)
-               AND ($3::text IS NULL OR LOWER(nombre) LIKE $3 OR LOWER(sku) LIKE $3)
+               AND ($3::text IS NULL OR LOWER(nombre) LIKE $3 OR LOWER(sku) LIKE $3 OR codigo_barras = $6)
                AND ($4::text IS NULL OR unidad_medida = $4)
                AND ($5::bool IS NULL OR activo = $5)";
 
@@ -246,13 +251,14 @@ impl CatalogService {
             .bind(&search_pattern)
             .bind(&unidad_medida)
             .bind(activo)
+            .bind(&search_raw)
             .fetch_one(&self.pool)
             .await?;
 
         let order_by = sort.resolve(Self::PRODUCTOS_SORTABLE, "nombre ASC");
         let limit = page.limit(20);
         let query = format!(
-            "SELECT {} FROM productos {WHERE_CLAUSE} ORDER BY {order_by} LIMIT $6 OFFSET $7",
+            "SELECT {} FROM productos {WHERE_CLAUSE} ORDER BY {order_by} LIMIT $7 OFFSET $8",
             Self::PRODUCTO_COLUMNS
         );
         let rows = sqlx::query_as::<_, Producto>(&query)
@@ -261,6 +267,7 @@ impl CatalogService {
             .bind(&search_pattern)
             .bind(&unidad_medida)
             .bind(activo)
+            .bind(&search_raw)
             .bind(limit)
             .bind(page.offset(20))
             .fetch_all(&self.pool)
@@ -298,14 +305,15 @@ impl CatalogService {
             anyhow::bail!("Ya existe un producto con SKU: {}", req.sku);
         }
         let query = format!(
-            "INSERT INTO productos (tenant_id, categoria_id, sku, codigo_barras, nombre, descripcion, unidad_medida, itbis_tipo, costo, precio_venta, stock_actual, stock_minimo)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            "INSERT INTO productos (tenant_id, categoria_id, proveedor_id, sku, codigo_barras, nombre, descripcion, unidad_medida, itbis_tipo, costo, precio_venta, stock_actual, stock_minimo)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              RETURNING {}",
             Self::PRODUCTO_COLUMNS
         );
         let producto = sqlx::query_as::<_, Producto>(&query)
             .bind(tenant_id)
             .bind(req.categoria_id)
+            .bind(req.proveedor_id)
             .bind(req.sku.trim())
             .bind(&req.codigo_barras)
             .bind(req.nombre.trim())
@@ -328,16 +336,18 @@ impl CatalogService {
             anyhow::bail!("itbisTipo inválido: debe ser GRAVADO_18, GRAVADO_16 o EXENTO");
         }
         let query = format!(
-            "UPDATE productos SET categoria_id = $1, sku = $2, codigo_barras = $3, nombre = $4, descripcion = $5,
-                 unidad_medida = $6, itbis_tipo = $7, costo = $8, precio_venta = $9, stock_actual = $10, stock_minimo = $11, activo = $12, updated_at = NOW()
-             WHERE id = $13 AND tenant_id = $14
+            "UPDATE productos SET categoria_id = $1, proveedor_id = $2, sku = $3, codigo_barras = $4, nombre = $5, descripcion = $6,
+                 unidad_medida = $7, itbis_tipo = $8, costo = $9, precio_venta = $10, stock_actual = $11, stock_minimo = $12, activo = $13, updated_at = NOW()
+             WHERE id = $14 AND tenant_id = $15
              RETURNING {}",
             Self::PRODUCTO_COLUMNS
         );
         let producto = sqlx::query_as::<_, Producto>(&query)
-            // categoria_id is authoritative (not merged): the edit form always sends it,
-            // either a uuid or null, so null must actually clear the category.
+            // categoria_id/proveedor_id are authoritative (not merged): the edit
+            // form always sends them, either a uuid or null, so null must
+            // actually clear the category/proveedor.
             .bind(req.categoria_id)
+            .bind(req.proveedor_id)
             .bind(req.sku.unwrap_or(existing.sku))
             .bind(req.codigo_barras.or(existing.codigo_barras))
             .bind(req.nombre.unwrap_or(existing.nombre))
@@ -349,6 +359,20 @@ impl CatalogService {
             .bind(req.stock_actual.unwrap_or(existing.stock_actual))
             .bind(req.stock_minimo.unwrap_or(existing.stock_minimo))
             .bind(req.activo.unwrap_or(existing.activo))
+            .bind(id)
+            .bind(tenant_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(producto)
+    }
+
+    pub async fn set_imagen(&self, tenant_id: &str, id: Uuid, imagen_url: &str) -> anyhow::Result<Producto> {
+        let query = format!(
+            "UPDATE productos SET imagen_url = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3 RETURNING {}",
+            Self::PRODUCTO_COLUMNS
+        );
+        let producto = sqlx::query_as::<_, Producto>(&query)
+            .bind(imagen_url)
             .bind(id)
             .bind(tenant_id)
             .fetch_one(&self.pool)

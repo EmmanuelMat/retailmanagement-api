@@ -166,25 +166,25 @@ function CajaPageContent() {
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <Card>
+            <Card className="h-full">
               <CardContent className="pt-5">
                 <p className="text-xs text-muted-foreground">Monto inicial</p>
                 <p className="text-xl font-bold mt-1">{formatDOP(resumen.sesion.monto_inicial)}</p>
               </CardContent>
             </Card>
-            <Card>
+            <Card className="h-full">
               <CardContent className="pt-5">
                 <p className="text-xs text-muted-foreground">Ingresos</p>
                 <p className="text-xl font-bold mt-1 text-success">{formatDOP(resumen.ingresos)}</p>
               </CardContent>
             </Card>
-            <Card>
+            <Card className="h-full">
               <CardContent className="pt-5">
                 <p className="text-xs text-muted-foreground">Egresos</p>
                 <p className="text-xl font-bold mt-1 text-destructive">{formatDOP(resumen.egresos)}</p>
               </CardContent>
             </Card>
-            <Card>
+            <Card className="h-full">
               <CardContent className="pt-5">
                 <p className="text-xs text-muted-foreground">Saldo esperado</p>
                 <p className="text-xl font-bold mt-1">{formatDOP(resumen.saldo_actual)}</p>

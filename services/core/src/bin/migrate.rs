@@ -138,6 +138,10 @@ async fn main() -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_productos_tenant ON productos(tenant_id);
         CREATE INDEX IF NOT EXISTS idx_categorias_tenant ON categorias(tenant_id);
 
+        -- Miniatura del producto (ver image_service.rs) - se guarda solo la
+        -- ruta servida estáticamente, nunca el binario en la fila.
+        ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen_url TEXT;
+
         -- MODULO 3: Inventario (kardex) - plain movement log, adjusts productos.stock_actual
         CREATE TABLE IF NOT EXISTS movimientos_inventario (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -201,6 +205,10 @@ async fn main() -> anyhow::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_clientes_tenant ON clientes(tenant_id);
         CREATE INDEX IF NOT EXISTS idx_proveedores_tenant ON proveedores(tenant_id);
+
+        -- Proveedor principal del producto (proveedores ya existe arriba).
+        ALTER TABLE productos ADD COLUMN IF NOT EXISTS proveedor_id UUID REFERENCES proveedores(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_productos_proveedor ON productos(proveedor_id);
 
         -- MODULO 5: Ventas / Punto de Venta
         CREATE TABLE IF NOT EXISTS ventas (

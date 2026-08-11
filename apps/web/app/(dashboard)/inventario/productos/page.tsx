@@ -1,12 +1,11 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Plus, Pencil, Trash2, Package, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, Package, ImageOff } from "lucide-react";
 import {
   Badge,
   Button,
-  Input,
   Select,
   Table,
   TableBody,
@@ -17,13 +16,20 @@ import {
   TableRow,
   Pagination,
   ScrollableTableCard,
+  QuerySearchInput,
+  lookupFilter,
   formatDOP,
+  type QueryPrefixDef,
 } from "@repo/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, imagenSrc } from "@/lib/api";
 import { useServerTable } from "@/lib/use-server-table";
-import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Categoria {
+  id: string;
+  nombre: string;
+}
+
+interface Proveedor {
   id: string;
   nombre: string;
 }
@@ -31,6 +37,7 @@ interface Categoria {
 interface Producto {
   id: string;
   categoria_id: string | null;
+  proveedor_id: string | null;
   sku: string;
   nombre: string;
   unidad_medida: string;
@@ -40,6 +47,7 @@ interface Producto {
   stock_actual: string;
   stock_minimo: string;
   activo: boolean;
+  imagen_url: string | null;
 }
 
 interface ProductosFilters {
@@ -62,10 +70,12 @@ export default function ProductosPage() {
 
 function ProductosPageContent() {
   const [categorias, setCategorias] = useState<Categoria[]>([]);
+  const [proveedores, setProveedores] = useState<Proveedor[]>([]);
   const [actionError, setActionError] = useState("");
 
   useEffect(() => {
     apiFetch<{ items: Categoria[] }>("/api/categorias?pageSize=1000&activo=true").then((d) => setCategorias(d.items)).catch(() => {});
+    apiFetch<{ items: Proveedor[] }>("/api/proveedores?pageSize=1000&activo=true").then((d) => setProveedores(d.items)).catch(() => {});
   }, []);
 
   const {
@@ -88,7 +98,28 @@ function ProductosPageContent() {
     initialFilters: { activo: "true" },
   });
 
-  const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
+  const [rawQuery, setRawQuery] = useState(state.filters.search || "");
+
+  // Sistema de búsqueda avanzada por prefijos (ver query-search.ts en
+  // @repo/ui) - "category:" resuelve contra las categorías ya cargadas en
+  // memoria (misma lista que usa el <Select> de abajo, sin llamada extra al
+  // servidor); "status:" es un mapeo directo sin necesidad de búsqueda.
+  const queryPrefixes: QueryPrefixDef[] = useMemo(
+    () => [
+      { prefix: "category", label: "nombre de categoría", apply: lookupFilter(categorias, (c) => c.nombre, (c) => c.id, "categoriaId") },
+      {
+        prefix: "status",
+        label: "activo | inactivo",
+        apply: (value) => {
+          const v = value.trim().toLowerCase();
+          if (["activo", "activa", "si", "sí", "true"].includes(v)) return { activo: "true" };
+          if (["inactivo", "inactiva", "no", "false"].includes(v)) return { activo: "false" };
+          return null;
+        },
+      },
+    ],
+    [categorias]
+  );
 
   const unidades = Array.from(new Set(["UNIDAD", "PAQUETE", "GALON", "LITRO", "PIE", "LIBRA", "SET", "METRO", "SACO", "BOTELLA", "JUEGO", "YARDA", "CARTON", "CAJA", "KIT"]));
 
@@ -104,6 +135,7 @@ function ProductosPageContent() {
   }
 
   const categoriaNombre = (id: string | null) => categorias.find((c) => c.id === id)?.nombre || "—";
+  const proveedorNombre = (id: string | null) => proveedores.find((p) => p.id === id)?.nombre || "—";
 
   return (
     <div className="space-y-4">
@@ -121,10 +153,14 @@ function ProductosPageContent() {
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Buscar por nombre o SKU..." className="pl-9" />
-        </div>
+        <QuerySearchInput
+          value={rawQuery}
+          onChange={setRawQuery}
+          onParsed={({ text, filters }) => setFilters({ search: text || undefined, ...filters } as Partial<ProductosFilters>)}
+          prefixes={queryPrefixes}
+          placeholder="Nombre, SKU, category:, status:..."
+          className="flex-1 max-w-sm"
+        />
         <Select
           value={state.filters.categoriaId || ""}
           onChange={(e) => setFilters({ categoriaId: e.target.value || undefined })}
@@ -176,9 +212,11 @@ function ProductosPageContent() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-12"></TableHead>
               <SortableTableHead column="sku" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>SKU</SortableTableHead>
               <SortableTableHead column="nombre" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Nombre</SortableTableHead>
               <TableHead>Categoría</TableHead>
+              <TableHead>Proveedor</TableHead>
               <TableHead>Unidad</TableHead>
               <TableHead>ITBIS</TableHead>
               <TableHead className="text-right">Costo</TableHead>
@@ -190,9 +228,20 @@ function ProductosPageContent() {
           <TableBody>
             {productos.map((p) => (
               <TableRow key={p.id}>
+                <TableCell>
+                  <div className="h-9 w-9 rounded-md border border-border bg-surface flex items-center justify-center overflow-hidden">
+                    {p.imagen_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={imagenSrc(p.imagen_url) || undefined} alt={p.nombre} loading="lazy" className="h-full w-full object-cover" />
+                    ) : (
+                      <ImageOff className="h-4 w-4 text-muted-foreground" />
+                    )}
+                  </div>
+                </TableCell>
                 <TableCell className="font-mono text-xs text-muted-foreground">{p.sku}</TableCell>
                 <TableCell className="font-medium">{p.nombre}</TableCell>
                 <TableCell className="text-muted-foreground">{categoriaNombre(p.categoria_id)}</TableCell>
+                <TableCell className="text-muted-foreground">{proveedorNombre(p.proveedor_id)}</TableCell>
                 <TableCell className="text-muted-foreground">{p.unidad_medida}</TableCell>
                 <TableCell>
                   <Badge variant={ITBIS_VARIANT[p.itbis_tipo]}>{ITBIS_LABEL[p.itbis_tipo]}</Badge>

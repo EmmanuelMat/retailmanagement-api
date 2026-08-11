@@ -106,7 +106,7 @@ function GastosPageContent() {
           <CardTitle className="text-sm">Registrar gasto</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+          <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-start">
             <div className="sm:col-span-2 space-y-1.5">
               <Label htmlFor="concepto">Concepto</Label>
               <Input id="concepto" value={concepto} onChange={(e) => setConcepto(e.target.value)} placeholder="Factura de luz" required />

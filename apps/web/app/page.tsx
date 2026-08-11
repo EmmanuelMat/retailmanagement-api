@@ -39,8 +39,8 @@ const FEATURES = [
   },
   {
     icon: BookOpen,
-    title: "Contabilidad que se hace sola",
-    body: "Cada venta, compra y adelanto genera su asiento contable automáticamente. Libro mayor siempre cuadrado.",
+    title: "Contabilidad de partida doble",
+    body: "Ventas, compras, gastos, nómina y adelantos generan su asiento contable con un clic. Libro mayor y balance de comprobación siempre cuadrados.",
   },
   {
     icon: HandCoins,
@@ -54,8 +54,8 @@ const FEATURES = [
   },
   {
     icon: ShieldCheck,
-    title: "Núcleo banco-grade",
-    body: "Ledger de doble entrada sobre TigerBeetle y eventos encadenados con hash, igual que un banco. Nada se pierde.",
+    title: "Cuadre de caja sin sorpresas",
+    body: "Abre y cierra turno, cuenta el efectivo, y el sistema calcula la diferencia al instante. Sabes exactamente cuánto entró y cuánto salió.",
   },
 ];
 
@@ -225,7 +225,7 @@ export default function LandingPage() {
               Listo para la Ley 32-23 DGII — obligatoria desde nov. 2026
             </Badge>
             <h1 className="text-[2.5rem] leading-[1.08] sm:text-6xl sm:leading-[1.05] font-bold tracking-tight">
-              El punto de venta banco-grade para tu colmado
+              El punto de venta completo para tu colmado
             </h1>
             <p className="mt-6 text-lg sm:text-xl text-foreground-soft max-w-2xl leading-relaxed">
               Cobra, factura e-CF ante la DGII, controla inventario, lleva la contabilidad y paga adelantos a tus
@@ -313,9 +313,9 @@ export default function LandingPage() {
           />
           <ShowcaseRow
             eyebrow="Contabilidad"
-            title="El libro mayor se arma mientras trabajas"
-            body="Cada venta, compra, gasto o adelanto genera su asiento de partida doble automáticamente sobre un ledger banco-grade. Cierre de mes sin sorpresas."
-            bullets={["Partida doble automática en cada transacción", "Libro mayor y balance siempre cuadrados", "Cierre de períodos con un clic"]}
+            title="El libro mayor se arma con un clic"
+            body="Ventas, compras, gastos, nómina y adelantos generan sus asientos de partida doble — sincroniza cuando quieras y el libro mayor queda al día. Cierre de mes sin sorpresas."
+            bullets={["Partida doble para cada venta, compra, gasto y adelanto", "Libro mayor y balance siempre cuadrados", "Cierre de períodos con un clic"]}
             icon={BookOpen}
           />
         </div>

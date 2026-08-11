@@ -19,7 +19,7 @@ export default function ReportesDgiiPage() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {REPORTES.map((r) => (
           <Link key={r.href} href={r.href as any}>
-            <Card className="hover:border-primary transition-colors">
+            <Card className="h-full hover:border-primary transition-colors">
               <CardContent className="pt-5 flex items-center justify-between">
                 <div>
                   <p className="text-sm font-semibold">{r.label}</p>

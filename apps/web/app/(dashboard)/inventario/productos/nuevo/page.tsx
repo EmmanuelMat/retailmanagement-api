@@ -37,6 +37,7 @@ export default function NuevoProductoPage() {
               sku: values.sku,
               nombre: values.nombre,
               categoria_id: values.categoria_id || undefined,
+              proveedor_id: values.proveedor_id || undefined,
               descripcion: values.descripcion || undefined,
               itbis_tipo: values.itbis_tipo,
               unidad_medida: values.unidad_medida,

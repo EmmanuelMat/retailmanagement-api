@@ -50,6 +50,8 @@ pub struct SincronizarResultado {
     pub ventas_procesadas: i64,
     pub compras_procesadas: i64,
     pub nomina_procesada: i64,
+    pub gastos_procesados: i64,
+    pub adelantos_procesados: i64,
 }
 
 pub struct ContabilidadService {
@@ -259,6 +261,50 @@ impl ContabilidadService {
             self.insert_linea(&mut tx, tenant_id, fecha, "1100 Caja y Bancos", "Compra a proveedor", Decimal::ZERO, total, "COMPRA", id).await?;
         }
 
+        // Adelantos ya APROBADOs (o ya DESCONTADOs en una corrida de nómina):
+        // el efectivo salió de caja en el momento de la aprobación, así que el
+        // asiento se genera ahí, no cuando se descuenta - lo que se le adelantó
+        // al empleado es una cuenta por cobrar (Anticipos), no un gasto todavía.
+        let adelantos: Vec<(Uuid, Decimal, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT ad.id, ad.monto, ad.created_at
+               FROM nomina_adelantos ad
+               WHERE ad.tenant_id = $1 AND ad.estado IN ('APROBADO', 'DESCONTADO')
+                 AND NOT EXISTS (SELECT 1 FROM asientos_contables a WHERE a.referencia_tipo = 'ADELANTO' AND a.referencia_id = ad.id)"#,
+        )
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let adelantos_count = adelantos.len() as i64;
+        for (id, monto, created_at) in adelantos {
+            let fecha = created_at.date_naive();
+            self.insert_linea(&mut tx, tenant_id, fecha, "1300 Anticipos a Empleados", "Adelanto de nómina", monto, Decimal::ZERO, "ADELANTO", id).await?;
+            self.insert_linea(&mut tx, tenant_id, fecha, "1100 Caja y Bancos", "Adelanto de nómina", Decimal::ZERO, monto, "ADELANTO", id).await?;
+        }
+
+        // Gastos operativos: cada uno ya generó su salida de caja al crearse
+        // (ver compras_service::create_gasto) - aquí solo falta el asiento.
+        let gastos: Vec<(Uuid, String, Decimal, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT g.id, g.categoria, g.monto, g.created_at
+               FROM gastos g
+               WHERE g.tenant_id = $1
+                 AND NOT EXISTS (SELECT 1 FROM asientos_contables a WHERE a.referencia_tipo = 'GASTO' AND a.referencia_id = g.id)"#,
+        )
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let gastos_count = gastos.len() as i64;
+        for (id, categoria, monto, created_at) in gastos {
+            let fecha = created_at.date_naive();
+            let cuenta_gasto = match categoria.as_str() {
+                "ALQUILER" => "5210 Gasto de Alquiler",
+                "SERVICIOS" => "5220 Gasto de Servicios",
+                "TRANSPORTE" => "5230 Gasto de Transporte",
+                _ => "5290 Otros Gastos Operativos",
+            };
+            self.insert_linea(&mut tx, tenant_id, fecha, cuenta_gasto, "Gasto operativo", monto, Decimal::ZERO, "GASTO", id).await?;
+            self.insert_linea(&mut tx, tenant_id, fecha, "1100 Caja y Bancos", "Gasto operativo", Decimal::ZERO, monto, "GASTO", id).await?;
+        }
+
         let periodos: Vec<(Uuid, Decimal, Decimal, DateTime<Utc>)> = sqlx::query_as(
             r#"SELECT p.id, p.total_bruto, p.total_neto, p.created_at
                FROM nomina_periodos p
@@ -271,15 +317,33 @@ impl ContabilidadService {
         let nomina_count = periodos.len() as i64;
         for (id, bruto, neto, created_at) in periodos {
             let fecha = created_at.date_naive();
-            let retenciones = bruto - neto;
+            // adelantos_descuento ya se registró como Anticipos a Empleados
+            // arriba (al aprobarse) - aquí solo se liquida esa cuenta, el
+            // resto de bruto-neto (TSS/ISR) sí es una retención nueva.
+            let adelantos_descuento: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(adelantos_descuento), 0) FROM nomina_detalles WHERE periodo_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let retenciones = bruto - neto - adelantos_descuento;
             self.insert_linea(&mut tx, tenant_id, fecha, "5100 Gasto de Nómina", "Nómina", bruto, Decimal::ZERO, "NOMINA", id).await?;
             self.insert_linea(&mut tx, tenant_id, fecha, "1100 Caja y Bancos", "Nómina", Decimal::ZERO, neto, "NOMINA", id).await?;
             if retenciones > Decimal::ZERO {
                 self.insert_linea(&mut tx, tenant_id, fecha, "2200 Retenciones y Descuentos", "Nómina", Decimal::ZERO, retenciones, "NOMINA", id).await?;
             }
+            if adelantos_descuento > Decimal::ZERO {
+                self.insert_linea(&mut tx, tenant_id, fecha, "1300 Anticipos a Empleados", "Nómina - liquidación de adelanto", Decimal::ZERO, adelantos_descuento, "NOMINA", id).await?;
+            }
         }
 
         tx.commit().await?;
-        Ok(SincronizarResultado { ventas_procesadas: ventas_count, compras_procesadas: compras_count, nomina_procesada: nomina_count })
+        Ok(SincronizarResultado {
+            ventas_procesadas: ventas_count,
+            compras_procesadas: compras_count,
+            nomina_procesada: nomina_count,
+            gastos_procesados: gastos_count,
+            adelantos_procesados: adelantos_count,
+        })
     }
 }

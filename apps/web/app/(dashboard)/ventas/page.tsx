@@ -1,8 +1,8 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Receipt, Search } from "lucide-react";
+import { Receipt } from "lucide-react";
 import {
   Badge,
   Input,
@@ -16,11 +16,14 @@ import {
   TableRow,
   Pagination,
   ScrollableTableCard,
+  QuerySearchInput,
+  dateRangeFilter,
+  lookupFilter,
   formatDOP,
+  type QueryPrefixDef,
 } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { useServerTable } from "@/lib/use-server-table";
-import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Venta {
   id: string;
@@ -86,7 +89,19 @@ function VentasPageContent() {
     initialSortDir: "desc",
   });
 
-  const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
+  const [rawQuery, setRawQuery] = useState(state.filters.search || "");
+
+  // "id:" pasa directo al filtro `search` existente (que ya hace LIKE prefijo
+  // sobre v.id::text en el servidor); "client:" resuelve contra la lista de
+  // clientes ya cargada; "date:" acepta un día o un rango "desde..hasta".
+  const queryPrefixes: QueryPrefixDef[] = useMemo(
+    () => [
+      { prefix: "id", label: "id de venta (prefijo)", apply: (value) => (value.trim() ? { search: value.trim() } : null) },
+      { prefix: "client", label: "nombre de cliente", apply: lookupFilter(clientes, (c) => c.nombre, (c) => c.id, "clienteId") },
+      { prefix: "date", label: "YYYY-MM-DD o YYYY-MM-DD..YYYY-MM-DD", apply: dateRangeFilter("fechaDesde", "fechaHasta") },
+    ],
+    [clientes]
+  );
 
   return (
     <div className="space-y-4">
@@ -96,10 +111,14 @@ function VentasPageContent() {
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Buscar por ID de venta..." className="pl-9" />
-        </div>
+        <QuerySearchInput
+          value={rawQuery}
+          onChange={setRawQuery}
+          onParsed={({ text, filters }) => setFilters({ search: text || undefined, ...filters } as Partial<VentasFilters>)}
+          prefixes={queryPrefixes}
+          placeholder="ID de venta, o client:, date:..."
+          className="flex-1 max-w-sm"
+        />
         <Select
           value={state.filters.clienteId || ""}
           onChange={(e) => setFilters({ clienteId: e.target.value || undefined })}

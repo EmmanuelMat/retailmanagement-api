@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { Plus, History } from "lucide-react";
 import {
-  Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select,
+  Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, AsyncCombobox,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow, Pagination,
   ScrollableTableCard,
 } from "@repo/ui";
@@ -14,6 +14,8 @@ interface Producto {
   id: string;
   sku: string;
   nombre: string;
+  codigo_barras?: string | null;
+  stock_actual?: string;
 }
 
 interface Movimiento {
@@ -40,6 +42,15 @@ const TIPO_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
   AJUSTE: "secondary",
 };
 
+// Búsqueda server-side por nombre, SKU o código de barras — nunca carga el
+// catálogo completo (puede tener miles de SKUs).
+async function buscarProductos(query: string): Promise<Producto[]> {
+  const qs = new URLSearchParams({ pageSize: "20", activo: "true" });
+  if (query.trim()) qs.set("search", query.trim());
+  const data = await apiFetch<{ items: Producto[] }>(`/api/productos?${qs.toString()}`);
+  return data.items;
+}
+
 export default function MovimientosPage() {
   return (
     <Suspense fallback={null}>
@@ -49,11 +60,10 @@ export default function MovimientosPage() {
 }
 
 function MovimientosPageContent() {
-  const [productos, setProductos] = useState<Producto[]>([]);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
-  const [productoId, setProductoId] = useState("");
+  const [productoSel, setProductoSel] = useState<Producto | null>(null);
   const [cantidad, setCantidad] = useState("");
   const [motivo, setMotivo] = useState("");
 
@@ -76,20 +86,31 @@ function MovimientosPageContent() {
     initialSortDir: "desc",
   });
 
+  // Reconstruye la etiqueta del filtro de producto cuando la página carga
+  // con un ?productoId= ya en la URL (ej. al volver atrás) — el filtro en
+  // sí ya funciona sin esto, esto solo repone lo que se ve en el combobox.
+  const [productoFiltro, setProductoFiltro] = useState<Producto | null>(null);
   useEffect(() => {
-    apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
-  }, []);
+    const id = state.filters.productoId;
+    if (id && productoFiltro?.id !== id) {
+      apiFetch<Producto>(`/api/productos/${id}`).then(setProductoFiltro).catch(() => {});
+    } else if (!id && productoFiltro) {
+      setProductoFiltro(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.filters.productoId]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!productoId || !cantidad) return;
+    if (!productoSel || !cantidad) return;
     setSaving(true);
     setFormError("");
     try {
       await apiFetch("/api/inventario/movimientos", {
         method: "POST",
-        body: JSON.stringify({ producto_id: productoId, tipo: "AJUSTE", cantidad, motivo: motivo || undefined }),
+        body: JSON.stringify({ producto_id: productoSel.id, tipo: "AJUSTE", cantidad, motivo: motivo || undefined }),
       });
+      setProductoSel(null);
       setCantidad("");
       setMotivo("");
       refresh();
@@ -112,15 +133,20 @@ function MovimientosPageContent() {
           <CardTitle className="text-sm">Ajuste de Inventario</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+          <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-start">
             <div className="sm:col-span-2 space-y-1.5">
               <Label htmlFor="producto">Producto</Label>
-              <Select id="producto" value={productoId} onChange={(e) => setProductoId(e.target.value)} required>
-                <option value="">Selecciona…</option>
-                {productos.map((p) => (
-                  <option key={p.id} value={p.id}>{p.sku} · {p.nombre}</option>
-                ))}
-              </Select>
+              <AsyncCombobox<Producto>
+                id="producto"
+                value={productoSel}
+                onChange={setProductoSel}
+                fetchOptions={buscarProductos}
+                getKey={(p) => p.id}
+                getLabel={(p) => `${p.sku} · ${p.nombre}`}
+                getSublabel={(p) => (p.stock_actual ? `Stock: ${p.stock_actual}` : null)}
+                placeholder="Nombre, SKU o código de barras..."
+                emptyMessage="Sin productos que coincidan."
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="cantidad">Cantidad</Label>
@@ -131,7 +157,7 @@ function MovimientosPageContent() {
               <Label htmlFor="motivo">Motivo</Label>
               <Input id="motivo" value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej. Merma, recuento" />
             </div>
-            <Button type="submit" disabled={saving} className="sm:col-span-4 sm:w-fit">
+            <Button type="submit" disabled={saving || !productoSel} className="sm:col-span-4 sm:w-fit">
               <Plus className="h-4 w-4" />
               Registrar ajuste
             </Button>
@@ -140,16 +166,19 @@ function MovimientosPageContent() {
       </Card>
 
       <div className="flex flex-wrap gap-3">
-        <Select
-          value={state.filters.productoId || ""}
-          onChange={(e) => setFilters({ productoId: e.target.value || undefined })}
-          className="max-w-[220px]"
-        >
-          <option value="">Todos los productos</option>
-          {productos.map((p) => (
-            <option key={p.id} value={p.id}>{p.sku} · {p.nombre}</option>
-          ))}
-        </Select>
+        <AsyncCombobox<Producto>
+          value={productoFiltro}
+          onChange={(p) => {
+            setProductoFiltro(p);
+            setFilters({ productoId: p?.id });
+          }}
+          fetchOptions={buscarProductos}
+          getKey={(p) => p.id}
+          getLabel={(p) => `${p.sku} · ${p.nombre}`}
+          placeholder="Filtrar por producto..."
+          emptyMessage="Sin productos que coincidan."
+          className="max-w-[260px]"
+        />
         <Select
           value={state.filters.tipo || ""}
           onChange={(e) => setFilters({ tipo: e.target.value || undefined })}

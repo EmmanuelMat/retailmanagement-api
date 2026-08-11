@@ -50,3 +50,29 @@ export async function apiFetch<T = any>(path: string, opts: RequestInit = {}): P
   }
   return data as T;
 }
+
+// Convierte la ruta relativa que guarda el core (ej. "/uploads/RNC/uuid.jpg")
+// en una URL servible por el navegador vía el proxy BFF (ver
+// app/api/uploads/[...path]/route.ts) — nunca se expone CORE_HTTP_URL al cliente.
+export function imagenSrc(imagenUrl?: string | null): string | null {
+  if (!imagenUrl) return null;
+  return `/api${imagenUrl}`;
+}
+
+// Sube la foto de un producto. FormData multipart, sin Content-Type manual
+// (el navegador fija el boundary) - por eso no reutiliza apiFetch.
+export async function uploadProductoImagen(productoId: string, file: File): Promise<{ imagen_url: string | null }> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const body = new FormData();
+  body.append("imagen", file);
+  const res = await fetch(`/api/productos/${productoId}/imagen`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body,
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new ApiError(typeof data === "string" ? data : data?.error || `Error ${res.status}`, res.status);
+  }
+  return data;
+}

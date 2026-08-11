@@ -60,3 +60,6 @@ docs/.vitepress/dist
 # DB backups / build cache
 services/core/backups/
 *.tsbuildinfo
+
+# Miniaturas de producto subidas (ver image_service.rs) - contenido runtime, no fuente
+services/core/uploads/

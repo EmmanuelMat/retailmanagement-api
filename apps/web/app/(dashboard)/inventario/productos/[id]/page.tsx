@@ -8,6 +8,7 @@ import { apiFetch } from "@/lib/api";
 interface ProductoDto {
   id: string;
   categoria_id: string | null;
+  proveedor_id: string | null;
   sku: string;
   nombre: string;
   descripcion: string | null;
@@ -17,20 +18,24 @@ interface ProductoDto {
   precio_venta: string;
   stock_actual: string;
   stock_minimo: string;
+  imagen_url: string | null;
 }
 
 export default function EditarProductoPage() {
   const params = useParams<{ id: string }>();
   const [initial, setInitial] = useState<Partial<ProductoFormValues> | null>(null);
+  const [imagenUrl, setImagenUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     apiFetch<ProductoDto>(`/api/productos/${params.id}`)
-      .then((p) =>
+      .then((p) => {
+        setImagenUrl(p.imagen_url);
         setInitial({
           sku: p.sku,
           nombre: p.nombre,
           categoria_id: p.categoria_id || "",
+          proveedor_id: p.proveedor_id || "",
           descripcion: p.descripcion || "",
           itbis_tipo: p.itbis_tipo,
           unidad_medida: p.unidad_medida,
@@ -38,8 +43,8 @@ export default function EditarProductoPage() {
           precio_venta: p.precio_venta,
           stock_actual: p.stock_actual,
           stock_minimo: p.stock_minimo,
-        })
-      )
+        });
+      })
       .catch((e) => setError(e.message));
   }, [params.id]);
 
@@ -53,6 +58,8 @@ export default function EditarProductoPage() {
       {initial && (
         <ProductoForm
           initial={initial}
+          productoId={params.id}
+          imagenUrl={imagenUrl}
           submitLabel="Guardar cambios"
           onSubmit={async (values) => {
             await apiFetch(`/api/productos/${params.id}`, {
@@ -61,6 +68,7 @@ export default function EditarProductoPage() {
                 sku: values.sku,
                 nombre: values.nombre,
                 categoria_id: values.categoria_id || null,
+                proveedor_id: values.proveedor_id || null,
                 descripcion: values.descripcion || undefined,
                 itbis_tipo: values.itbis_tipo,
                 unidad_medida: values.unidad_medida,

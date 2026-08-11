@@ -36,9 +36,9 @@ export default function NominaPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Link href="/nomina/empleados">
-          <Card className="hover:border-primary transition-colors">
-            <CardContent className="pt-5 flex items-start justify-between">
+        <Link href="/nomina/empleados" className="h-full">
+          <Card className="h-full hover:border-primary transition-colors">
+            <CardContent className="h-full pt-5 flex items-start justify-between">
               <div>
                 <p className="text-xs text-muted-foreground">Empleados activos</p>
                 <p className="text-2xl font-bold mt-1">{empleados.length}</p>
@@ -48,9 +48,9 @@ export default function NominaPage() {
             </CardContent>
           </Card>
         </Link>
-        <Link href="/nomina/adelantos">
-          <Card className="hover:border-primary transition-colors">
-            <CardContent className="pt-5 flex items-start justify-between">
+        <Link href="/nomina/adelantos" className="h-full">
+          <Card className="h-full hover:border-primary transition-colors">
+            <CardContent className="h-full pt-5 flex items-start justify-between">
               <div>
                 <p className="text-xs text-muted-foreground">Adelantos pendientes</p>
                 <p className="text-2xl font-bold mt-1">{formatDOP(adelantosPendientes)}</p>
@@ -59,9 +59,9 @@ export default function NominaPage() {
             </CardContent>
           </Card>
         </Link>
-        <Link href="/nomina/run">
-          <Card className="hover:border-primary transition-colors">
-            <CardContent className="pt-5 flex items-center justify-between">
+        <Link href="/nomina/run" className="h-full">
+          <Card className="h-full hover:border-primary transition-colors">
+            <CardContent className="h-full pt-5 flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold">Correr nómina</p>
                 <p className="text-xs text-muted-foreground mt-1">Nueva corrida de pago</p>

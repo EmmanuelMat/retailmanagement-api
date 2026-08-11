@@ -113,7 +113,7 @@ export default function DashboardPage() {
       </Card>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="hover:shadow-card transition-shadow">
+        <Card className="h-full hover:shadow-card transition-shadow">
           <CardContent className="pt-5 flex items-start justify-between">
             <div>
               <p className="text-xs font-medium text-muted-foreground">Ventas hoy</p>
@@ -123,7 +123,7 @@ export default function DashboardPage() {
             <div className="h-10 w-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center"><DollarSign className="h-4.5 w-4.5" /></div>
           </CardContent>
         </Card>
-        <Card className="hover:shadow-card transition-shadow">
+        <Card className="h-full hover:shadow-card transition-shadow">
           <CardContent className="pt-5 flex items-start justify-between">
             <div>
               <p className="text-xs font-medium text-muted-foreground">Valor de inventario</p>
@@ -132,7 +132,7 @@ export default function DashboardPage() {
             <div className="h-10 w-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center"><Package className="h-4.5 w-4.5" /></div>
           </CardContent>
         </Card>
-        <Card className="hover:shadow-card transition-shadow">
+        <Card className="h-full hover:shadow-card transition-shadow">
           <CardContent className="pt-5 flex items-start justify-between">
             <div>
               <p className="text-xs font-medium text-muted-foreground">Bajo stock mínimo</p>

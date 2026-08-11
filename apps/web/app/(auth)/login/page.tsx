@@ -1,12 +1,26 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Store, ShieldCheck, Zap, BookOpen } from "lucide-react";
 import { Button, Card, Input, Label } from "@repo/ui";
 
+function getCookie(name: string): string {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [rnc, setRnc] = useState("");
+
+  // Restaura el RNC del último login exitoso — el resto del negocio (nombre
+  // de usuario, contraseña) sí cambia entre sesiones, pero el RNC del
+  // tenant casi nunca cambia y retiparlo cada vez es fricción pura.
+  useEffect(() => {
+    const saved = getCookie("rnc");
+    if (saved) setRnc(saved);
+  }, []);
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -15,13 +29,13 @@ export default function LoginPage() {
     const form = new FormData(e.currentTarget);
     const email = form.get("email") as string;
     const password = form.get("password") as string;
-    const rnc = form.get("rnc") as string;
+    const rncValue = (form.get("rnc") as string).trim();
 
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, rnc }),
+        body: JSON.stringify({ email, password, rnc: rncValue }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Credenciales inválidas");
@@ -31,6 +45,9 @@ export default function LoginPage() {
       localStorage.setItem("usuario", JSON.stringify(data.usuario));
       localStorage.setItem("tenant", JSON.stringify(data.tenant));
       document.cookie = `token=${data.token}; path=/; max-age=43200`; // 12h
+      if (rncValue) {
+        document.cookie = `rnc=${encodeURIComponent(rncValue)}; path=/; max-age=31536000`; // 1 año
+      }
 
       window.location.href = "/pos";
     } catch (err: any) {
@@ -54,7 +71,7 @@ export default function LoginPage() {
         <div className="relative max-w-md">
           <h2 className="text-3xl font-bold leading-tight">Todo tu colmado, en un solo lugar.</h2>
           <p className="mt-4 text-primary-foreground/80 leading-relaxed">
-            POS, facturación e-CF, inventario, contabilidad y nómina — corriendo sobre un núcleo banco-grade.
+            POS, facturación e-CF, inventario, contabilidad y nómina — todo en un mismo sistema.
           </p>
           <ul className="mt-8 space-y-4">
             <li className="flex items-center gap-3 text-sm">
@@ -91,7 +108,7 @@ export default function LoginPage() {
             <form onSubmit={handleLogin} className="mt-7 space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="rnc">RNC de la empresa (opcional)</Label>
-                <Input id="rnc" name="rnc" placeholder="130793752" />
+                <Input id="rnc" name="rnc" value={rnc} onChange={(e) => setRnc(e.target.value)} placeholder="130793752" />
                 <p className="text-xs text-muted-foreground">Solo necesario si usas el mismo correo en varios negocios.</p>
               </div>
               <div className="space-y-1.5">

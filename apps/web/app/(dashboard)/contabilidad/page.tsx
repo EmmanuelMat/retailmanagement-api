@@ -41,11 +41,16 @@ export default function ContabilidadPage() {
     setError("");
     setMensaje("");
     try {
-      const r = await apiFetch<{ ventas_procesadas: number; compras_procesadas: number; nomina_procesada: number }>(
-        "/api/contabilidad/sincronizar",
-        { method: "POST" }
+      const r = await apiFetch<{
+        ventas_procesadas: number;
+        compras_procesadas: number;
+        nomina_procesada: number;
+        gastos_procesados: number;
+        adelantos_procesados: number;
+      }>("/api/contabilidad/sincronizar", { method: "POST" });
+      setMensaje(
+        `${r.ventas_procesadas} ventas, ${r.compras_procesadas} compras, ${r.gastos_procesados} gastos, ${r.adelantos_procesados} adelantos y ${r.nomina_procesada} nóminas registradas en el libro mayor.`
       );
-      setMensaje(`${r.ventas_procesadas} ventas, ${r.compras_procesadas} compras y ${r.nomina_procesada} nóminas registradas en el libro mayor.`);
       await load();
     } catch (e: any) {
       setError(e.message);

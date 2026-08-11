@@ -6,6 +6,7 @@
   /* "Sello" system — la seriedad de un documento auditado: serif institucional
      en identidad/títulos, Public Sans en cuerpo, acento tinta de sello. */
   :root {
+    color-scheme: light;
     --background: 60 14% 96%;
     --surface: 0 0% 100%;
     --surface-raised: 0 0% 100%;
@@ -32,6 +33,7 @@
   }
 
   :root[data-theme="dark"] {
+    color-scheme: dark;
     --background: 30 5% 7%;
     --surface: 45 8% 10%;
     --surface-raised: 45 8% 13%;
@@ -58,6 +60,7 @@
 
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
+      color-scheme: dark;
       --background: 30 5% 7%;
       --surface: 45 8% 10%;
       --surface-raised: 45 8% 13%;
@@ -126,6 +129,21 @@ h1, h2, h3 {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Autofill: Chrome forces its own light background + text color regardless
+   of theme unless overridden. The huge inset box-shadow trick repaints the
+   input's own background without touching the value/type/validity, and the
+   absurd transition delay stops the "yellow flash" on autofill. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: hsl(var(--foreground));
+  -webkit-box-shadow: 0 0 0 1000px hsl(var(--surface)) inset;
+  box-shadow: 0 0 0 1000px hsl(var(--surface)) inset;
+  caret-color: hsl(var(--foreground));
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 /* Custom scrollbar */

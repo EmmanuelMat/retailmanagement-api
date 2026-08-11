@@ -149,7 +149,7 @@ export default function AiChatWidget() {
             <div className="h-6 w-6 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0">
               <Bot className="h-3.5 w-3.5" />
             </div>
-            <div className="rounded-lg px-3 py-2 text-xs bg-muted text-muted-foreground">Pensando... (puede tardar en hardware modesto)</div>
+            <div className="rounded-lg px-3 py-2 text-xs bg-muted text-muted-foreground">Pensando...</div>
           </div>
         )}
       </CardContent>

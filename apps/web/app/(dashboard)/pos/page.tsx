@@ -105,11 +105,19 @@ export default function PosPage() {
     } catch {}
   }, []);
 
-  const filtered = useMemo(() => {
+  const MAX_VISIBLE = 60;
+
+  const matched = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return productos;
     return productos.filter((p) => p.nombre.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
   }, [search, productos]);
+
+  // Un colmado puede tener miles de SKUs — pintar todos como botones a la
+  // vez no ayuda a nadie a encontrar el producto más rápido, solo pesa el
+  // DOM. Se corta a un número manejable y se pide refinar la búsqueda.
+  const filtered = useMemo(() => matched.slice(0, MAX_VISIBLE), [matched]);
+  const hayMasSinMostrar = matched.length > filtered.length;
 
   const totals = useMemo(() => {
     let subtotal = 0, itbis = 0;
@@ -354,6 +362,11 @@ export default function PosPage() {
             <p className="col-span-full text-sm text-muted-foreground py-10 text-center">No hay productos que coincidan.</p>
           )}
         </div>
+        {hayMasSinMostrar && (
+          <p className="text-xs text-muted-foreground text-center py-2 border-t border-border shrink-0">
+            Mostrando {filtered.length} de {matched.length} — sigue escribiendo para refinar la búsqueda.
+          </p>
+        )}
       </div>
 
       <Card className="flex flex-col sticky top-0 h-[calc(100vh-104px)]">
