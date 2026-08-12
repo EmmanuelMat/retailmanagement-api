@@ -1,5 +1,7 @@
 # 00 - Monorepo Overview - What We Built
 
+> **⚠️ Superseded:** this doc describes the original TigerBeetle + event-sourcing ledger design, which was never wired into `services/core`. The shipped implementation uses a flat Postgres double-entry ledger instead — see `services/core/src/services/contabilidad_service.rs` and `docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md`. Kept here for historical context only.
+
 ## Created Files
 
 Run `tree -L 4 -I 'node_modules|target'` to see:

@@ -35,12 +35,6 @@ Thumbs.db
 .expo-shared
 web-build
 
-# TigerBeetle data
-*.tigerbeetle
-0_*.tigerbeetle
-tigerbeetle
-tigerbeetle.zip
-
 # Logs
 *.log
 npm-debug.log*

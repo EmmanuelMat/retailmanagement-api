@@ -1,6 +1,4 @@
-# Fixed for TigerBeetle - auto-formats on first run
 # Removed version (obsolete)
-# Fixed binary path: tigerbeetle binary is in PATH, not /tigerbeetle/tigerbeetle
 
 services:
   postgres:
@@ -18,35 +16,6 @@ services:
       interval: 5s
       retries: 5
 
-  tigerbeetle:
-    image: ghcr.io/tigerbeetle/tigerbeetle:latest
-    privileged: true
-    security_opt:
-      - seccomp:unconfined
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo "Checking /data/0_0.tigerbeetle..."
-        ls -lh /data/ || true
-        echo "PATH=$PATH"
-        which tigerbeetle || echo "tigerbeetle not in PATH, trying /tigerbeetle"
-        ls -lh /tigerbeetle || true
-        ls -lh /usr/bin/tigerbeetle || true
-        TB_BIN=$$(which tigerbeetle 2>/dev/null || echo "/tigerbeetle")
-        echo "Using TB_BIN=$$TB_BIN"
-        if [ ! -f /data/0_0.tigerbeetle ]; then
-          echo "Formatting TigerBeetle file first time..."
-          $$TB_BIN format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle || true
-        else
-          echo "File already exists, skipping format"
-        fi
-        echo "Starting TigerBeetle on 0.0.0.0:3000..."
-        exec $$TB_BIN start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
-    ports:
-      - "3002:3000"
-    volumes:
-      - tbdata:/data
-
   nats:
     image: nats:2.10-alpine
     command: "-js"
@@ -63,5 +32,4 @@ services:
 
 volumes:
   pgdata:
-  tbdata:
   ollama_data:

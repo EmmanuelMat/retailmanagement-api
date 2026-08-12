@@ -19,9 +19,10 @@ export interface ClienteFormValues {
   telefono: string;
   email: string;
   direccion: string;
+  limite_credito: string;
 }
 
-const EMPTY: ClienteFormValues = { nombre: "", rnc_cedula: "", telefono: "", email: "", direccion: "" };
+const EMPTY: ClienteFormValues = { nombre: "", rnc_cedula: "", telefono: "", email: "", direccion: "", limite_credito: "0" };
 
 export function ClienteForm({
   initial,
@@ -115,6 +116,19 @@ export function ClienteForm({
           <div className="space-y-1.5">
             <Label htmlFor="direccion">Dirección</Label>
             <Input id="direccion" value={values.direccion} onChange={(e) => set("direccion", e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="limite_credito">Límite de crédito (fiado)</Label>
+            <Input
+              id="limite_credito"
+              type="number"
+              step="0.01"
+              min="0"
+              value={values.limite_credito}
+              onChange={(e) => set("limite_credito", e.target.value)}
+              placeholder="0.00"
+            />
+            <p className="text-xs text-muted-foreground">Máximo que este cliente puede deber a la vez en ventas fiadas. Déjalo en 0 si no vende fiado a este cliente.</p>
           </div>
 
           {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}

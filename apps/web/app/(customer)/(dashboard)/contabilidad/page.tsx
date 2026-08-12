@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { RefreshCw, BookOpen, ScrollText, ArrowRight } from "lucide-react";
+import { RefreshCw, BookOpen, BookOpenCheck, ScrollText, Lock, ArrowRight } from "lucide-react";
 import { Button, Card, CardContent, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 
@@ -47,10 +47,24 @@ export default function ContabilidadPage() {
         nomina_procesada: number;
         gastos_procesados: number;
         adelantos_procesados: number;
+        abonos_procesados: number;
+        notas_credito_procesadas: number;
+        ajustes_procesados: number;
+        banco_procesados: number;
       }>("/api/contabilidad/sincronizar", { method: "POST" });
-      setMensaje(
-        `${r.ventas_procesadas} ventas, ${r.compras_procesadas} compras, ${r.gastos_procesados} gastos, ${r.adelantos_procesados} adelantos y ${r.nomina_procesada} nóminas registradas en el libro mayor.`
-      );
+      const partes = [
+        [r.ventas_procesadas, "ventas"],
+        [r.compras_procesadas, "compras"],
+        [r.gastos_procesados, "gastos"],
+        [r.adelantos_procesados, "adelantos"],
+        [r.nomina_procesada, "nóminas"],
+        [r.abonos_procesados, "abonos"],
+        [r.notas_credito_procesadas, "notas de crédito"],
+        [r.ajustes_procesados, "ajustes de inventario"],
+        [r.banco_procesados, "movimientos bancarios"],
+      ] as const;
+      const resumen = partes.filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`).join(", ");
+      setMensaje(resumen ? `${resumen} registrados en el libro mayor.` : "Todo al día - no había nada nuevo que sincronizar.");
       await load();
     } catch (e: any) {
       setError(e.message);
@@ -79,12 +93,12 @@ export default function ContabilidadPage() {
       {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <Link href="/contabilidad/asientos">
+        <Link href="/contabilidad/diario">
           <Card className="hover:border-primary transition-colors">
             <CardContent className="pt-5 flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold flex items-center gap-2"><ScrollText className="h-4 w-4" />Libro diario</p>
-                <p className="text-xs text-muted-foreground mt-1">Asientos automáticos y manuales</p>
+                <p className="text-sm font-semibold flex items-center gap-2"><BookOpenCheck className="h-4 w-4" />Libro diario</p>
+                <p className="text-xs text-muted-foreground mt-1">Transacciones cronológicas, agrupadas</p>
               </div>
               <ArrowRight className="h-4 w-4 text-muted-foreground" />
             </CardContent>
@@ -95,7 +109,29 @@ export default function ContabilidadPage() {
             <CardContent className="pt-5 flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold flex items-center gap-2"><BookOpen className="h-4 w-4" />Libro mayor</p>
-                <p className="text-xs text-muted-foreground mt-1">Saldo por cuenta</p>
+                <p className="text-xs text-muted-foreground mt-1">Saldo por cuenta, con detalle</p>
+              </div>
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/contabilidad/asientos">
+          <Card className="hover:border-primary transition-colors">
+            <CardContent className="pt-5 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold flex items-center gap-2"><ScrollText className="h-4 w-4" />Asientos manuales</p>
+                <p className="text-xs text-muted-foreground mt-1">Registrar un asiento, buscar líneas sueltas</p>
+              </div>
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/contabilidad/periodos">
+          <Card className="hover:border-primary transition-colors">
+            <CardContent className="pt-5 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold flex items-center gap-2"><Lock className="h-4 w-4" />Períodos contables</p>
+                <p className="text-xs text-muted-foreground mt-1">Cerrar meses ya reportados</p>
               </div>
               <ArrowRight className="h-4 w-4 text-muted-foreground" />
             </CardContent>

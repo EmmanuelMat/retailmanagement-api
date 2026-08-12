@@ -108,8 +108,11 @@ function AsientosPageContent() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold font-serif tracking-tight">Libro diario</h1>
-        <p className="text-sm text-muted-foreground mt-1">Asientos automáticos (Ventas/Compras/Nómina) y manuales.</p>
+        <h1 className="text-2xl font-bold font-serif tracking-tight">Asientos (líneas)</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Registrar un asiento manual, o buscar líneas sueltas por cuenta/fecha. Para ver las transacciones agrupadas cronológicamente, usa{" "}
+          <a href="/contabilidad/diario" className="underline">Libro diario</a>.
+        </p>
       </div>
 
       <Card>

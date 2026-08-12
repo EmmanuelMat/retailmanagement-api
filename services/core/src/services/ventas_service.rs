@@ -74,6 +74,10 @@ pub struct VentaItem {
     /// para una venta con `entrega_diferida` empieza en 0 y sube con cada
     /// conduce (ver conduce_service::create_conduce).
     pub cantidad_entregada: Decimal,
+    /// Costo del producto (promedio ponderado) al momento de la venta -
+    /// usado por contabilidad_service::sincronizar para el asiento de Costo
+    /// de Ventas. NULL en filas de antes de esta columna existir.
+    pub costo_unitario: Option<Decimal>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -162,20 +166,20 @@ impl VentasService {
         let mut subtotal_total = Decimal::ZERO;
         let mut itbis_total = Decimal::ZERO;
         let mut descuento_total = Decimal::ZERO;
-        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal)> = Vec::new();
+        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal, Decimal)> = Vec::new();
 
         for item in &req.items {
             if item.cantidad <= Decimal::ZERO {
                 anyhow::bail!("La cantidad debe ser mayor a cero");
             }
-            let row: Option<(String, String, Decimal, String, Decimal)> = sqlx::query_as(
-                "SELECT sku, nombre, precio_venta, itbis_tipo, stock_actual FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true FOR UPDATE",
+            let row: Option<(String, String, Decimal, String, Decimal, Decimal)> = sqlx::query_as(
+                "SELECT sku, nombre, precio_venta, itbis_tipo, stock_actual, costo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true FOR UPDATE",
             )
             .bind(item.producto_id)
             .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let (sku, nombre, precio_venta, itbis_tipo, stock_actual) =
+            let (sku, nombre, precio_venta, itbis_tipo, stock_actual, costo) =
                 row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
 
             if stock_actual < item.cantidad {
@@ -205,7 +209,7 @@ impl VentasService {
                     .await?;
             }
 
-            lineas.push((item.producto_id, sku, nombre, item.cantidad, precio_venta, descuento, itbis_tipo, line_itbis, line_subtotal));
+            lineas.push((item.producto_id, sku, nombre, item.cantidad, precio_venta, descuento, itbis_tipo, line_itbis, line_subtotal, costo));
         }
 
         // ADMIN siempre puede descontar lo que sea. Cualquier otro rol (en la
@@ -274,11 +278,11 @@ impl VentasService {
         let cantidad_entregada_inicial = |cantidad: Decimal| if entrega_diferida { Decimal::ZERO } else { cantidad };
 
         let mut items = Vec::new();
-        for (producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal) in lineas {
+        for (producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal, costo) in lineas {
             let vi = sqlx::query_as::<_, VentaItem>(
-                r#"INSERT INTO venta_items (venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                   RETURNING id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada"#,
+                r#"INSERT INTO venta_items (venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                   RETURNING id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario"#,
             )
             .bind(venta.id)
             .bind(producto_id)
@@ -291,6 +295,7 @@ impl VentasService {
             .bind(itbis_monto)
             .bind(line_subtotal)
             .bind(cantidad_entregada_inicial(cantidad))
+            .bind(costo)
             .fetch_one(&mut *tx)
             .await?;
             items.push(vi);
@@ -414,7 +419,7 @@ impl VentasService {
         .ok_or_else(|| anyhow::anyhow!("Venta no encontrada"))?;
 
         let items = sqlx::query_as::<_, VentaItem>(
-            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada FROM venta_items WHERE venta_id = $1",
+            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario FROM venta_items WHERE venta_id = $1",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -478,7 +483,7 @@ impl VentasService {
         }
 
         let items: Vec<VentaItem> = sqlx::query_as(
-            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada FROM venta_items WHERE venta_id = $1",
+            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario FROM venta_items WHERE venta_id = $1",
         )
         .bind(venta_id)
         .fetch_all(&mut *tx)

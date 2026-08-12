@@ -1,0 +1,34 @@
+# Ephemeral Postgres for the money e2e suite (see scripts/e2e/, docs on CI in
+# .github/workflows/e2e.yml). Deliberately excludes nats/ollama - neither is
+# touched by the e2e suite.
+#
+# tmpfs (no named volume) so every `up` starts from a clean, empty database -
+# the suite always runs migrate.rs itself, it never expects existing data.
+#
+# `name:` is required, not cosmetic: Compose otherwise derives the project
+# name from the current directory, which is the same directory the dev
+# docker-compose.yml runs from - without this, a service named `postgres`
+# here collides with the dev stack's `postgres` container (same inferred
+# project + service name = same container name) and `up`/`down -v` will
+# recreate/destroy the developer's actual dev database instead of a
+# separate ephemeral one.
+name: retailmanagement-e2e
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fiscal_core_test
+    ports:
+      # A different host port than the dev docker-compose.yml's postgres
+      # (5432) - so the e2e suite never collides with a dev stack a
+      # developer left running.
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20

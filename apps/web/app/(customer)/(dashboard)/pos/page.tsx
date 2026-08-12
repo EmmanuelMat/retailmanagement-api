@@ -347,6 +347,8 @@ export default function PosPage() {
                 onClick={() => stock > 0 && addToCart(p)}
                 disabled={stock <= 0}
                 className="text-left rounded-lg border border-border bg-background p-3 hover:border-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                data-testid="pos-product-card"
+                data-sku={p.sku}
               >
                 <p className="text-xs text-muted-foreground font-mono">{p.sku}</p>
                 <p className="text-sm font-semibold mt-1 leading-tight">{p.nombre}</p>
@@ -493,7 +495,6 @@ export default function PosPage() {
                   <option value="EFECTIVO">Efectivo</option>
                   <option value="TARJETA">Tarjeta</option>
                   <option value="TRANSFERENCIA">Transferencia</option>
-                  <option value="CREDITO">Crédito</option>
                   <option value="FIADO">Fiado</option>
                 </Select>
               </div>
@@ -541,7 +542,7 @@ export default function PosPage() {
             <div className="text-sm space-y-1 pt-1">
               <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatDOP(totals.subtotal)}</span></div>
               <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(totals.itbis)}</span></div>
-              <div className="flex justify-between font-bold text-base pt-1"><span>Total</span><span className="tabular-nums">{formatDOP(totals.total)}</span></div>
+              <div className="flex justify-between font-bold text-base pt-1"><span>Total</span><span className="tabular-nums" data-testid="pos-cart-total">{formatDOP(totals.total)}</span></div>
             </div>
 
             {totals.total >= 250000 && !clienteId && (
@@ -557,6 +558,7 @@ export default function PosPage() {
               size="lg"
               disabled={carrito.length === 0 || cobrando || cajaAbierta === false || (metodoPago === "FIADO" && !clienteId)}
               onClick={() => handleCobrar()}
+              data-testid="pos-cobrar-submit"
             >
               {cobrando ? "Procesando..." : `Cobrar ${formatDOP(totals.total)}`}
             </Button>
@@ -721,7 +723,7 @@ function VentaConfirmada({
       </div>
 
       {/* Vista previa del recibo, con el mismo formato de una factura de consumo electrónica dominicana */}
-      <Card className="font-mono text-xs">
+      <Card className="font-mono text-xs" data-testid="pos-venta-receipt" data-venta-id={venta.id}>
         <CardContent className="pt-5 space-y-2">
           <div className="text-center space-y-0.5">
             <p className="font-bold text-sm">{tenant?.razon_social || "Mi negocio"}</p>
@@ -758,7 +760,7 @@ function VentaConfirmada({
           <div className="border-t border-dashed border-border" />
           <div className="flex justify-between"><span>Subtotal:</span><span className="tabular-nums">{formatDOP(venta.subtotal)}</span></div>
           <div className="flex justify-between"><span>ITBIS:</span><span className="tabular-nums">{formatDOP(venta.itbis_total)}</span></div>
-          <div className="flex justify-between font-bold text-sm pt-1"><span>TOTAL RD$:</span><span className="tabular-nums">{formatDOP(venta.total)}</span></div>
+          <div className="flex justify-between font-bold text-sm pt-1"><span>TOTAL RD$:</span><span className="tabular-nums" data-testid="pos-venta-total">{formatDOP(venta.total)}</span></div>
           {venta.codigo_seguridad && (
             <>
               <div className="border-t border-dashed border-border" />

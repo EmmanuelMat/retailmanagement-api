@@ -39,6 +39,7 @@ export default function NuevoClientePage() {
               telefono: values.telefono || undefined,
               email: values.email || undefined,
               direccion: values.direccion || undefined,
+              limite_credito: values.limite_credito || undefined,
             }),
           });
         }}

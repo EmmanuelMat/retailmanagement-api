@@ -1,5 +1,7 @@
 # 06 - API Spec - Next.js <-> Rust Core (gRPC + HTTP)
 
+> **⚠️ Superseded (TigerBeetle references only):** TigerBeetle was never wired into `services/core`; the ledger is a flat Postgres double-entry table instead (`asientos_contables`, see `contabilidad_service.rs` and `docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md`). Note also `services/core/Cargo.toml` says tonic/gRPC is gone — the real transport is HTTP on :3001 only.
+
 ## Overview
 
 Next.js (apps/web) never talks directly to DGII, TigerBeetle, or Postgres EventStore. It talks to Rust core via gRPC (Tonic) for writes, and reads from materialized views via Prisma.

@@ -1,0 +1,160 @@
+name: e2e
+
+# Money-correctness e2e suite: real fiscal-core (Rust/Axum) + real Next.js
+# web app, both against a real, ephemeral Postgres (not a fake in-memory
+# emulator - see scripts/e2e/README notes in the plan this implements).
+# Mirrors scripts/e2e/run-local.sh step for step so a failure here can be
+# reproduced locally with that one script.
+on:
+  push:
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fiscal_core_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/core
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install JS dependencies (also installs the Cypress binary)
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate ephemeral server env
+        # JWT_SECRET/VENDOR_ADMIN_SECRET/LICENSE_SECRET/CERT_ENCRYPTION_KEY
+        # are required for fiscal-core to start at all (see
+        # services/core/src/main.rs) but are NOT real secrets - just
+        # startup-required random values for a Postgres instance that's
+        # thrown away at the end of this job (services/core/.env.example
+        # documents them as `openssl rand -base64 32`, no fallback). No
+        # GitHub Secrets needed.
+        run: |
+          {
+            echo "DATABASE_URL=postgres://postgres:postgres@localhost:5433/fiscal_core_test"
+            echo "JWT_SECRET=$(openssl rand -base64 32)"
+            echo "VENDOR_ADMIN_SECRET=$(openssl rand -base64 32)"
+            echo "LICENSE_SECRET=$(openssl rand -base64 32)"
+            echo "CERT_ENCRYPTION_KEY=$(openssl rand -base64 32)"
+            echo "CORE_HTTP_PORT=3001"
+            echo "CORE_HTTP_URL=http://localhost:3001"
+            echo "NEXT_PUBLIC_CORE_URL=http://localhost:3001"
+            echo "FRONTEND_URL=http://localhost:3000"
+            echo "RUST_LOG=fiscal_core=info"
+            echo "UPLOADS_DIR=$(mktemp -d)"
+          } >> "$GITHUB_ENV"
+
+      - name: Run database migrations
+        working-directory: services/core
+        run: cargo run --bin migrate
+
+      - name: Build fiscal-core
+        working-directory: services/core
+        run: cargo build --bin fiscal-core
+
+      - name: Start fiscal-core
+        working-directory: services/core
+        run: |
+          ./target/debug/fiscal-core > /tmp/fiscal-core.log 2>&1 &
+          echo $! > /tmp/fiscal-core.pid
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3001/health && exit 0
+            sleep 1
+          done
+          echo "fiscal-core did not become healthy in time"
+          cat /tmp/fiscal-core.log
+          exit 1
+
+      - name: Run backend money e2e tests
+        # Scoped to the new e2e test binaries only - this repo's lib also
+        # carries pre-existing #[cfg(test)] unit tests in unrelated DGII
+        # e-CF signing code (src/ecf_builder.rs) that currently fail to
+        # compile against its own updated function signature. That's a
+        # real, separate bug (DGII e-CF is explicitly out of scope for this
+        # money-correctness suite) and shouldn't block this suite.
+        working-directory: services/core
+        run: |
+          cargo test --no-fail-fast \
+            --test ventas_ledger \
+            --test compras_gastos_ledger \
+            --test caja_bancos \
+            --test nomina_adelantos \
+            --test nomina_run \
+            --test ledger_invariant
+
+      - name: Build web app
+        run: pnpm --filter web build
+
+      - name: Start web app
+        working-directory: apps/web
+        run: |
+          pnpm start > /tmp/web.log 2>&1 &
+          echo $! > /tmp/web.pid
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000 && exit 0
+            sleep 1
+          done
+          echo "web app did not become healthy in time"
+          cat /tmp/web.log
+          exit 1
+
+      - name: Run Cypress e2e tests
+        working-directory: apps/web
+        run: pnpm exec cypress run
+
+      - name: Stop background servers
+        if: always()
+        run: |
+          [ -f /tmp/fiscal-core.pid ] && kill "$(cat /tmp/fiscal-core.pid)" 2>/dev/null || true
+          [ -f /tmp/web.pid ] && kill "$(cat /tmp/web.pid)" 2>/dev/null || true
+
+      - name: Upload Cypress artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-artifacts
+          path: |
+            apps/web/cypress/videos
+            apps/web/cypress/screenshots
+          if-no-files-found: ignore
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-logs
+          path: |
+            /tmp/fiscal-core.log
+            /tmp/web.log
+          if-no-files-found: ignore

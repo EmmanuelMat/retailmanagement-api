@@ -1,5 +1,7 @@
 # 07 - Monorepo Structure & Conventions
 
+> **⚠️ Superseded (TigerBeetle references only):** TigerBeetle was never wired into `services/core` — there is no `tigerbeetle.rs`, and money/accounting is a flat Postgres double-entry table instead (`asientos_contables`, see `services/core/src/services/contabilidad_service.rs` and `docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md`). The rest of this doc's structure/conventions are still accurate.
+
 ## Structure
 
 ```

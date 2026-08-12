@@ -48,6 +48,7 @@ function UsuariosPageContent() {
   const [resetPassword, setResetPassword] = useState("");
   const [resetSaving, setResetSaving] = useState(false);
   const [resetError, setResetError] = useState("");
+  const [eliminandoId, setEliminandoId] = useState<string | null>(null);
 
   const {
     items: usuarios,
@@ -143,9 +144,9 @@ function UsuariosPageContent() {
   }
 
   async function handleDeactivate(id: string) {
-    if (!confirm("¿Desactivar este usuario?")) return;
     try {
       await apiFetch(`/api/config/usuarios/${id}`, { method: "DELETE" });
+      setEliminandoId(null);
       refresh();
     } catch (e: any) {
       setActionError(e.message);
@@ -295,10 +296,21 @@ function UsuariosPageContent() {
                       <Button size="icon" variant="ghost" title="Restablecer contraseña" onClick={() => abrirReset(u.id)}>
                         <KeyRound className="h-4 w-4" />
                       </Button>
-                      <Button size="icon" variant="ghost" onClick={() => handleDeactivate(u.id)}><Trash2 className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="ghost" onClick={() => setEliminandoId(u.id)}><Trash2 className="h-4 w-4" /></Button>
                     </div>
                   </TableCell>
                 </TableRow>
+                {eliminandoId === u.id && (
+                  <TableRow>
+                    <TableCell colSpan={6} className="bg-muted/30">
+                      <div className="flex flex-wrap items-center gap-2 py-1">
+                        <span className="text-sm">¿Desactivar a {u.nombre}?</span>
+                        <Button size="sm" variant="destructive" onClick={() => handleDeactivate(u.id)}>Desactivar</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEliminandoId(null)}>Cancelar</Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
                 {resetId === u.id && (
                   <TableRow>
                     <TableCell colSpan={6} className="bg-muted/30">

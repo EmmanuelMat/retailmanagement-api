@@ -1,4 +1,6 @@
-# 08 - Database Design - EventStore + TigerBeetle + Read Models
+# 08 - Database Design - EventStore + Read Models
+
+> **⚠️ Superseded (TigerBeetle sections only):** TigerBeetle was never wired into `services/core`. Money/accounting is a flat Postgres double-entry table, `asientos_contables` (see `services/core/src/services/contabilidad_service.rs`, `services/core/src/bin/migrate.rs`, and `docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md` for the authoritative current schema). The EventStore (`events` table) sections below are still accurate.
 
 ## Two Databases, Not One
 

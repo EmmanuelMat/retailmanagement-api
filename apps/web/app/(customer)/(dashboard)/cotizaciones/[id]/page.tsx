@@ -174,7 +174,6 @@ export default function CotizacionDetallePage() {
                 <option value="EFECTIVO">Efectivo</option>
                 <option value="TARJETA">Tarjeta</option>
                 <option value="TRANSFERENCIA">Transferencia</option>
-                <option value="CREDITO">Crédito</option>
                 <option value="FIADO">Fiado</option>
               </Select>
             </div>

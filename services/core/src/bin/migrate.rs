@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
         r#"
         CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-        -- Orphaned leftovers from the removed event-sourcing/TigerBeetle design.
+        -- Orphaned leftovers from the removed event-sourcing design.
         -- Nothing in services/core reads or writes these; drop them for real.
         DROP TABLE IF EXISTS snapshots;
         DROP TABLE IF EXISTS read_employee_balances;
@@ -219,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
             subtotal DECIMAL(12,2) NOT NULL,
             itbis_total DECIMAL(12,2) NOT NULL,
             total DECIMAL(12,2) NOT NULL,
-            metodo_pago TEXT NOT NULL DEFAULT 'EFECTIVO', -- EFECTIVO | TARJETA | CREDITO | TRANSFERENCIA | FIADO
+            metodo_pago TEXT NOT NULL DEFAULT 'EFECTIVO', -- EFECTIVO | TARJETA | TRANSFERENCIA | FIADO
             estado TEXT NOT NULL DEFAULT 'COMPLETADA', -- COMPLETADA | ANULADA
             e_ncf TEXT,
             tipo_ecf INT,
@@ -398,7 +398,7 @@ async fn main() -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_nomina_periodos_tenant ON nomina_periodos(tenant_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_nomina_detalles_periodo ON nomina_detalles(periodo_id);
 
-        -- MODULO 7: Contabilidad (Libro Mayor) - doble entrada plana, sin TigerBeetle.
+        -- MODULO 7: Contabilidad (Libro Mayor) - doble entrada plana en Postgres.
         -- Las filas se crean a mano (asiento manual) o via /v1/contabilidad/sincronizar,
         -- que genera asientos simples para Ventas/Compras/Nomina que aun no los tienen.
         CREATE TABLE IF NOT EXISTS asientos_contables (
@@ -614,6 +614,157 @@ async fn main() -> anyhow::Result<()> {
         -- ventas_service::create_venta).
         ALTER TABLE ventas ADD COLUMN IF NOT EXISTS entrega_diferida BOOLEAN NOT NULL DEFAULT false;
         ALTER TABLE venta_items ADD COLUMN IF NOT EXISTS cantidad_entregada DECIMAL(12,2) NOT NULL DEFAULT 0;
+
+        -- CREDITO era un valor documentado en metodo_pago pero nunca tuvo
+        -- lógica propia en la app (solo FIADO se chequea en
+        -- ventas_service::create_venta) - el frontend ya no lo ofrece.
+        -- Compras tampoco distingue metodo_pago (siempre paga de contado,
+        -- ver compras_service::create_compra), así que se restringe igual.
+        DO $$ BEGIN
+            ALTER TABLE ventas ADD CONSTRAINT chk_ventas_metodo_pago
+                CHECK (metodo_pago IN ('EFECTIVO', 'TARJETA', 'TRANSFERENCIA', 'FIADO'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+        DO $$ BEGIN
+            ALTER TABLE compras ADD CONSTRAINT chk_compras_metodo_pago
+                CHECK (metodo_pago IN ('EFECTIVO', 'TARJETA', 'TRANSFERENCIA'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+        -- MODULO 7b: Plan de cuentas, cabecera de asientos y periodos
+        -- contables. Ver docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md.
+
+        CREATE TABLE IF NOT EXISTS periodos_contables (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            anio INT NOT NULL,
+            mes INT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'ABIERTO', -- ABIERTO | CERRADO
+            cerrado_at TIMESTAMPTZ,
+            cerrado_por UUID REFERENCES usuarios(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(tenant_id, anio, mes)
+        );
+        CREATE INDEX IF NOT EXISTS idx_periodos_tenant ON periodos_contables(tenant_id, anio DESC, mes DESC);
+
+        CREATE TABLE IF NOT EXISTS asientos (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+            descripcion TEXT NOT NULL,
+            origen TEXT NOT NULL, -- AUTOMATICO | MANUAL | REVERSION
+            referencia_tipo TEXT, -- VENTA | COMPRA | NOMINA | GASTO | ADELANTO |
+                                  -- ABONO_CLIENTE | NOTA_CREDITO | AJUSTE_INVENTARIO |
+                                  -- BANCO | MANUAL
+            referencia_id UUID,
+            reversa_de UUID REFERENCES asientos(id),
+            periodo_id UUID REFERENCES periodos_contables(id),
+            usuario_id UUID REFERENCES usuarios(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(tenant_id, referencia_tipo, referencia_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_asientos_tenant_fecha ON asientos(tenant_id, fecha DESC, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_asientos_reversa ON asientos(reversa_de);
+
+        CREATE TABLE IF NOT EXISTS cuentas_contables (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            codigo TEXT NOT NULL,
+            nombre TEXT NOT NULL,
+            tipo TEXT NOT NULL, -- ACTIVO | PASIVO | PATRIMONIO | INGRESO | GASTO
+            naturaleza TEXT NOT NULL, -- DEUDORA | ACREEDORA
+            activo BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(tenant_id, codigo)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cuentas_contables_tenant ON cuentas_contables(tenant_id, activo);
+
+        -- Semilla del plan de cuentas para tenants existentes (los nuevos se
+        -- siembran en auth_service::register_tenant). Idempotente vía el
+        -- UNIQUE(tenant_id, codigo) + ON CONFLICT.
+        INSERT INTO cuentas_contables (tenant_id, codigo, nombre, tipo, naturaleza)
+        SELECT t.rnc, c.codigo, c.nombre, c.tipo, c.naturaleza
+        FROM tenants t
+        CROSS JOIN (VALUES
+            ('1100', 'Caja y Bancos', 'ACTIVO', 'DEUDORA'),
+            ('1110', 'Cuentas por Cobrar', 'ACTIVO', 'DEUDORA'),
+            ('1150', 'ITBIS Adelantado', 'ACTIVO', 'DEUDORA'),
+            ('1160', 'Depósitos Bancarios', 'ACTIVO', 'DEUDORA'),
+            ('1200', 'Inventario', 'ACTIVO', 'DEUDORA'),
+            ('1300', 'Anticipos a Empleados', 'ACTIVO', 'DEUDORA'),
+            ('2100', 'ITBIS por Pagar', 'PASIVO', 'ACREEDORA'),
+            ('2200', 'Retenciones y Descuentos', 'PASIVO', 'ACREEDORA'),
+            ('4100', 'Ingresos por Ventas', 'INGRESO', 'ACREEDORA'),
+            ('4200', 'Otros Ingresos', 'INGRESO', 'ACREEDORA'),
+            ('5050', 'Costo de Ventas', 'GASTO', 'DEUDORA'),
+            ('5100', 'Gasto de Nómina', 'GASTO', 'DEUDORA'),
+            ('5210', 'Gasto de Alquiler', 'GASTO', 'DEUDORA'),
+            ('5220', 'Gasto de Servicios', 'GASTO', 'DEUDORA'),
+            ('5230', 'Gasto de Transporte', 'GASTO', 'DEUDORA'),
+            ('5290', 'Otros Gastos Operativos', 'GASTO', 'DEUDORA'),
+            ('5295', 'Ajuste de Inventario (Merma)', 'GASTO', 'DEUDORA')
+        ) AS c(codigo, nombre, tipo, naturaleza)
+        ON CONFLICT (tenant_id, codigo) DO NOTHING;
+
+        -- Agrupa las líneas de asientos_contables (sin tocar su forma
+        -- actual) bajo una cabecera de asiento. Nullable por ahora; se
+        -- vuelve NOT NULL en una migración posterior una vez verificado
+        -- el backfill de abajo.
+        ALTER TABLE asientos_contables ADD COLUMN IF NOT EXISTS asiento_id UUID REFERENCES asientos(id) ON DELETE CASCADE;
+        CREATE INDEX IF NOT EXISTS idx_asientos_contables_asiento ON asientos_contables(asiento_id);
+        CREATE INDEX IF NOT EXISTS idx_asientos_contables_cuenta_fecha ON asientos_contables(tenant_id, cuenta, fecha, created_at);
+
+        -- Backfill 1/2: una cabecera por (tenant_id, referencia_tipo,
+        -- referencia_id) ya generado por sincronizar - así es exactamente
+        -- cómo esas líneas se insertaron siempre (una transacción, una
+        -- referencia compartida).
+        INSERT INTO asientos (tenant_id, fecha, descripcion, origen, referencia_tipo, referencia_id, usuario_id, created_at)
+        SELECT DISTINCT ON (tenant_id, referencia_tipo, referencia_id)
+            tenant_id, fecha, descripcion, 'AUTOMATICO', referencia_tipo, referencia_id, usuario_id, created_at
+        FROM asientos_contables
+        WHERE asiento_id IS NULL AND referencia_id IS NOT NULL
+        ORDER BY tenant_id, referencia_tipo, referencia_id, created_at
+        ON CONFLICT (tenant_id, referencia_tipo, referencia_id) DO NOTHING;
+
+        UPDATE asientos_contables ac
+        SET asiento_id = a.id
+        FROM asientos a
+        WHERE ac.asiento_id IS NULL
+          AND ac.referencia_id IS NOT NULL
+          AND a.tenant_id = ac.tenant_id
+          AND a.referencia_tipo = ac.referencia_tipo
+          AND a.referencia_id = ac.referencia_id;
+
+        -- Backfill 2/2: mejor esfuerzo para asientos manuales pre-existentes
+        -- (no tienen id compartido histórico) - agrupa por
+        -- descripcion+fecha+usuario+segundo de creación, que es como
+        -- create_asiento_manual insertaba sus líneas antes de esta
+        -- migración (todas en la misma transacción, mismo instante).
+        WITH grupos AS (
+            SELECT tenant_id, descripcion, fecha, usuario_id, date_trunc('second', created_at) AS ts_sec,
+                   MIN(created_at) AS created_at
+            FROM asientos_contables
+            WHERE asiento_id IS NULL
+            GROUP BY tenant_id, descripcion, fecha, usuario_id, date_trunc('second', created_at)
+        ),
+        nuevos AS (
+            INSERT INTO asientos (tenant_id, fecha, descripcion, origen, referencia_tipo, referencia_id, usuario_id, created_at)
+            SELECT tenant_id, fecha, descripcion, 'MANUAL', 'MANUAL', NULL, usuario_id, created_at
+            FROM grupos
+            RETURNING id, tenant_id, fecha, descripcion, usuario_id, created_at
+        )
+        UPDATE asientos_contables ac
+        SET asiento_id = n.id
+        FROM nuevos n
+        WHERE ac.asiento_id IS NULL
+          AND ac.tenant_id = n.tenant_id
+          AND ac.descripcion = n.descripcion
+          AND ac.fecha = n.fecha
+          AND (ac.usuario_id = n.usuario_id OR (ac.usuario_id IS NULL AND n.usuario_id IS NULL))
+          AND date_trunc('second', ac.created_at) = date_trunc('second', n.created_at);
+
+        -- Costo unitario del producto al momento de la venta (para el
+        -- asiento de Costo de Ventas) - espeja compra_items.costo_unitario.
+        -- Nullable: filas históricas no lo tienen y sincronizar las salta.
+        ALTER TABLE venta_items ADD COLUMN IF NOT EXISTS costo_unitario DECIMAL(12,2);
 
         -- MODULO 14: Catálogo de módulos vendibles + asignación por tenant.
         -- El catálogo es editable desde el sitio de staff (agregar/renombrar

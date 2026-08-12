@@ -137,9 +137,12 @@ function CajaPageContent() {
           <CardContent className="pt-5">
             <h2 className="font-bold text-sm mb-2">Caja cerrada</h2>
             <div className="text-sm space-y-1 text-muted-foreground">
-              <p>Esperado: {formatDOP(cierreResultado.monto_esperado || "0")}</p>
-              <p>Contado: {formatDOP(cierreResultado.monto_final || "0")}</p>
-              <p className={Number(cierreResultado.diferencia) !== 0 ? "text-destructive font-medium" : "text-success font-medium"}>
+              <p data-testid="caja-cierre-esperado">Esperado: {formatDOP(cierreResultado.monto_esperado || "0")}</p>
+              <p data-testid="caja-cierre-contado">Contado: {formatDOP(cierreResultado.monto_final || "0")}</p>
+              <p
+                data-testid="caja-cierre-diferencia"
+                className={Number(cierreResultado.diferencia) !== 0 ? "text-destructive font-medium" : "text-success font-medium"}
+              >
                 Diferencia: {formatDOP(cierreResultado.diferencia || "0")}
               </p>
             </div>
@@ -159,7 +162,7 @@ function CajaPageContent() {
                 <Label htmlFor="inicial">Monto inicial en caja</Label>
                 <Input id="inicial" type="number" step="0.01" value={montoInicial} onChange={(e) => setMontoInicial(e.target.value)} placeholder="0.00" required />
               </div>
-              <Button type="submit" disabled={saving} className="w-full">Abrir turno</Button>
+              <Button type="submit" disabled={saving} className="w-full" data-testid="caja-abrir-submit">Abrir turno</Button>
             </form>
           </CardContent>
         </Card>
@@ -169,25 +172,25 @@ function CajaPageContent() {
             <Card className="h-full">
               <CardContent className="pt-5">
                 <p className="text-xs text-muted-foreground">Monto inicial</p>
-                <p className="text-xl font-bold mt-1">{formatDOP(resumen.sesion.monto_inicial)}</p>
+                <p className="text-xl font-bold mt-1" data-testid="caja-monto-inicial">{formatDOP(resumen.sesion.monto_inicial)}</p>
               </CardContent>
             </Card>
             <Card className="h-full">
               <CardContent className="pt-5">
                 <p className="text-xs text-muted-foreground">Ingresos</p>
-                <p className="text-xl font-bold mt-1 text-success">{formatDOP(resumen.ingresos)}</p>
+                <p className="text-xl font-bold mt-1 text-success" data-testid="caja-ingresos">{formatDOP(resumen.ingresos)}</p>
               </CardContent>
             </Card>
             <Card className="h-full">
               <CardContent className="pt-5">
                 <p className="text-xs text-muted-foreground">Egresos</p>
-                <p className="text-xl font-bold mt-1 text-destructive">{formatDOP(resumen.egresos)}</p>
+                <p className="text-xl font-bold mt-1 text-destructive" data-testid="caja-egresos">{formatDOP(resumen.egresos)}</p>
               </CardContent>
             </Card>
             <Card className="h-full">
               <CardContent className="pt-5">
                 <p className="text-xs text-muted-foreground">Saldo esperado</p>
-                <p className="text-xl font-bold mt-1">{formatDOP(resumen.saldo_actual)}</p>
+                <p className="text-xl font-bold mt-1" data-testid="caja-saldo-esperado">{formatDOP(resumen.saldo_actual)}</p>
               </CardContent>
             </Card>
           </div>
@@ -203,7 +206,7 @@ function CajaPageContent() {
                   <Label htmlFor="final">Monto contado en caja</Label>
                   <Input id="final" type="number" step="0.01" value={montoFinal} onChange={(e) => setMontoFinal(e.target.value)} placeholder="0.00" required />
                 </div>
-                <Button type="submit" variant="secondary" disabled={saving} className="w-full">Cerrar turno</Button>
+                <Button type="submit" variant="secondary" disabled={saving} className="w-full" data-testid="caja-cerrar-submit">Cerrar turno</Button>
               </form>
             </CardContent>
           </Card>

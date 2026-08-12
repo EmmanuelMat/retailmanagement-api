@@ -163,7 +163,7 @@ function AdelantosPageContent() {
                 placeholder="Nombre o cédula..."
                 emptyMessage="Sin empleados que coincidan."
               />
-              {empleadoSel && <p className="text-xs text-muted-foreground">Disponible: {formatDOP(empleadoSel.disponible_adelanto)}</p>}
+              {empleadoSel && <p className="text-xs text-muted-foreground" data-testid="adelanto-disponible">Disponible: {formatDOP(empleadoSel.disponible_adelanto)}</p>}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="monto">Monto</Label>
@@ -173,7 +173,7 @@ function AdelantosPageContent() {
               <Label htmlFor="motivo">Motivo</Label>
               <Input id="motivo" value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Opcional" />
             </div>
-            <Button type="submit" disabled={saving || !empleadoSel} className="sm:col-span-4 sm:w-fit"><Plus className="h-4 w-4" />Solicitar</Button>
+            <Button type="submit" disabled={saving || !empleadoSel} className="sm:col-span-4 sm:w-fit" data-testid="adelanto-solicitar-submit"><Plus className="h-4 w-4" />Solicitar</Button>
           </form>
           {formError && <p className="text-sm text-destructive mt-2">{formError}</p>}
         </CardContent>
@@ -241,17 +241,17 @@ function AdelantosPageContent() {
           </TableHeader>
           <TableBody>
             {adelantos.map((a) => (
-              <TableRow key={a.id}>
+              <TableRow key={a.id} data-testid="adelanto-row" data-adelanto-id={a.id}>
                 <TableCell className="text-xs text-muted-foreground">{new Date(a.created_at).toLocaleDateString("es-DO")}</TableCell>
                 <TableCell className="font-medium">{a.empleado_nombre}</TableCell>
                 <TableCell className="text-muted-foreground">{a.motivo || "—"}</TableCell>
-                <TableCell className="text-right tabular-nums">{formatDOP(a.monto)}</TableCell>
-                <TableCell><Badge variant={ESTADO_VARIANT[a.estado]}>{a.estado}</Badge></TableCell>
+                <TableCell className="text-right tabular-nums" data-testid="adelanto-row-monto">{formatDOP(a.monto)}</TableCell>
+                <TableCell><Badge variant={ESTADO_VARIANT[a.estado]} data-testid="adelanto-row-estado">{a.estado}</Badge></TableCell>
                 <TableCell className="text-right">
                   {a.estado === "PENDIENTE" && (
                     <div className="flex justify-end gap-1">
-                      <Button size="icon" variant="ghost" onClick={() => handleAprobar(a.id)}><Check className="h-4 w-4" /></Button>
-                      <Button size="icon" variant="ghost" onClick={() => handleRechazar(a.id)}><X className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="ghost" onClick={() => handleAprobar(a.id)} data-testid="adelanto-aprobar"><Check className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="ghost" onClick={() => handleRechazar(a.id)} data-testid="adelanto-rechazar"><X className="h-4 w-4" /></Button>
                     </div>
                   )}
                 </TableCell>

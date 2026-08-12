@@ -113,7 +113,7 @@ HTTP :3001 (Axum) - For Next.js BFF quick testing
   GET  /health
   POST /v1/ecf/sign - Real XAdES signer
   POST /v1/test/sign-demo - Demo with self-signed cert
-  POST /v1/advances/request - TigerBeetle reserve pending
+  POST /v1/advances/request - reserve advance pending approval
   GET  /v1/employees/:id/balance
   POST /v1/payroll/run
   GET  /v1/reports/606,607

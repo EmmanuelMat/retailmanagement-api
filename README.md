@@ -2,7 +2,7 @@
 
 **Sistema POS banco-grado para PYMES Dominicanas. 100% en Español. Cumple DGII Facturación Electrónica e-CF.**
 
-> No es un POS CRUD. Es un núcleo bancario con TigerBeetle, Event Sourcing, contabilidad completa, nómina con adelantos 50% y firma XAdES-BES real.
+> No es un POS CRUD. Es un núcleo bancario con contabilidad de doble entrada, nómina con adelantos 50% y firma XAdES-BES real.
 
 ## 🚀 Stack Monorepo
 
@@ -16,7 +16,7 @@ apps/
 services/
   core/         -> Núcleo fiscal-core en Rust (bank-grade)
                 • EventStore Postgres append-only hash-encadenado
-                • TigerBeetle ledger DB (1M TPS, double-entry, pending/posted)
+                • Contabilidad de doble entrada plana en Postgres (asientos_contables)
                 • Firma XAdES-BES real per DGII spec (C14N, RSA-SHA256, DigestValue, QR)
                 • Motor de Adelantos 50% (Earned Wage Access)
                 • HTTP :3001 + gRPC :50051
@@ -52,11 +52,11 @@ events(event_id, aggregate_type, aggregate_id, version, event_type, payload, met
 -- hash = SHA256(prev_hash + payload) -> detección alteración como blockchain
 ```
 
-**TigerBeetle (ledger dinero):**
-- Solo `accounts` + `transfers`, double-entry a nivel DB, no en app
-- Flags: `debits_must_not_exceed_credits` evita stock negativo sin race conditions
-- Two-phase: `pending` -> `post_pending`/`void_pending` -> perfecto para adelantos
-- Linked transfers: venta + ITBIS + COGS atómico (3 transfers todos o ninguno)
+**Contabilidad (ledger dinero):**
+- Tabla `asientos_contables`: doble entrada plana en Postgres, una fila por línea debe/haber
+- Cada asiento se valida en app: `SUM(debe) == SUM(haber)` antes de insertar (ver `contabilidad_service.rs`)
+- `referencia_tipo` + `referencia_id` traza cada asiento de vuelta a la venta/compra/nómina que lo generó
+- `POST /v1/contabilidad/sincronizar` genera los asientos de Ventas/Compras/Nómina que aún no los tienen
 
 **Agregados:**
 - `EmployeeAggregate`: `accrued_net`, `advance_balance`, `available_for_advance()` = 50% regla
@@ -71,7 +71,7 @@ Inspirado en Netchex, DailyPay, Payactiv pero para colmados dominicanos:
 
 - **NO es préstamo.** Es sueldo ya ganado. Sin interés. $0 costo patrono si usa modelo deducción [Netchex].
 - Empleado gana RD$9,200, disponible para adelanto RD$4,600 (50% - reserva RD$1,000)
-- Solicita RD$2,000 motivo Medicina -> Gerente aprueba en web -> Núcleo Rust reserva en TigerBeetle pending (Debe anticipos / Haber caja) -> posted -> Evento AdelantoAprobado
+- Solicita RD$2,000 motivo Medicina -> Gerente aprueba en web -> asiento contable (Debe anticipos / Haber caja) al sincronizar -> Evento AdelantoAprobado
 - Quincena: Nómina RD$20k - TSS 590 - ISR 1000 - Adelanto 3000 = Neto RD$15,410
 - Contabilidad: `Debit expense:sueldos 20k | Credit asset:anticipos 3k + banco 15410 + tss + isr` (linked atómico)
 
@@ -79,7 +79,7 @@ Ver `docs/05-PAYROLL-ADVANCE.md`
 
 ## 🖥️ UI en Español Dominicano (Requisito)
 
-**Web POS:** Terminal con productos (Plátanos, Arroz Premium, Coca-Cola...), ITBIS desglosado, botón "Cobrar • Generar E32 • QR DGII", ledger vivo TigerBeetle, adelantos con motivo, registro eventos append-only, cumplimiento DGII 606/607.
+**Web POS:** Terminal con productos (Plátanos, Arroz Premium, Coca-Cola...), ITBIS desglosado, botón "Cobrar • Generar E32 • QR DGII", libro mayor en vivo, adelantos con motivo, registro eventos append-only, cumplimiento DGII 606/607.
 
 **Móvil:** Empleado ve "Ganado hoy RD$6,400 • Disponible RD$3,200 (50%)" + botón "Solicitar Adelanto RD$2,000" -> gRPC `PayrollService/RequestAdvance`
 
@@ -128,9 +128,6 @@ Ver `docs/09-XADES-REAL-IMPLEMENTATION.md`
 
 ```bash
 docker-compose up -d
-# Primer formato TigerBeetle (solo una vez)
-docker exec ... tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
-docker-compose restart tigerbeetle
 ```
 
 ## 🔜 Próximos Pasos

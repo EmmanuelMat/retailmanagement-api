@@ -261,8 +261,41 @@ impl AuthService {
         .execute(&mut *tx)
         .await?;
 
-        // 4. Crear cuentas TigerBeetle base para tenant (mock, real TB crea cuentas)
-        // En event_store real, aquí llamaríamos ledger::create_base_accounts(tenant_id)
+        // 4. Plan de cuentas inicial (ver docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md).
+        // Misma lista que la semilla de backfill en bin/migrate.rs - si se
+        // agrega una cuenta ahí, agrégala aquí también.
+        const PLAN_DE_CUENTAS: &[(&str, &str, &str, &str)] = &[
+            ("1100", "Caja y Bancos", "ACTIVO", "DEUDORA"),
+            ("1110", "Cuentas por Cobrar", "ACTIVO", "DEUDORA"),
+            ("1150", "ITBIS Adelantado", "ACTIVO", "DEUDORA"),
+            ("1160", "Depósitos Bancarios", "ACTIVO", "DEUDORA"),
+            ("1200", "Inventario", "ACTIVO", "DEUDORA"),
+            ("1300", "Anticipos a Empleados", "ACTIVO", "DEUDORA"),
+            ("2100", "ITBIS por Pagar", "PASIVO", "ACREEDORA"),
+            ("2200", "Retenciones y Descuentos", "PASIVO", "ACREEDORA"),
+            ("4100", "Ingresos por Ventas", "INGRESO", "ACREEDORA"),
+            ("4200", "Otros Ingresos", "INGRESO", "ACREEDORA"),
+            ("5050", "Costo de Ventas", "GASTO", "DEUDORA"),
+            ("5100", "Gasto de Nómina", "GASTO", "DEUDORA"),
+            ("5210", "Gasto de Alquiler", "GASTO", "DEUDORA"),
+            ("5220", "Gasto de Servicios", "GASTO", "DEUDORA"),
+            ("5230", "Gasto de Transporte", "GASTO", "DEUDORA"),
+            ("5290", "Otros Gastos Operativos", "GASTO", "DEUDORA"),
+            ("5295", "Ajuste de Inventario (Merma)", "GASTO", "DEUDORA"),
+        ];
+        for (codigo, nombre, tipo, naturaleza) in PLAN_DE_CUENTAS {
+            sqlx::query(
+                r#"INSERT INTO cuentas_contables (tenant_id, codigo, nombre, tipo, naturaleza)
+                   VALUES ($1, $2, $3, $4, $5)"#,
+            )
+            .bind(&rnc_clean)
+            .bind(codigo)
+            .bind(nombre)
+            .bind(tipo)
+            .bind(naturaleza)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
 

@@ -2,14 +2,15 @@
 
 Read in order:
 
-1. **01-ARCHITECTURE.md** - Full bank-grade architecture (event-driven, TigerBeetle, Next.js, mobile)
+1. **01-ARCHITECTURE.md** - Full bank-grade architecture (event-driven, Next.js, mobile) - ⚠️ ledger sections superseded, see doc banner
 2. **02-DGII-COMPLIANCE.md** - DGII compliance research (e-CF mandatory, NCF types, 606/607/608, ITBIS)
-3. **03-BANK-CORE-EVENT-DRIVEN.md** - Why event-driven DB like bank core, TigerBeetle vs Formance, etc.
+3. **03-BANK-CORE-EVENT-DRIVEN.md** - Why event-driven DB like bank core - ⚠️ superseded, see doc banner
 4. **04-RUST-CORE-RPC.md** - Rust core + RPC design, gRPC vs HTTP
 5. **05-PAYROLL-ADVANCE.md** - Payroll advances (adelantos) EWA model, 50% rule, accounting entries
-6. **06-API-SPEC.md** - gRPC proto + REST API between Next.js and Rust
+6. **06-API-SPEC.md** - REST API between Next.js and Rust
 7. **07-MONOREPO.md** - Monorepo structure, conventions, scripts
-8. **08-DATABASE.md** - EventStore + TigerBeetle + Read Models schema
+8. **08-DATABASE.md** - EventStore + Read Models schema - ⚠️ ledger sections superseded, see doc banner
+9. **12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md** - Implementation plan for a correct Libro Diario / Libro Mayor on the existing Postgres ledger
 
 ## Quick Links
 

@@ -10,7 +10,7 @@ export default function POSMovil() {
   return (
     <ScrollView style={{ flex: 1, backgroundColor: "#09090b" }} contentContainerStyle={{ padding: 20, paddingTop: 60 }}>
       <Text style={{ color: "white", fontSize: 24, fontWeight: "800" }}>Colmado POS Móvil</Text>
-      <Text style={{ color: "#a1a1aa", marginTop: 6, fontSize: 12 }}>Núcleo bancario Rust • TigerBeetle • DGII e-CF • Adelantos 50%</Text>
+      <Text style={{ color: "#a1a1aa", marginTop: 6, fontSize: 12 }}>Núcleo Rust • Contabilidad Postgres • DGII e-CF • Adelantos 50%</Text>
       
       <View style={{ marginTop: 20, backgroundColor: "#18181b", borderRadius: 16, padding: 16, borderWidth: 1, borderColor: "#27272a" }}>
         <Text style={{ color: "#f4f4f5", fontSize: 12, fontWeight: "600", letterSpacing: 1 }}>EMPLEADO</Text>
@@ -33,7 +33,7 @@ export default function POSMovil() {
         </TouchableOpacity>
 
         <Text style={{ color: "#52525b", fontSize: 9, marginTop: 10, textAlign: "center", lineHeight: 14 }}>
-          Flujo bancario: Evento AdelantoSolicitado → Núcleo Rust verifica 50% → TigerBeetle reserva pending (Debe anticipos / Haber caja) → Gerente aprueba → posted → Evento AdelantoAprobado
+          Flujo: Solicitud de adelanto → Núcleo Rust verifica 50% → Gerente aprueba → asiento contable (Debe anticipos / Haber caja) al sincronizar
         </Text>
       </View>
 

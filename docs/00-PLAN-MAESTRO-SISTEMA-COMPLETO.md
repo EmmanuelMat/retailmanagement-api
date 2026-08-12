@@ -1,6 +1,8 @@
 # PLAN MAESTRO - SISTEMA COMPLETO COLMADO POS DOMINICANA
 ## Núcleo Bancario Rust + Next.js + DGII e-CF + Español 100%
 
+> **⚠️ Nota TigerBeetle:** las menciones a TigerBeetle/cuentas TigerBeetle en este documento describen el diseño original, que nunca se conectó en `services/core`. La implementación real usa un libro contable de doble entrada plano en Postgres (`asientos_contables`, ver `services/core/src/services/contabilidad_service.rs` y `docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md`). El resto del roadmap (fases, módulos) sigue vigente.
+
 > **Objetivo:** Sistema todo-en-uno para PYME Dominicana que reemplace Odoo/ERPNext con núcleo bancario real, no CRUD.
 
 **Fecha:** 2026-07-19 | **Repo:** EmmanuelMat/retailmanagement-api | **Idioma UI:** Español Dominicano 100%

@@ -37,6 +37,7 @@ export default function ClientesPage() {
 
 function ClientesPageContent() {
   const [error, setError] = useState("");
+  const [eliminandoId, setEliminandoId] = useState<string | null>(null);
   const [abonandoId, setAbonandoId] = useState<string | null>(null);
   const [abonoMonto, setAbonoMonto] = useState("");
   const [abonoMetodo, setAbonoMetodo] = useState("EFECTIVO");
@@ -66,9 +67,9 @@ function ClientesPageContent() {
   const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
 
   async function handleDelete(id: string) {
-    if (!confirm("¿Desactivar este cliente?")) return;
     try {
       await apiFetch(`/api/clientes/${id}`, { method: "DELETE" });
+      setEliminandoId(null);
       refresh();
     } catch (e: any) {
       setError(e.message);
@@ -157,6 +158,7 @@ function ClientesPageContent() {
               <TableHead>Teléfono</TableHead>
               <TableHead>Correo</TableHead>
               <SortableTableHead column="saldo_pendiente" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Saldo fiado</SortableTableHead>
+              <TableHead>Límite crédito</TableHead>
               <TableHead className="w-32 text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
@@ -173,6 +175,7 @@ function ClientesPageContent() {
                     <TableCell>
                       {saldo > 0 ? <Badge variant="warning">{formatDOP(c.saldo_pendiente)}</Badge> : <span className="text-muted-foreground">—</span>}
                     </TableCell>
+                    <TableCell className="text-muted-foreground">{formatDOP(c.limite_credito)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
                         {saldo > 0 && (
@@ -183,13 +186,24 @@ function ClientesPageContent() {
                         <Link href={`/clientes/${c.id}` as any}>
                           <Button size="icon" variant="ghost"><Pencil className="h-4 w-4" /></Button>
                         </Link>
-                        <Button size="icon" variant="ghost" onClick={() => handleDelete(c.id)}><Trash2 className="h-4 w-4" /></Button>
+                        <Button size="icon" variant="ghost" onClick={() => setEliminandoId(c.id)}><Trash2 className="h-4 w-4" /></Button>
                       </div>
                     </TableCell>
                   </TableRow>
+                  {eliminandoId === c.id && (
+                    <TableRow>
+                      <TableCell colSpan={7} className="bg-muted/30">
+                        <div className="flex flex-wrap items-center gap-2 py-1">
+                          <span className="text-sm">¿Desactivar a {c.nombre}?</span>
+                          <Button size="sm" variant="destructive" onClick={() => handleDelete(c.id)}>Desactivar</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEliminandoId(null)}>Cancelar</Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
                   {abonandoId === c.id && (
                     <TableRow>
-                      <TableCell colSpan={6} className="bg-muted/30">
+                      <TableCell colSpan={7} className="bg-muted/30">
                         <div className="flex flex-wrap items-end gap-2 py-1">
                           <div className="space-y-1">
                             <label className="text-xs text-muted-foreground">Monto del abono</label>

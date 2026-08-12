@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense } from "react";
+import { Fragment, Suspense, useState } from "react";
 import Link from "next/link";
 import { Plus, Pencil, Trash2, Users2, Search } from "lucide-react";
 import {
@@ -55,14 +55,17 @@ function EmpleadosPageContent() {
   });
 
   const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
+  const [eliminandoId, setEliminandoId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState("");
 
   async function handleDelete(id: string) {
-    if (!confirm("¿Desactivar este empleado?")) return;
+    setDeleteError("");
     try {
       await apiFetch(`/api/empleados/${id}`, { method: "DELETE" });
+      setEliminandoId(null);
       refresh();
     } catch (e: any) {
-      alert(e.message);
+      setDeleteError(e.message);
     }
   }
 
@@ -123,20 +126,34 @@ function EmpleadosPageContent() {
           </TableHeader>
           <TableBody>
             {empleados.map((e) => (
-              <TableRow key={e.id}>
-                <TableCell className="font-medium">{e.nombre}</TableCell>
-                <TableCell className="text-muted-foreground">{e.puesto || "—"}</TableCell>
-                <TableCell className="text-right tabular-nums">{formatDOP(e.salario_mensual)}</TableCell>
-                <TableCell className="text-right tabular-nums text-success">{formatDOP(e.disponible_adelanto)}</TableCell>
-                <TableCell className="text-right">
-                  <div className="flex justify-end gap-1">
-                    <Link href={`/nomina/empleados/${e.id}` as any}>
-                      <Button size="icon" variant="ghost"><Pencil className="h-4 w-4" /></Button>
-                    </Link>
-                    <Button size="icon" variant="ghost" onClick={() => handleDelete(e.id)}><Trash2 className="h-4 w-4" /></Button>
-                  </div>
-                </TableCell>
-              </TableRow>
+              <Fragment key={e.id}>
+                <TableRow>
+                  <TableCell className="font-medium">{e.nombre}</TableCell>
+                  <TableCell className="text-muted-foreground">{e.puesto || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatDOP(e.salario_mensual)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-success">{formatDOP(e.disponible_adelanto)}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Link href={`/nomina/empleados/${e.id}` as any}>
+                        <Button size="icon" variant="ghost"><Pencil className="h-4 w-4" /></Button>
+                      </Link>
+                      <Button size="icon" variant="ghost" onClick={() => setEliminandoId(e.id)}><Trash2 className="h-4 w-4" /></Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+                {eliminandoId === e.id && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="bg-muted/30">
+                      <div className="flex flex-wrap items-center gap-2 py-1">
+                        <span className="text-sm">¿Desactivar a {e.nombre}?</span>
+                        <Button size="sm" variant="destructive" onClick={() => handleDelete(e.id)}>Desactivar</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEliminandoId(null)}>Cancelar</Button>
+                        {deleteError && <span className="text-xs text-destructive">{deleteError}</span>}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
             ))}
           </TableBody>
         </Table>

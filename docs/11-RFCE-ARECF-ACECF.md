@@ -174,7 +174,7 @@ Per Norma: If you don't send ACECF, e-CF is considered accepted when you report 
 
 1. **Ventas E32 <250k** (47 ventas):
    - POS -> Event VentaCompletada -> build_simple_pos_ecf -> sign XAdES -> save signed XML + QR -> print ticket with QR
-   - Do NOT send each to DGII, store in local DB + TigerBeetle
+   - Do NOT send each to DGII, store in local DB (ecf_documentos)
    - Event: ETicketSigningRequested, ETicketLocallyStored
 
 2. **Cierre de caja 6pm**:

@@ -151,7 +151,6 @@ export default function NuevaCompraPage() {
                   <option value="EFECTIVO">Efectivo</option>
                   <option value="TARJETA">Tarjeta</option>
                   <option value="TRANSFERENCIA">Transferencia</option>
-                  <option value="CREDITO">Crédito</option>
                 </Select>
               </div>
               <div className="flex items-end justify-end">

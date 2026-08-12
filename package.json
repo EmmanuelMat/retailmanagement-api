@@ -18,10 +18,12 @@
     "lint": "turbo run lint",
     "type-check": "turbo run type-check",
     "dev:web": "pnpm --filter web dev",
+    "dev:staff": "pnpm --filter staff dev",
     "dev:api": "pnpm --filter @repo/api-client dev",
     "dev:core": "cargo watch -q -c -w services/core/src -x 'run --bin fiscal-core'",
     "dev:core:grpc": "cd services/core && cargo run",
     "db:migrate": "echo 'EventStore migrations' && cd services/core && cargo run --bin migrate",
+    "test:e2e": "bash scripts/e2e/run-local.sh",
     "docs": "echo 'Docs at /docs'",
     "prepare": "husky install || true"
   },

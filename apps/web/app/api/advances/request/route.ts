@@ -11,12 +11,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "employeeId and amount required" }, { status: 400 });
     }
 
-    // Call Rust core which:
-    // 1. Loads EmployeeAggregate from EventStore (accrued_net, advance_balance)
-    // 2. Checks 50% rule via handle_command
-    // 3. Reserves in TigerBeetle: create_accounts if needed + create_transfers with flags=pending
-    // 4. Appends AdvanceRequested event
-    // For MVP this endpoint proxies to Rust HTTP
+    // Proxies to the Rust core, which checks the 50% rule and records the
+    // advance request (see services/core/src/services/nomina_service.rs).
 
     const coreRes = await fetch(`${CORE_HTTP}/v1/advances/request`, {
       method: "POST",
@@ -32,15 +28,11 @@ export async function POST(req: NextRequest) {
 
     const data = await coreRes.json();
 
-    // Projector would update read_employee_balances here (via LISTEN/NOTIFY)
-    // For now return core response
-
     return NextResponse.json({
       success: true,
       ...data,
       accounting: {
-        tigerbeetle: `Pending transfer id ${data.tigerbeetleTransferId}: Debit asset:anticipos_empleados / Credit asset:caja (pending)`,
-        next: "Manager approves via POST /api/advances/approve -> TB post_pending -> Event AdvanceApproved",
+        next: "Manager approves via POST /v1/nomina/adelantos/:id/aprobar",
       },
       compliance: "Advance is NOT a loan, it's early access to earned wages - no TSS/ISR extra, deduction on payroll as Anticipo de Salario"
     });

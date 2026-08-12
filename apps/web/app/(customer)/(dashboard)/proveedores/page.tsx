@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense } from "react";
+import { Fragment, Suspense, useState } from "react";
 import Link from "next/link";
 import { Plus, Pencil, Trash2, Truck, Search } from "lucide-react";
 import {
@@ -55,14 +55,17 @@ function ProveedoresPageContent() {
   });
 
   const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
+  const [eliminandoId, setEliminandoId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState("");
 
   async function handleDelete(id: string) {
-    if (!confirm("¿Desactivar este proveedor?")) return;
+    setDeleteError("");
     try {
       await apiFetch(`/api/proveedores/${id}`, { method: "DELETE" });
+      setEliminandoId(null);
       refresh();
     } catch (e: any) {
-      alert(e.message);
+      setDeleteError(e.message);
     }
   }
 
@@ -123,20 +126,34 @@ function ProveedoresPageContent() {
           </TableHeader>
           <TableBody>
             {proveedores.map((p) => (
-              <TableRow key={p.id}>
-                <TableCell className="font-medium">{p.nombre}</TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">{p.rnc || "—"}</TableCell>
-                <TableCell className="text-muted-foreground">{p.contacto || "—"}</TableCell>
-                <TableCell className="text-muted-foreground">{p.telefono || "—"}</TableCell>
-                <TableCell className="text-right">
-                  <div className="flex justify-end gap-1">
-                    <Link href={`/proveedores/${p.id}` as any}>
-                      <Button size="icon" variant="ghost"><Pencil className="h-4 w-4" /></Button>
-                    </Link>
-                    <Button size="icon" variant="ghost" onClick={() => handleDelete(p.id)}><Trash2 className="h-4 w-4" /></Button>
-                  </div>
-                </TableCell>
-              </TableRow>
+              <Fragment key={p.id}>
+                <TableRow>
+                  <TableCell className="font-medium">{p.nombre}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">{p.rnc || "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">{p.contacto || "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">{p.telefono || "—"}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Link href={`/proveedores/${p.id}` as any}>
+                        <Button size="icon" variant="ghost"><Pencil className="h-4 w-4" /></Button>
+                      </Link>
+                      <Button size="icon" variant="ghost" onClick={() => setEliminandoId(p.id)}><Trash2 className="h-4 w-4" /></Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+                {eliminandoId === p.id && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="bg-muted/30">
+                      <div className="flex flex-wrap items-center gap-2 py-1">
+                        <span className="text-sm">¿Desactivar a {p.nombre}?</span>
+                        <Button size="sm" variant="destructive" onClick={() => handleDelete(p.id)}>Desactivar</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEliminandoId(null)}>Cancelar</Button>
+                        {deleteError && <span className="text-xs text-destructive">{deleteError}</span>}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
             ))}
           </TableBody>
         </Table>

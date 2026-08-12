@@ -1,5 +1,7 @@
 # 05 - Payroll Advance (Adelantos) - Earned Wage Access for DR
 
+> **⚠️ Superseded (ledger mechanics only):** the TigerBeetle two-phase pending/posted transfer flow below describes the original design, never wired into `services/core`. The shipped flow is: request → `nomina_adelantos.estado = APROBADO` → journal entry posted on `POST /v1/contabilidad/sincronizar` (see `services/core/src/services/nomina_service.rs`, `contabilidad_service.rs`, `docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md`). The 50% rule and business logic below are still accurate.
+
 ## Problem in Dominican SMEs
 
 Colmado employee needs RD$2,000 for medicine on day 12, but quincena is day 15. Boss gives cash from caja, no record, breaks accounting, no ISR/TSS calc.

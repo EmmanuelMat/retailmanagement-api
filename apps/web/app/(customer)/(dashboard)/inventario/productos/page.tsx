@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Plus, Pencil, Trash2, Package, ImageOff } from "lucide-react";
 import {
@@ -72,6 +72,7 @@ function ProductosPageContent() {
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [proveedores, setProveedores] = useState<Proveedor[]>([]);
   const [actionError, setActionError] = useState("");
+  const [eliminandoId, setEliminandoId] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch<{ items: Categoria[] }>("/api/categorias?pageSize=1000&activo=true").then((d) => setCategorias(d.items)).catch(() => {});
@@ -124,10 +125,10 @@ function ProductosPageContent() {
   const unidades = Array.from(new Set(["UNIDAD", "PAQUETE", "GALON", "LITRO", "PIE", "LIBRA", "SET", "METRO", "SACO", "BOTELLA", "JUEGO", "YARDA", "CARTON", "CAJA", "KIT"]));
 
   async function handleDelete(id: string) {
-    if (!confirm("¿Desactivar este producto?")) return;
     setActionError("");
     try {
       await apiFetch(`/api/productos/${id}`, { method: "DELETE" });
+      setEliminandoId(null);
       refresh();
     } catch (e: any) {
       setActionError(e.message);
@@ -227,45 +228,58 @@ function ProductosPageContent() {
           </TableHeader>
           <TableBody>
             {productos.map((p) => (
-              <TableRow key={p.id}>
-                <TableCell>
-                  <div className="h-9 w-9 rounded-md border border-border bg-surface flex items-center justify-center overflow-hidden">
-                    {p.imagen_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={imagenSrc(p.imagen_url) || undefined} alt={p.nombre} loading="lazy" className="h-full w-full object-cover" />
-                    ) : (
-                      <ImageOff className="h-4 w-4 text-muted-foreground" />
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">{p.sku}</TableCell>
-                <TableCell className="font-medium">{p.nombre}</TableCell>
-                <TableCell className="text-muted-foreground">{categoriaNombre(p.categoria_id)}</TableCell>
-                <TableCell className="text-muted-foreground">{proveedorNombre(p.proveedor_id)}</TableCell>
-                <TableCell className="text-muted-foreground">{p.unidad_medida}</TableCell>
-                <TableCell>
-                  <Badge variant={ITBIS_VARIANT[p.itbis_tipo]}>{ITBIS_LABEL[p.itbis_tipo]}</Badge>
-                </TableCell>
-                <TableCell className="text-right">{formatDOP(p.costo)}</TableCell>
-                <TableCell className="text-right font-medium">{formatDOP(p.precio_venta)}</TableCell>
-                <TableCell className="text-right">
-                  <span className={Number(p.stock_actual) <= Number(p.stock_minimo) ? "text-destructive font-medium" : ""}>
-                    {p.stock_actual}
-                  </span>
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex justify-end gap-1">
-                    <Link href={`/inventario/productos/${p.id}` as any}>
-                      <Button size="icon" variant="ghost">
-                        <Pencil className="h-4 w-4" />
+              <Fragment key={p.id}>
+                <TableRow>
+                  <TableCell>
+                    <div className="h-9 w-9 rounded-md border border-border bg-surface flex items-center justify-center overflow-hidden">
+                      {p.imagen_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={imagenSrc(p.imagen_url) || undefined} alt={p.nombre} loading="lazy" className="h-full w-full object-cover" />
+                      ) : (
+                        <ImageOff className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">{p.sku}</TableCell>
+                  <TableCell className="font-medium">{p.nombre}</TableCell>
+                  <TableCell className="text-muted-foreground">{categoriaNombre(p.categoria_id)}</TableCell>
+                  <TableCell className="text-muted-foreground">{proveedorNombre(p.proveedor_id)}</TableCell>
+                  <TableCell className="text-muted-foreground">{p.unidad_medida}</TableCell>
+                  <TableCell>
+                    <Badge variant={ITBIS_VARIANT[p.itbis_tipo]}>{ITBIS_LABEL[p.itbis_tipo]}</Badge>
+                  </TableCell>
+                  <TableCell className="text-right">{formatDOP(p.costo)}</TableCell>
+                  <TableCell className="text-right font-medium">{formatDOP(p.precio_venta)}</TableCell>
+                  <TableCell className="text-right">
+                    <span className={Number(p.stock_actual) <= Number(p.stock_minimo) ? "text-destructive font-medium" : ""}>
+                      {p.stock_actual}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Link href={`/inventario/productos/${p.id}` as any}>
+                        <Button size="icon" variant="ghost">
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      </Link>
+                      <Button size="icon" variant="ghost" onClick={() => setEliminandoId(p.id)}>
+                        <Trash2 className="h-4 w-4" />
                       </Button>
-                    </Link>
-                    <Button size="icon" variant="ghost" onClick={() => handleDelete(p.id)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
+                    </div>
+                  </TableCell>
+                </TableRow>
+                {eliminandoId === p.id && (
+                  <TableRow>
+                    <TableCell colSpan={11} className="bg-muted/30">
+                      <div className="flex flex-wrap items-center gap-2 py-1">
+                        <span className="text-sm">¿Desactivar {p.nombre}?</span>
+                        <Button size="sm" variant="destructive" onClick={() => handleDelete(p.id)}>Desactivar</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEliminandoId(null)}>Cancelar</Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
             ))}
           </TableBody>
         </Table>

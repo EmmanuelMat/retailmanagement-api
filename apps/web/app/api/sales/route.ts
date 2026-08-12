@@ -100,15 +100,15 @@ export async function POST(req: NextRequest) {
           xml_preview: demo.signed_xml_preview,
         },
         contabilidad: {
-          mensaje: "Transfers vinculados TigerBeetle atómicos (venta + ITBIS + COGS)",
+          mensaje: "Asiento de doble entrada en Postgres (venta + ITBIS + COGS)",
           asientos: [
-            { debe: "activo:cuentas_por_cobrar", haber: "ingreso:ventas_gravadas_18", monto: 1000, ledger: 700, code: 10 },
-            { debe: "activo:cuentas_por_cobrar", haber: "pasivo:itbis_por_pagar", monto: 180, ledger: 700, code: 40 },
-            { debe: "gasto:costo_venta", haber: "activo:inventario", monto: 600, ledger: 700, code: 13 },
+            { debe: "1100 Caja y Bancos", haber: "4100 Ingresos por Ventas", monto: 1000 },
+            { debe: "1100 Caja y Bancos", haber: "2100 ITBIS por Pagar", monto: 180 },
+            { debe: "5100 Costo de Ventas", haber: "1200 Inventario", monto: 600 },
           ],
-          atomicidad: "linked transfers - todo o nada, idempotente via transfer ID"
+          atomicidad: "generado dentro de la misma transacción SQL de la venta, idempotente por referencia_tipo+referencia_id"
         },
-        siguientesPasos: "Evento VentaCompletada -> EventStore append -> Projector actualiza read_sales -> Consumer async DGII (cuando tengas cert real, usa sendToDGII:true)"
+        siguientesPasos: "Venta creada en Postgres -> POST /v1/contabilidad/sincronizar genera el asiento contable (cuando tengas cert real, usa sendToDGII:true)"
       }, { status: 201 });
     }
 
@@ -165,7 +165,7 @@ export async function POST(req: NextRequest) {
         qrUrl: result.qr_url,
         dgiiMensajes: result.dgii_mensajes,
         signedXmlPreview: result.signed_xml_preview,
-        contabilidad: "TigerBeetle linked transfers posted, inventario reservado pending->posted",
+        contabilidad: "Asiento contable en Postgres, inventario descontado",
         qrInstruccion: "Imprime QR con qrUrl + fecha firma + codigo seguridad en representación impresa per Norma 06-2018"
       }, { status: 201 });
     }

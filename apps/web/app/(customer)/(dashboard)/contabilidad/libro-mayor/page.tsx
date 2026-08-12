@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
+import Link from "next/link";
 import { BookOpen, Search } from "lucide-react";
 import {
   Input,
@@ -79,7 +80,7 @@ function LibroMayorPageContent() {
           />
         }
       >
-        <Table>
+        <Table data-testid="libro-mayor-table">
           <TableHeader>
             <TableRow>
               <SortableTableHead column="cuenta" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Cuenta</SortableTableHead>
@@ -90,11 +91,15 @@ function LibroMayorPageContent() {
           </TableHeader>
           <TableBody>
             {cuentas.map((c) => (
-              <TableRow key={c.cuenta}>
-                <TableCell className="font-medium">{c.cuenta}</TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">{formatDOP(c.debe)}</TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">{formatDOP(c.haber)}</TableCell>
-                <TableCell className="text-right tabular-nums font-semibold">{formatDOP(c.saldo)}</TableCell>
+              <TableRow key={c.cuenta} data-testid="libro-mayor-row" data-cuenta={c.cuenta}>
+                <TableCell className="font-medium">
+                  <Link href={`/contabilidad/libro-mayor/${encodeURIComponent(c.cuenta)}`} className="hover:underline">
+                    {c.cuenta}
+                  </Link>
+                </TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground" data-testid="libro-mayor-debe">{formatDOP(c.debe)}</TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground" data-testid="libro-mayor-haber">{formatDOP(c.haber)}</TableCell>
+                <TableCell className="text-right tabular-nums font-semibold" data-testid="libro-mayor-saldo">{formatDOP(c.saldo)}</TableCell>
               </TableRow>
             ))}
           </TableBody>

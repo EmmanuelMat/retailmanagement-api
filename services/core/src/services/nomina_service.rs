@@ -1,5 +1,5 @@
 //! Nómina y Adelantos Service - Módulo 8
-//! Reconstruido plano (Postgres, sin event sourcing/TigerBeetle). La regla
+//! Reconstruido plano (Postgres, sin event sourcing). La regla
 //! del 50% que antes vivía en el `aggregates/employee.rs` eliminado ahora es
 //! una función simple sobre datos reales.
 

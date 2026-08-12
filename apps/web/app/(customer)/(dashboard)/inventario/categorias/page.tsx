@@ -41,6 +41,7 @@ function CategoriasPageContent() {
   const [icono, setIcono] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editNombre, setEditNombre] = useState("");
+  const [eliminandoId, setEliminandoId] = useState<string | null>(null);
 
   const {
     items: categorias,
@@ -97,9 +98,9 @@ function CategoriasPageContent() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm("¿Desactivar esta categoría?")) return;
     try {
       await apiFetch(`/api/categorias/${id}`, { method: "DELETE" });
+      setEliminandoId(null);
       refresh();
     } catch (e: any) {
       setActionError(e.message);
@@ -195,12 +196,18 @@ function CategoriasPageContent() {
                       <Button size="sm" variant="secondary" onClick={() => setEditingId(null)}>Cancelar</Button>
                       <Button size="sm" onClick={() => saveEdit(cat.id)}>Guardar</Button>
                     </div>
+                  ) : eliminandoId === cat.id ? (
+                    <div className="flex justify-end items-center gap-2">
+                      <span className="text-xs text-muted-foreground">¿Desactivar?</span>
+                      <Button size="sm" variant="destructive" onClick={() => handleDelete(cat.id)}>Sí</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEliminandoId(null)}>No</Button>
+                    </div>
                   ) : (
                     <div className="flex justify-end gap-1">
                       <Button size="icon" variant="ghost" onClick={() => startEdit(cat)}>
                         <Pencil className="h-4 w-4" />
                       </Button>
-                      <Button size="icon" variant="ghost" onClick={() => handleDelete(cat.id)}>
+                      <Button size="icon" variant="ghost" onClick={() => setEliminandoId(cat.id)}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>

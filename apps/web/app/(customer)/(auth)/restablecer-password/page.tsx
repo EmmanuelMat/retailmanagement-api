@@ -1,11 +1,19 @@
 "use client";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Store, CheckCircle2 } from "lucide-react";
 import { Button, Card, Input, Label } from "@repo/ui";
 
 export default function RestablecerPasswordPage() {
+  return (
+    <Suspense fallback={null}>
+      <RestablecerPasswordPageContent />
+    </Suspense>
+  );
+}
+
+function RestablecerPasswordPageContent() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token") || "";
   const [loading, setLoading] = useState(false);

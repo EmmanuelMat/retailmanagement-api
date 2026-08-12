@@ -467,9 +467,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/nomina/periodos", get(http_list_periodos))
         .route("/v1/nomina/periodos/:id", get(http_get_periodo))
         .route("/v1/nomina/run", post(http_run_payroll))
-        // MODULO 7: Contabilidad (Libro Mayor)
+        // MODULO 7: Contabilidad (Libro Diario / Libro Mayor)
         .route("/v1/contabilidad/asientos", get(http_list_asientos).post(http_create_asiento))
+        .route("/v1/contabilidad/asientos/:id/reversar", post(http_reversar_asiento))
         .route("/v1/contabilidad/libro-mayor", get(http_libro_mayor))
+        .route("/v1/contabilidad/libro-mayor/:cuenta", get(http_libro_mayor_detalle))
+        .route("/v1/contabilidad/libro-diario", get(http_libro_diario))
+        .route("/v1/contabilidad/cuentas", get(http_list_cuentas))
+        .route("/v1/contabilidad/periodos", get(http_list_periodos_contables))
+        .route("/v1/contabilidad/periodos/:anio/:mes/cerrar", post(http_cerrar_periodo))
         .route("/v1/contabilidad/sincronizar", post(http_sincronizar_contabilidad))
         // MODULO 10: Reportes y Dashboard
         .route("/v1/reports/606", get(http_report_606))
@@ -3075,6 +3081,110 @@ async fn http_sincronizar_contabilidad(
     state.contabilidad_service.sincronizar(&claims.tenant_id).await
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReversarAsientoRequest {
+    motivo: Option<String>,
+}
+
+async fn http_reversar_asiento(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ReversarAsientoRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let asientos = state.contabilidad_service.reversar_asiento(&claims.tenant_id, usuario_id, id, req.motivo).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ASIENTO_REVERSADO", "asiento", Some(id), serde_json::json!({})).await;
+    Ok(Json(serde_json::json!({ "asientos": asientos })))
+}
+
+#[derive(Debug, Deserialize)]
+struct LibroMayorDetalleParams {
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+}
+
+async fn http_libro_mayor_detalle(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(cuenta): Path<String>,
+    Query(params): Query<LibroMayorDetalleParams>,
+) -> Result<Json<pagination::Page<services::contabilidad_service::MovimientoCuenta>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let (movimientos, total) = state.contabilidad_service.libro_mayor_detalle(
+        &claims.tenant_id, &cuenta, params.fecha_desde, params.fecha_hasta, &page,
+    ).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(movimientos, page.page_number(), page_size, total)))
+}
+
+#[derive(Debug, Deserialize)]
+struct LibroDiarioParams {
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    origen: Option<String>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+async fn http_libro_diario(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<LibroDiarioParams>,
+) -> Result<Json<pagination::Page<services::contabilidad_service::AsientoConLineas>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (asientos, total) = state.contabilidad_service.libro_diario(
+        &claims.tenant_id, params.fecha_desde, params.fecha_hasta, params.origen, &page, &sort,
+    ).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(asientos, page.page_number(), page_size, total)))
+}
+
+async fn http_list_cuentas(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<services::contabilidad_service::CuentaContable>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.contabilidad_service.list_cuentas(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_list_periodos_contables(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<services::contabilidad_service::Periodo>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.contabilidad_service.list_periodos(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_cerrar_periodo(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((anio, mes)): Path<(i32, i32)>,
+) -> Result<Json<services::contabilidad_service::Periodo>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let periodo = state.contabilidad_service.cerrar_periodo(&claims.tenant_id, anio, mes, usuario_id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "PERIODO_CERRADO", "periodo_contable", Some(periodo.id),
+        serde_json::json!({ "anio": anio, "mes": mes })).await;
+    Ok(Json(periodo))
 }
 
 // ------------------ MODULO 10: Reportes y Dashboard ------------------

@@ -12,6 +12,7 @@ interface ClienteDto {
   telefono: string | null;
   email: string | null;
   direccion: string | null;
+  limite_credito: string;
 }
 
 export default function EditarClientePage() {
@@ -28,6 +29,7 @@ export default function EditarClientePage() {
           telefono: c.telefono || "",
           email: c.email || "",
           direccion: c.direccion || "",
+          limite_credito: c.limite_credito,
         })
       )
       .catch((e) => setError(e.message));
@@ -52,6 +54,7 @@ export default function EditarClientePage() {
                 telefono: values.telefono || undefined,
                 email: values.email || undefined,
                 direccion: values.direccion || undefined,
+                limite_credito: values.limite_credito || undefined,
               }),
             });
           }}

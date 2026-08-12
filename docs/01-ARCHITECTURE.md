@@ -1,6 +1,8 @@
 # 01 - System Architecture - Bank-Grade Monorepo
 
-## Vision: Build TigerBeetle for Dominican SMEs
+> **⚠️ Superseded:** this doc describes the original TigerBeetle + event-sourcing ledger design, which was never wired into `services/core`. The shipped implementation uses a flat Postgres double-entry ledger instead — see `services/core/src/services/contabilidad_service.rs` and `docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md`. Kept here for historical context only.
+
+## Vision: Build a bank-grade ledger for Dominican SMEs
 
 We are not building CRUD POS. We are building:
 

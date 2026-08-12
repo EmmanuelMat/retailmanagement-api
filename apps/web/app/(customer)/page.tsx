@@ -262,7 +262,7 @@ export default function LandingPage() {
       <section className="border-y border-border bg-muted/30">
         <div className="mx-auto max-w-6xl px-5 py-6 flex flex-wrap items-center justify-center gap-x-10 gap-y-3 text-sm font-medium text-muted-foreground">
           <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Firma XAdES-BES real</span>
-          <span className="flex items-center gap-2"><Landmark className="h-4 w-4" /> Ledger TigerBeetle 1M TPS</span>
+          <span className="flex items-center gap-2"><Landmark className="h-4 w-4" /> Contabilidad de doble entrada</span>
           <span className="flex items-center gap-2"><Lock className="h-4 w-4" /> Eventos encadenados con hash</span>
           <span className="flex items-center gap-2"><FileBarChart className="h-4 w-4" /> Reportes 606 · 607 · 608 · IT-1</span>
         </div>
