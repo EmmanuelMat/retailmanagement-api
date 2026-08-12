@@ -39,3 +39,50 @@ const DGII_ROUTE_PREFIXES = ["/reportes/dgii", "/configuracion/dgii"];
 export function isDgiiRoute(pathname: string): boolean {
   return DGII_ROUTE_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
+
+/**
+ * Frontend mirror of `required_modulo` in services/core/src/main.rs. Only
+ * drives nav visibility here — the Rust core is the real enforcement (see
+ * `modulo_guard`). Which modules a tenant has is decided on the staff site,
+ * never by the tenant themselves — there is no module picker anywhere in
+ * this app.
+ */
+const ROUTE_MODULOS: [string, string][] = [
+  ["/pos", "POS_VENTAS"],
+  ["/ventas", "POS_VENTAS"],
+  ["/cotizaciones", "POS_VENTAS"],
+  ["/conduces", "POS_VENTAS"],
+  ["/clientes", "POS_VENTAS"],
+  ["/inventario", "INVENTARIO"],
+  ["/compras", "COMPRAS_GASTOS"],
+  ["/proveedores", "COMPRAS_GASTOS"],
+  ["/gastos", "COMPRAS_GASTOS"],
+  ["/contabilidad", "CONTABILIDAD"],
+  ["/caja", "CAJA_BANCOS"],
+  ["/bancos", "CAJA_BANCOS"],
+  ["/nomina", "NOMINA"],
+  ["/reportes/dgii", "DGII_ECF"],
+  ["/configuracion/dgii", "DGII_ECF"],
+];
+
+/**
+ * `modulosActivos === null` means "still loading" — never hide anything for
+ * that, only once we actually know. Mirrors the backend: during `trial` the
+ * tenant sees everything regardless of which modules are assigned, so this
+ * always returns `true` unless `licenciaStatus === "active"`.
+ */
+export function isModuloAllowed(pathname: string, modulosActivos: Set<string> | null, licenciaStatus?: string): boolean {
+  if (licenciaStatus !== "active") return true;
+  if (!modulosActivos) return true;
+  const match = ROUTE_MODULOS.find(([prefix]) => pathname.startsWith(prefix));
+  return !match || modulosActivos.has(match[1]);
+}
+
+/** Same rule as `isModuloAllowed`, for features that aren't tied to a route
+ * (e.g. the AI widget/digest, gated by IA_ASISTENTE) — check a module code
+ * directly instead of matching a pathname prefix. */
+export function isModuloActivo(codigo: string, modulosActivos: Set<string> | null, licenciaStatus?: string): boolean {
+  if (licenciaStatus !== "active") return true;
+  if (!modulosActivos) return true;
+  return modulosActivos.has(codigo);
+}

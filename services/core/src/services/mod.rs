@@ -20,4 +20,5 @@ pub mod partner_service;
 pub mod rate_limiter;
 pub mod report_service;
 pub mod rnc_service;
+pub mod staff_service;
 pub mod ventas_service;

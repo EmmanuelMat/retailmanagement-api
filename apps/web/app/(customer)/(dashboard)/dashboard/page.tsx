@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { DollarSign, Package, AlertTriangle, Lock, Unlock, ShoppingCart, Plus, Users, ShoppingBag, PlayCircle, X, Sparkles } from "lucide-react";
 import { Card, CardContent, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
-import { isRouteAllowed } from "@/lib/roles";
+import { isRouteAllowed, isModuloActivo } from "@/lib/roles";
 
 interface DashboardResumen {
   ventas_hoy_total: string;
@@ -31,6 +31,14 @@ const ACCIONES = [
 ];
 
 export default function DashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <DashboardPageContent />
+    </Suspense>
+  );
+}
+
+function DashboardPageContent() {
   const searchParams = useSearchParams();
   const [resumen, setResumen] = useState<DashboardResumen | null>(null);
   const [tenant, setTenant] = useState<{ razon_social?: string; rnc?: string } | null>(null);
@@ -38,6 +46,8 @@ export default function DashboardPage() {
   const [denied, setDenied] = useState(searchParams.get("denied"));
   const [digest, setDigest] = useState<AiDigest | null>(null);
   const [digestLoading, setDigestLoading] = useState(true);
+  const [modulosActivos, setModulosActivos] = useState<Set<string> | null>(null);
+  const [licenciaStatus, setLicenciaStatus] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     apiFetch<DashboardResumen>("/api/reports/dashboard").then(setResumen).catch(() => {});
@@ -47,9 +57,19 @@ export default function DashboardPage() {
       const u = localStorage.getItem("usuario");
       if (u) setUsuario(JSON.parse(u));
     } catch {}
+    apiFetch<{ status: string }>("/api/license/status").then((l) => setLicenciaStatus(l.status)).catch(() => {});
+    apiFetch<{ codigo: string; activo: boolean }[]>("/api/tenants/me/modulos")
+      .then((modulos) => setModulosActivos(new Set(modulos.filter((m) => m.activo).map((m) => m.codigo))))
+      .catch(() => {});
   }, []);
 
+  const iaActiva = isModuloActivo("IA_ASISTENTE", modulosActivos, licenciaStatus);
+
   useEffect(() => {
+    if (!iaActiva) {
+      setDigestLoading(false);
+      return;
+    }
     // Fetch aparte a propósito: en frío (sin caché) puede tardar varios
     // segundos (modelo local por CPU) y no debe retrasar las tarjetas de
     // arriba, que ya tienen sus propios datos listos.
@@ -57,7 +77,7 @@ export default function DashboardPage() {
       .then(setDigest)
       .catch(() => {})
       .finally(() => setDigestLoading(false));
-  }, []);
+  }, [iaActiva]);
 
   const acciones = ACCIONES.filter((a) => isRouteAllowed(a.href, usuario?.rol));
 
@@ -88,29 +108,31 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      <Card className="border-primary/15 bg-primary/[0.03]">
-        <CardContent className="pt-5">
-          <div className="flex items-center gap-2 mb-2">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <p className="text-sm font-semibold">Resumen del día</p>
-          </div>
-          {digestLoading ? (
-            <div className="space-y-1.5 animate-pulse">
-              <div className="h-3 bg-muted rounded w-3/4" />
-              <div className="h-3 bg-muted rounded w-1/2" />
+      {iaActiva && (
+        <Card className="border-primary/15 bg-primary/[0.03]">
+          <CardContent className="pt-5">
+            <div className="flex items-center gap-2 mb-2">
+              <Sparkles className="h-4 w-4 text-primary" />
+              <p className="text-sm font-semibold">Resumen del día</p>
             </div>
-          ) : digest ? (
-            <>
-              <p className="text-sm text-foreground/85 leading-relaxed">{digest.mensaje}</p>
-              {!digest.generado_por_ia && (
-                <p className="text-xs text-muted-foreground mt-1.5">(IA no disponible, resumen simple)</p>
-              )}
-            </>
-          ) : (
-            <p className="text-sm text-muted-foreground">No se pudo cargar el resumen.</p>
-          )}
-        </CardContent>
-      </Card>
+            {digestLoading ? (
+              <div className="space-y-1.5 animate-pulse">
+                <div className="h-3 bg-muted rounded w-3/4" />
+                <div className="h-3 bg-muted rounded w-1/2" />
+              </div>
+            ) : digest ? (
+              <>
+                <p className="text-sm text-foreground/85 leading-relaxed">{digest.mensaje}</p>
+                {!digest.generado_por_ia && (
+                  <p className="text-xs text-muted-foreground mt-1.5">(IA no disponible, resumen simple)</p>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">No se pudo cargar el resumen.</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="h-full hover:shadow-card transition-shadow">

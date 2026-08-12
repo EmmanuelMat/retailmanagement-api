@@ -614,6 +614,43 @@ async fn main() -> anyhow::Result<()> {
         -- ventas_service::create_venta).
         ALTER TABLE ventas ADD COLUMN IF NOT EXISTS entrega_diferida BOOLEAN NOT NULL DEFAULT false;
         ALTER TABLE venta_items ADD COLUMN IF NOT EXISTS cantidad_entregada DECIMAL(12,2) NOT NULL DEFAULT 0;
+
+        -- MODULO 14: Catálogo de módulos vendibles + asignación por tenant.
+        -- El catálogo es editable desde el sitio de staff (agregar/renombrar
+        -- un módulo no necesita migración) - pero conectar un módulo nuevo a
+        -- rutas reales todavía requiere un cambio de código en
+        -- `required_modulo` (main.rs), igual que cualquier ruta nueva con
+        -- `required_roles`. Ver docs del sitio de staff.
+        CREATE TABLE IF NOT EXISTS modulos_catalogo (
+            codigo TEXT PRIMARY KEY,   -- POS_VENTAS, INVENTARIO, ...
+            nombre TEXT NOT NULL,
+            descripcion TEXT,
+            orden INT NOT NULL DEFAULT 0,
+            activo BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS tenant_modulos (
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            modulo_codigo TEXT NOT NULL REFERENCES modulos_catalogo(codigo) ON DELETE CASCADE,
+            activado_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            activado_por TEXT, -- identificador libre de qué miembro del staff lo activó (sin login de staff individual todavía)
+            PRIMARY KEY (tenant_id, modulo_codigo)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tenant_modulos_tenant ON tenant_modulos(tenant_id);
+
+        INSERT INTO modulos_catalogo (codigo, nombre, descripcion, orden) VALUES
+            ('POS_VENTAS', 'Punto de Venta', 'Terminal de ventas, cotizaciones, conduces y clientes a crédito (fiado).', 10),
+            ('INVENTARIO', 'Inventario', 'Productos, categorías, kardex y ajustes de stock.', 20),
+            ('COMPRAS_GASTOS', 'Compras y Gastos', 'Compras a proveedores y gastos operativos.', 30),
+            ('CONTABILIDAD', 'Contabilidad', 'Libro diario, libro mayor y períodos contables.', 40),
+            ('CAJA_BANCOS', 'Caja y Bancos', 'Apertura/cierre de caja y cuentas bancarias.', 50),
+            ('NOMINA', 'Nómina', 'Empleados, nómina y adelantos de sueldo.', 60),
+            ('REPORTES', 'Reportes', 'Reportes DGII 606/607, financieros, de inventario y de ventas.', 70),
+            ('DGII_ECF', 'Facturación Electrónica DGII', 'Firma y envío de e-CF, secuencias NCF y certificado.', 80),
+            ('MOVIL', 'App Móvil', 'Acceso a la app móvil para POS y adelantos.', 90),
+            ('IA_ASISTENTE', 'Asistente IA', 'Resumen del día y chat con IA.', 100)
+        ON CONFLICT (codigo) DO NOTHING;
         "#
     )
     .execute(&pool)

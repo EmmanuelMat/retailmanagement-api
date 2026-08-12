@@ -30,7 +30,7 @@ import {
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
-import { isRouteAllowed, isDgiiRoute } from "@/lib/roles";
+import { isRouteAllowed, isDgiiRoute, isModuloAllowed, isModuloActivo } from "@/lib/roles";
 import { apiFetch } from "@/lib/api";
 import AiChatWidget from "./ai-chat-widget";
 
@@ -98,6 +98,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [tenant, setTenant] = useState<{ razon_social?: string; nombre_comercial?: string | null; logo_url?: string | null; factura_electronica_activa?: boolean } | null>(null);
   const [usuario, setUsuario] = useState<{ nombre?: string; rol?: string } | null>(null);
   const [licencia, setLicencia] = useState<{ status: "trial" | "active" | "expired"; dias_restantes: number } | null>(null);
+  const [modulosActivos, setModulosActivos] = useState<Set<string> | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
@@ -129,6 +130,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     } catch {}
     apiFetch<{ status: "trial" | "active" | "expired"; dias_restantes: number }>("/api/license/status")
       .then(setLicencia)
+      .catch(() => {});
+    apiFetch<{ codigo: string; activo: boolean }[]>("/api/tenants/me/modulos")
+      .then((modulos) => setModulosActivos(new Set(modulos.filter((m) => m.activo).map((m) => m.codigo))))
       .catch(() => {});
   }, []);
 
@@ -195,15 +199,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
     if (tenant && tenant.factura_electronica_activa === false && isDgiiRoute(pathname)) {
       router.replace("/dashboard?denied=dgii");
+      return;
     }
-  }, [pathname, usuario, tenant, router]);
+    if (!isModuloAllowed(pathname, modulosActivos, licencia?.status)) {
+      router.replace("/dashboard");
+    }
+  }, [pathname, usuario, tenant, modulosActivos, licencia, router]);
 
   const navFiltered = NAV.map((group) => ({
     ...group,
     items: group.items.filter(
       (item) =>
         isRouteAllowed(item.href, usuario?.rol) &&
-        !(tenant?.factura_electronica_activa === false && isDgiiRoute(item.href))
+        !(tenant?.factura_electronica_activa === false && isDgiiRoute(item.href)) &&
+        isModuloAllowed(item.href, modulosActivos, licencia?.status)
     ),
   })).filter((group) => group.items.length > 0);
 
@@ -328,7 +337,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <main className="p-6">{children}</main>
         </div>
       </div>
-      <AiChatWidget />
+      {isModuloActivo("IA_ASISTENTE", modulosActivos, licencia?.status) && <AiChatWidget />}
     </div>
   );
 }

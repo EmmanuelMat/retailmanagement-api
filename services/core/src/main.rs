@@ -49,6 +49,7 @@ use services::partner_service::PartnerService;
 use services::rate_limiter::RateLimiter;
 use services::report_service::ReportService;
 use services::rnc_service::RncService;
+use services::staff_service::StaffService;
 use services::ventas_service::VentasService;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -72,6 +73,7 @@ struct HttpState {
     rnc_service: Arc<RncService>,
     ecf_service: Arc<EcfService>,
     license_service: Arc<LicenseService>,
+    staff_service: Arc<StaffService>,
     backup_service: Arc<BackupService>,
     audit_service: Arc<AuditService>,
     image_service: Arc<ImageService>,
@@ -136,6 +138,105 @@ async fn license_guard<B>(
             StatusCode::PAYMENT_REQUIRED,
             "Tu período de prueba terminó. Contáctanos para activar tu licencia. Tus datos siguen disponibles para consulta y exportación.".to_string(),
         ));
+    }
+    Ok(next.run(req).await)
+}
+
+/// Corre junto a `role_guard`/`license_guard`. Solo bloquea cuando la
+/// licencia ya está `active` (pagada) - durante el `trial` el tenant ve todo
+/// para poder evaluar el sistema completo antes de decidir qué módulos
+/// comprar. Qué módulos terminan activos para el plan pagado lo decide el
+/// sitio de staff (ver `staff_guard` + `services::staff_service`), nunca el
+/// propio tenant - no hay selector de módulos en la app del tenant.
+async fn modulo_guard<B>(
+    State(state): State<HttpState>,
+    req: Request<B>,
+    next: Next<B>,
+) -> Result<Response, (StatusCode, String)> {
+    let Some(modulo) = required_modulo(req.uri().path()) else {
+        return Ok(next.run(req).await);
+    };
+    let claims = claims_from_headers(&state.auth_service, req.headers())?;
+    let estado = state
+        .license_service
+        .check_and_update(&claims.tenant_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error verificando licencia: {}", e)))?;
+    if estado.status != EstadoLicencia::Active {
+        return Ok(next.run(req).await);
+    }
+    let tiene: Option<(String,)> = sqlx::query_as(
+        "SELECT modulo_codigo FROM tenant_modulos WHERE tenant_id = $1 AND modulo_codigo = $2",
+    )
+    .bind(&claims.tenant_id)
+    .bind(modulo)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if tiene.is_none() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Tu plan no incluye este módulo. Contáctanos para agregarlo.".to_string(),
+        ));
+    }
+    Ok(next.run(req).await)
+}
+
+/// `None` = este módulo no aplica a la ruta (config de cuenta, dashboard
+/// general, etc.) - nunca bloqueada por módulo. Igual que `required_roles`,
+/// agregar una ruta a un grupo nuevo requiere tocar esta función; el
+/// catálogo (`modulos_catalogo`) en sí es editable desde el sitio de staff
+/// sin migración, pero conectarlo a rutas reales sigue siendo código.
+fn required_modulo(path: &str) -> Option<&'static str> {
+    if path == "/v1/reports/dashboard" {
+        return None;
+    }
+    if path.starts_with("/v1/reports") {
+        return Some("REPORTES");
+    }
+    if path.starts_with("/v1/config/certificado") || path.starts_with("/v1/config/secuencias-ncf") {
+        return Some("DGII_ECF");
+    }
+    if path.starts_with("/v1/ecf/documentos") || path.starts_with("/v1/ecf/pendientes") {
+        return Some("DGII_ECF");
+    }
+    if path.starts_with("/v1/ai/") {
+        return Some("IA_ASISTENTE");
+    }
+    match path {
+        p if p.starts_with("/v1/ventas")
+            || p.starts_with("/v1/notas-credito")
+            || p.starts_with("/v1/clientes")
+            || p.starts_with("/v1/cotizaciones")
+            || p.starts_with("/v1/conduces") =>
+        {
+            Some("POS_VENTAS")
+        }
+        p if p.starts_with("/v1/productos") || p.starts_with("/v1/categorias") || p.starts_with("/v1/inventario") => {
+            Some("INVENTARIO")
+        }
+        p if p.starts_with("/v1/compras") || p.starts_with("/v1/proveedores") || p.starts_with("/v1/gastos") => {
+            Some("COMPRAS_GASTOS")
+        }
+        p if p.starts_with("/v1/contabilidad") => Some("CONTABILIDAD"),
+        p if p.starts_with("/v1/caja") || p.starts_with("/v1/bancos") => Some("CAJA_BANCOS"),
+        p if p.starts_with("/v1/empleados") || p.starts_with("/v1/nomina") => Some("NOMINA"),
+        _ => None,
+    }
+}
+
+/// Gatea todas las rutas `/v1/staff/*` - nunca con el JWT de un tenant, solo
+/// con `X-Vendor-Secret` (el mismo secreto que ya usaba, en solitario,
+/// `http_activar_licencia`). Sin login individual de staff todavía - ver
+/// `activado_por` en `tenant_modulos` para cuándo eso haga falta.
+async fn staff_guard<B>(
+    State(state): State<HttpState>,
+    req: Request<B>,
+    next: Next<B>,
+) -> Result<Response, (StatusCode, String)> {
+    let provided = req.headers().get("X-Vendor-Secret").and_then(|h| h.to_str().ok()).unwrap_or("");
+    if provided.is_empty() || provided != state.vendor_admin_secret {
+        return Err((StatusCode::FORBIDDEN, "X-Vendor-Secret inválido o ausente".to_string()));
     }
     Ok(next.run(req).await)
 }
@@ -242,6 +343,7 @@ async fn main() -> anyhow::Result<()> {
     let rnc_service = Arc::new(RncService::new(pool.clone()));
     let ecf_service = Arc::new(EcfService::new(pool.clone()));
     let license_service = Arc::new(LicenseService::new(pool.clone()));
+    let staff_service = Arc::new(StaffService::new(pool.clone()));
     let backup_service = Arc::new(BackupService::new(database_url.clone()));
     let audit_service = Arc::new(AuditService::new(pool.clone()));
     // Miniaturas de fotos de producto - solo la ruta se guarda en Postgres,
@@ -298,6 +400,7 @@ async fn main() -> anyhow::Result<()> {
         rnc_service,
         ecf_service,
         license_service,
+        staff_service,
         backup_service,
         audit_service,
         image_service,
@@ -388,6 +491,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/rnc/:rnc", get(http_lookup_rnc))
         // Licencia de prueba
         .route("/v1/license/status", get(http_license_status))
+        // Módulos que el sitio de staff le asignó a este tenant - de solo
+        // lectura, no hay selector de módulos en la app del tenant.
+        .route("/v1/tenants/me/modulos", get(http_mis_modulos))
         // Respaldo local (pg_dump) - ADMIN-only
         .route("/v1/backup/descargar", get(http_backup_descargar))
         // Fiado: abono contra el saldo de un cliente
@@ -410,7 +516,23 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/ecf/acecf/build-sign", post(http_build_sign_acecf))
         .route("/v1/test/sign-demo", get(http_test_sign_demo_get).post(http_test_sign_demo))
         .route_layer(middleware::from_fn_with_state(http_state.clone(), role_guard))
-        .route_layer(middleware::from_fn_with_state(http_state.clone(), license_guard));
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), license_guard))
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), modulo_guard));
+
+    // Panel interno del equipo de ventas: nunca alcanzable con el JWT de un
+    // tenant, solo con X-Vendor-Secret (ver `staff_guard`). Deliberadamente
+    // fuera de `protected`.
+    let staff = Router::new()
+        .route("/v1/staff/tenants", get(http_staff_list_tenants).post(http_staff_create_tenant))
+        .route("/v1/staff/tenants/:rnc", get(http_staff_get_tenant))
+        .route("/v1/staff/tenants/:rnc/modulos", get(http_staff_list_modulos_tenant).put(http_staff_set_modulos_tenant))
+        .route("/v1/staff/tenants/:rnc/empresa", get(http_staff_get_empresa).put(http_staff_update_empresa))
+        .route("/v1/staff/tenants/:rnc/certificado", get(http_staff_certificado_status).post(http_staff_upload_certificado))
+        .route("/v1/staff/tenants/:rnc/secuencias-ncf", get(http_staff_list_secuencias).post(http_staff_create_secuencia))
+        .route("/v1/staff/tenants/:rnc/activar-licencia", post(http_staff_activar_licencia))
+        .route("/v1/staff/tenants/:rnc/reenviar-invitacion", post(http_staff_reenviar_invitacion))
+        .route("/v1/staff/modulos", get(http_staff_list_catalogo).post(http_staff_create_modulo_catalogo))
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), staff_guard));
 
     let http_app = Router::new()
         .route("/", get(root))
@@ -425,6 +547,7 @@ async fn main() -> anyhow::Result<()> {
         // desbloquear su propia prueba con su propio token.
         .route("/v1/tenants/:rnc/activar-licencia", post(http_activar_licencia))
         .merge(protected)
+        .merge(staff)
         .with_state(http_state)
         // Miniaturas de producto: servidas como archivos estáticos, sin JWT.
         // Deliberado - son fotos de producto, no datos sensibles del tenant.
@@ -1059,6 +1182,19 @@ async fn http_license_status(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// Qué módulos le asignó el sitio de staff a este tenant - de solo lectura;
+/// no existe un endpoint de escritura alcanzable con el JWT del propio
+/// tenant (ver `services::staff_service` + `staff_guard`).
+async fn http_mis_modulos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<services::staff_service::ModuloAsignado>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.staff_service.list_modulos_tenant(&claims.tenant_id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
 /// El vendedor confirma un pago y activa la licencia manualmente, fuera del
 /// flujo normal de tenant/JWT - ver el comentario en el router (`main()`)
 /// sobre por qué este endpoint vive en `public`.
@@ -1076,6 +1212,218 @@ async fn http_activar_licencia(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     state.audit_service.log(&rnc, None, "LICENCIA_ACTIVADA", "tenant", None, serde_json::json!({})).await;
     Ok(Json(serde_json::json!({ "ok": true, "mensaje": "Licencia activada" })))
+}
+
+// ------------------ Panel de staff (ventas/onboarding) ------------------
+// Todo lo de aquí abajo vive detrás de `staff_guard` (X-Vendor-Secret) en el
+// router `staff` de `main()` - nunca alcanzable con el JWT de un tenant.
+
+async fn http_staff_list_tenants(
+    State(state): State<HttpState>,
+) -> Result<Json<Vec<services::staff_service::TenantResumen>>, (StatusCode, String)> {
+    state.staff_service.list_tenants().await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_staff_get_tenant(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<services::staff_service::TenantResumen>, (StatusCode, String)> {
+    state.staff_service.get_tenant(&rnc).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, "Tenant no encontrado".to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct StaffCreateTenantRequest {
+    rnc: String,
+    razon_social: String,
+    direccion: String,
+    telefono: Option<String>,
+    correo: String,
+    admin_nombre: String,
+    factura_electronica_activa: Option<bool>,
+}
+
+/// El onboarding real de un cliente pagado: el staff crea el negocio y el
+/// usuario ADMIN con una contraseña de un solo uso que nunca se expone (ni
+/// al staff ni por la red) - se descarta de inmediato y en su lugar se le
+/// manda al cliente un enlace de "definir tu contraseña" (mismo mecanismo
+/// que "olvidé mi contraseña", ver `iniciar_reset_password`). No hay
+/// selector de módulos aquí a propósito - se asignan aparte en
+/// `PUT /v1/staff/tenants/:rnc/modulos`, después de hablar con el cliente.
+async fn http_staff_create_tenant(
+    State(state): State<HttpState>,
+    Json(req): Json<StaffCreateTenantRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let contrasena_temporal = format!("{}{}", Uuid::new_v4(), Uuid::new_v4());
+    let resp = state
+        .auth_service
+        .register(TenantRegisterRequest {
+            rnc: req.rnc,
+            razon_social: req.razon_social,
+            direccion: req.direccion,
+            telefono: req.telefono,
+            correo: Some(req.correo.clone()),
+            factura_electronica_activa: req.factura_electronica_activa,
+            admin_nombre: req.admin_nombre,
+            admin_email: req.correo.clone(),
+            admin_password: contrasena_temporal,
+        })
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("No se pudo crear el negocio: {}", e)))?;
+
+    state.audit_service.log(&resp.tenant.rnc, None, "TENANT_CREADO_POR_STAFF", "tenant", None, serde_json::json!({})).await;
+    enviar_invitacion(&state, &resp.tenant.rnc, &req.correo).await;
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "tenant": resp.tenant,
+        "mensaje": "Negocio creado. Se envió un correo de invitación para que el cliente defina su contraseña.",
+    })))
+}
+
+/// Compartido por `http_staff_create_tenant` y `http_staff_reenviar_invitacion`.
+/// Best-effort: igual que el resto de envíos de correo en este archivo, un
+/// fallo de correo no debe tumbar la operación que lo disparó.
+async fn enviar_invitacion(state: &HttpState, rnc: &str, correo: &str) {
+    match state.auth_service.iniciar_reset_password(Some(rnc), correo).await {
+        Ok(Some((_, nombre, token))) => {
+            let reset_url = format!("{}/restablecer-password?token={}", state.frontend_url, token);
+            if let Err(e) = state.email_service.send_password_reset(correo, &nombre, &reset_url).await {
+                tracing::warn!("Fallo enviando invitación a {}: {}", correo, e);
+            }
+        }
+        Ok(None) => tracing::warn!("No se encontró usuario ADMIN para {} al enviar invitación", rnc),
+        Err(e) => tracing::warn!("Error generando invitación para {}: {}", rnc, e),
+    }
+}
+
+async fn http_staff_reenviar_invitacion(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let tenant = state.staff_service.get_tenant(&rnc).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Tenant no encontrado".to_string()))?;
+    let correo = tenant.correo.ok_or((StatusCode::BAD_REQUEST, "Este tenant no tiene correo registrado".to_string()))?;
+    enviar_invitacion(&state, &rnc, &correo).await;
+    Ok(Json(serde_json::json!({ "ok": true, "mensaje": "Invitación reenviada" })))
+}
+
+async fn http_staff_list_modulos_tenant(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<Vec<services::staff_service::ModuloAsignado>>, (StatusCode, String)> {
+    state.staff_service.list_modulos_tenant(&rnc).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_staff_set_modulos_tenant(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+    Json(req): Json<services::staff_service::SetModulosRequest>,
+) -> Result<Json<Vec<services::staff_service::ModuloAsignado>>, (StatusCode, String)> {
+    state.staff_service.set_modulos_tenant(&rnc, &req.codigos, Some("staff")).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&rnc, None, "MODULOS_ACTUALIZADOS", "tenant", None, serde_json::json!({ "codigos": req.codigos })).await;
+    state.staff_service.list_modulos_tenant(&rnc).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_staff_activar_licencia(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state.license_service.activate(&rnc).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&rnc, None, "LICENCIA_ACTIVADA", "tenant", None, serde_json::json!({})).await;
+    Ok(Json(serde_json::json!({ "ok": true, "mensaje": "Licencia activada" })))
+}
+
+// -- Mi Negocio y DGII, en nombre del tenant (mismo servicio y misma forma
+// que /v1/config/*, la app del tenant sigue teniendo su propia página para
+// esto sin cambios - esto es para que el staff lo prepare en el onboarding).
+
+async fn http_staff_get_empresa(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<services::config_service::Empresa>, (StatusCode, String)> {
+    state.config_service.get_empresa(&rnc).await
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+async fn http_staff_update_empresa(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+    Json(req): Json<services::config_service::UpdateEmpresaRequest>,
+) -> Result<Json<services::config_service::Empresa>, (StatusCode, String)> {
+    state.config_service.update_empresa(&rnc, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_staff_certificado_status(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<Option<services::config_service::CertificadoStatus>>, (StatusCode, String)> {
+    state.config_service.certificado_status(&rnc).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_staff_upload_certificado(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+    Json(req): Json<services::config_service::UploadCertificadoRequest>,
+) -> Result<Json<services::config_service::CertificadoStatus>, (StatusCode, String)> {
+    state.config_service.upload_certificado(&rnc, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_staff_list_secuencias(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<Vec<services::config_service::SecuenciaNcf>>, (StatusCode, String)> {
+    state.config_service.list_secuencias(&rnc).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_staff_create_secuencia(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+    Json(req): Json<services::config_service::CreateSecuenciaRequest>,
+) -> Result<Json<services::config_service::SecuenciaNcf>, (StatusCode, String)> {
+    state.config_service.create_secuencia(&rnc, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+// -- Catálogo de módulos (extensible sin migración - ver comentario en
+// services::staff_service y en la migración modulos_catalogo/tenant_modulos).
+
+async fn http_staff_list_catalogo(
+    State(state): State<HttpState>,
+) -> Result<Json<Vec<services::staff_service::ModuloCatalogo>>, (StatusCode, String)> {
+    state.staff_service.list_catalogo().await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_staff_create_modulo_catalogo(
+    State(state): State<HttpState>,
+    Json(req): Json<services::staff_service::CreateModuloRequest>,
+) -> Result<Json<services::staff_service::ModuloCatalogo>, (StatusCode, String)> {
+    state.staff_service.create_modulo_catalogo(req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 // ------------------ Respaldo local ------------------

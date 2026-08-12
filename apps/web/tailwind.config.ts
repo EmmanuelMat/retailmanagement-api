@@ -41,6 +41,7 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--font-sans)", "-apple-system", "Segoe UI", "sans-serif"],
         serif: ["var(--font-serif)", "Charter", "Georgia", "serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       borderRadius: {
         lg: "var(--radius)",

@@ -1,0 +1,129 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* "Consola" system — deliberately distinct from the customer-facing
+     "Sello" theme (warm burgundy/cream) in apps/web: a cooler, blue-based
+     internal-tool palette so staff can never mistake this app (which can
+     activate a real customer's paid license) for the product itself.
+     Same @repo/ui components, same CSS variable NAMES, different values. */
+  :root {
+    color-scheme: light;
+    --background: 220 20% 97%;
+    --surface: 0 0% 100%;
+    --surface-raised: 0 0% 100%;
+    --foreground: 222 20% 12%;
+    --foreground-soft: 220 10% 35%;
+    --muted: 220 14% 93%;
+    --muted-foreground: 220 9% 46%;
+    --border: 220 13% 88%;
+    --primary: 221 70% 40%;
+    --primary-hover: 221 72% 32%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 262 60% 50%;
+    --accent-hover: 262 60% 42%;
+    --accent-foreground: 0 0% 100%;
+    --success: 152 55% 32%;
+    --warning: 38 92% 40%;
+    --destructive: 358 65% 45%;
+    --radius: 0.5rem;
+    --shadow-color: 222 30% 20%;
+    --shadow-sm: 0 1px 2px hsl(var(--shadow-color) / 0.06);
+    --shadow-md: 0 4px 16px -4px hsl(var(--shadow-color) / 0.12), 0 2px 6px -2px hsl(var(--shadow-color) / 0.08);
+    --shadow-lg: 0 16px 48px -12px hsl(var(--shadow-color) / 0.22), 0 4px 12px -4px hsl(var(--shadow-color) / 0.1);
+    --shadow-glow: 0 0 0 1px hsl(var(--primary) / 0.08), 0 8px 30px -8px hsl(var(--primary) / 0.35);
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --background: 222 30% 8%;
+    --surface: 220 24% 11%;
+    --surface-raised: 220 22% 14%;
+    --foreground: 220 20% 94%;
+    --foreground-soft: 220 12% 75%;
+    --muted: 220 18% 15%;
+    --muted-foreground: 220 10% 55%;
+    --border: 220 16% 20%;
+    --primary: 217 85% 65%;
+    --primary-hover: 217 85% 72%;
+    --primary-foreground: 222 30% 8%;
+    --accent: 262 70% 68%;
+    --accent-hover: 262 70% 75%;
+    --accent-foreground: 222 30% 8%;
+    --success: 152 45% 55%;
+    --warning: 38 80% 60%;
+    --destructive: 358 70% 65%;
+    --shadow-color: 0 0% 0%;
+    --shadow-sm: 0 1px 2px hsl(var(--shadow-color) / 0.3);
+    --shadow-md: 0 4px 16px -4px hsl(var(--shadow-color) / 0.5), 0 2px 6px -2px hsl(var(--shadow-color) / 0.4);
+    --shadow-lg: 0 16px 48px -12px hsl(var(--shadow-color) / 0.6), 0 4px 12px -4px hsl(var(--shadow-color) / 0.5);
+    --shadow-glow: 0 0 0 1px hsl(var(--primary) / 0.2), 0 8px 30px -8px hsl(var(--primary) / 0.5);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --background: 222 30% 8%;
+      --surface: 220 24% 11%;
+      --surface-raised: 220 22% 14%;
+      --foreground: 220 20% 94%;
+      --foreground-soft: 220 12% 75%;
+      --muted: 220 18% 15%;
+      --muted-foreground: 220 10% 55%;
+      --border: 220 16% 20%;
+      --primary: 217 85% 65%;
+      --primary-hover: 217 85% 72%;
+      --primary-foreground: 222 30% 8%;
+      --accent: 262 70% 68%;
+      --accent-hover: 262 70% 75%;
+      --accent-foreground: 222 30% 8%;
+      --success: 152 45% 55%;
+      --warning: 38 80% 60%;
+      --destructive: 358 70% 65%;
+      --shadow-color: 0 0% 0%;
+      --shadow-sm: 0 1px 2px hsl(var(--shadow-color) / 0.3);
+      --shadow-md: 0 4px 16px -4px hsl(var(--shadow-color) / 0.5), 0 2px 6px -2px hsl(var(--shadow-color) / 0.4);
+      --shadow-lg: 0 16px 48px -12px hsl(var(--shadow-color) / 0.6), 0 4px 12px -4px hsl(var(--shadow-color) / 0.5);
+      --shadow-glow: 0 0 0 1px hsl(var(--primary) / 0.2), 0 8px 30px -8px hsl(var(--primary) / 0.5);
+    }
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    font-feature-settings: "rlig" 1, "calt" 1;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+}
+
+/* Autofill: Chrome forces its own light background + text color regardless
+   of theme unless overridden. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: hsl(var(--foreground));
+  -webkit-box-shadow: 0 0 0 1000px hsl(var(--surface)) inset;
+  box-shadow: 0 0 0 1000px hsl(var(--surface)) inset;
+  caret-color: hsl(var(--foreground));
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
