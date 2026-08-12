@@ -72,6 +72,13 @@ impl ReportService {
     }
 
     /// 606 - Compras del período, por RNC del proveedor.
+    ///
+    /// A diferencia del 607, aquí no hay riesgo de duplicar un e-CF: `compras`
+    /// registra facturas *recibidas* de proveedores (propio e-NCF, e-CF
+    /// autogenerado tipo 43/47, o NCF tradicional según el régimen del
+    /// proveedor), no documentos que este tenant transmite a la DGII. Por eso
+    /// se incluyen todas las compras del período sin filtrar por `tipo_ecf`
+    /// del proveedor - el 606 es la vía de reporte para todas ellas.
     pub async fn generate_606(&self, tenant_id: &str, period: &str) -> anyhow::Result<String> {
         let (desde, hasta) = Self::period_bounds(period)?;
         let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
@@ -100,13 +107,29 @@ impl ReportService {
         Ok(txt)
     }
 
-    /// 607 - Ventas del período con e-NCF emitido.
+    /// 607 - Ventas NO electrónicas del período (tenant con e-CF desactivado).
+    ///
+    /// Las ventas con e-CF ya fueron transmitidas a la DGII directamente por
+    /// `http_emitir_ecf_venta` (ver ecf_service/dgii_client) - reportarlas
+    /// también en el 607 duplicaría esa transacción ante la DGII. El único
+    /// origen legítimo de datos para el 607 son ventas de un tenant sin
+    /// `factura_electronica_activa` (para el cual `emitir-ecf` está bloqueado,
+    /// ver `main.rs::http_emitir_ecf_venta`), y que por lo tanto nunca
+    /// recibieron un e-NCF. `v.e_ncf IS NULL` se mantiene como chequeo
+    /// adicional por si el tenant desactivó e-CF después de tener ventas ya
+    /// facturadas electrónicamente - esas ventas viejas deben seguir excluidas.
+    /// Las anuladas tampoco son un hecho generador de ITBIS vigente.
     pub async fn generate_607(&self, tenant_id: &str, period: &str) -> anyhow::Result<String> {
         let (desde, hasta) = Self::period_bounds(period)?;
         let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
             r#"SELECT cl.rnc_cedula, v.e_ncf, v.created_at, v.subtotal, v.itbis_total
-               FROM ventas v LEFT JOIN clientes cl ON cl.id = v.cliente_id
-               WHERE v.tenant_id = $1 AND v.created_at >= $2 AND v.created_at < $3 AND v.e_ncf IS NOT NULL
+               FROM ventas v
+               LEFT JOIN clientes cl ON cl.id = v.cliente_id
+               JOIN tenants t ON t.rnc = v.tenant_id
+               WHERE v.tenant_id = $1 AND v.created_at >= $2 AND v.created_at < $3
+                 AND v.estado != 'ANULADA'
+                 AND v.e_ncf IS NULL
+                 AND t.factura_electronica_activa = false
                ORDER BY v.created_at"#,
         )
         .bind(tenant_id)
@@ -126,7 +149,6 @@ impl ReportService {
                 itbis
             ));
         }
-        txt.push_str("# Resumen General Facturas Consumo <250k via RFCE\n");
         Ok(txt)
     }
 
@@ -163,13 +185,20 @@ impl ReportService {
     }
 
     /// 607 en CSV para un rango de fechas arbitrario — misma relación con
-    /// `generate_607` que `generate_606_csv` tiene con `generate_606`.
+    /// `generate_607` que `generate_606_csv` tiene con `generate_606`, y
+    /// misma exclusión de ventas ya reportadas vía e-CF (ver comentario en
+    /// `generate_607`).
     pub async fn generate_607_csv(&self, tenant_id: &str, fecha_desde: chrono::NaiveDate, fecha_hasta: chrono::NaiveDate) -> anyhow::Result<String> {
         let (desde, hasta) = Self::date_range_bounds(fecha_desde, fecha_hasta)?;
         let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
             r#"SELECT cl.rnc_cedula, v.e_ncf, v.created_at, v.subtotal, v.itbis_total
-               FROM ventas v LEFT JOIN clientes cl ON cl.id = v.cliente_id
-               WHERE v.tenant_id = $1 AND v.created_at >= $2 AND v.created_at < $3 AND v.e_ncf IS NOT NULL
+               FROM ventas v
+               LEFT JOIN clientes cl ON cl.id = v.cliente_id
+               JOIN tenants t ON t.rnc = v.tenant_id
+               WHERE v.tenant_id = $1 AND v.created_at >= $2 AND v.created_at < $3
+                 AND v.estado != 'ANULADA'
+                 AND v.e_ncf IS NULL
+                 AND t.factura_electronica_activa = false
                ORDER BY v.created_at"#,
         )
         .bind(tenant_id)

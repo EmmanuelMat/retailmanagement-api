@@ -33,7 +33,13 @@ export function isRouteAllowed(pathname: string, rol?: string): boolean {
   return !match || match[1].includes(rol as Role);
 }
 
-const DGII_ROUTE_PREFIXES = ["/reportes/dgii", "/configuracion/dgii"];
+// Solo la configuración técnica de e-CF (certificado, secuencias, historial
+// de documentos firmados) no tiene sentido con e-CF apagado. Los reportes en
+// /reportes/dgii (606, 607, IT-1) deben seguir visibles siempre: el 606 es
+// independiente del estado de e-CF del tenant, y el 607 pasa a ser
+// precisamente el reporte que corresponde cuando e-CF está desactivado (ver
+// report_service::generate_607 en el core).
+const DGII_ROUTE_PREFIXES = ["/configuracion/dgii"];
 
 /** Sections that only make sense when the tenant has e-CF turned on. */
 export function isDgiiRoute(pathname: string): boolean {
