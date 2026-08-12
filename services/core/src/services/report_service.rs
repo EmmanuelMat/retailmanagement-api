@@ -1,6 +1,11 @@
-//! Reportes DGII (606/607) y resumen del Dashboard - Módulo 10
+//! Reporte DGII 606 y resumen del Dashboard - Módulo 10
 //! Reescrito sobre datos reales de compras/ventas (antes era un stub con TXT
 //! fijo, sin conexión a ninguna tabla — confirmado muerto por `cargo build`).
+//!
+//! No hay generador de 607: este sistema es 100% e-CF y no emite ventas
+//! fuera de la Solución Fiscal, así que el 607 (formato "complementario"
+//! por Norma 07-2018 Art. 4 Párrafo III) no aplica — el contribuyente queda
+//! eximido de remitirlo. Ver docs/02-DGII-COMPLIANCE.md.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -31,15 +36,15 @@ fn csv_escape(field: &str) -> String {
     }
 }
 
-/// Tipo Id (casilla 2 del 606, casilla 2 del 607): RNC dominicano son 9
-/// dígitos, Cédula son 11. No hay campo separado que lo indique en el
-/// schema, así que se deriva del largo del identificador (después de
-/// quitar guiones/espacios), como hace la propia herramienta de la DGII.
+/// Tipo Id (casilla 2 del 606): RNC dominicano son 9 dígitos, Cédula son
+/// 11. No hay campo separado que lo indique en el schema, así que se
+/// deriva del largo del identificador (después de quitar guiones/espacios),
+/// como hace la propia herramienta de la DGII.
 fn tipo_id_dgii(identificador: &str) -> u8 {
     let digitos: String = identificador.chars().filter(|c| c.is_ascii_digit()).collect();
     match digitos.len() {
         11 => 2, // Cédula
-        _ => 1,  // RNC (o Pasaporte/ID tributaria en 607, no distinguible aquí)
+        _ => 1,  // RNC
     }
 }
 
@@ -170,9 +175,9 @@ impl ReportService {
 
     /// 606 - Compras de bienes y servicios del período (Norma General
     /// 07-2018), formato completo de 23 columnas per el instructivo oficial
-    /// DGII vigente (rev. febrero 2026). A diferencia del 607, el 606 SÍ
-    /// incluye comprobantes e-CF/e-NCF de proveedores: DGII exige reportar
-    /// aquí "los Comprobantes Electrónicos adquiridos de los facturadores
+    /// DGII vigente (rev. febrero 2026). El 606 SÍ incluye comprobantes
+    /// e-CF/e-NCF de proveedores: DGII exige reportar aquí "los
+    /// Comprobantes Electrónicos adquiridos de los facturadores
     /// electrónicos autorizados" — no hay duplicación porque este reporte
     /// documenta *el gasto/costo deducible del comprador*, no la venta del
     /// proveedor (esa ya la recibió DGII directamente de él). Por eso
@@ -195,57 +200,6 @@ impl ReportService {
         let mut txt = format!("{}|{}|{}\n", tenant_id, period, rows.len());
         for r in &rows {
             txt.push_str(&compra_606_line(r));
-        }
-        Ok(txt)
-    }
-
-    /// 607 complementario (Norma General 07-2018, Art. 4 Párrafo III):
-    /// SOLO ventas explícitamente autorizadas por la DGII a facturarse
-    /// fuera de la Solución Fiscal (e-CF) — p.ej. NCF físico/Serie B con
-    /// autorización especial, o rectificación de ventas históricas previas
-    /// a la migración a e-CF. Si el contribuyente no tiene operaciones
-    /// fuera de la Solución Fiscal en el período, queda EXIMIDO de remitir
-    /// este formato (se presenta en cero).
-    ///
-    /// Las ventas con e-CF (v.e_ncf IS NOT NULL) NUNCA se incluyen aquí: la
-    /// DGII las recibe directamente por el canal e-CF al momento de la
-    /// emisión, así que reportarlas también en el 607 duplicaría la
-    /// transacción ante la DGII. Ver docs/02-DGII-COMPLIANCE.md y el
-    /// instructivo oficial "Llenado y Remisión del Formato 607" (DGII,
-    /// dic. 2025): "Los contribuyentes obligados a remitir el Libro de
-    /// Venta Mensual, deberán enviar el Formato de Envío 607 complementario,
-    /// con las ventas que hayan sido autorizadas por Impuestos Internos a
-    /// facturarse fuera de las Soluciones Fiscales."
-    ///
-    /// `v.ncf_no_electronico` es el único campo que puede poblar esta
-    /// excepción; para un tenant 100% e-CF (el caso normal de este sistema)
-    /// siempre estará vacío y el reporte devuelve 0 filas — comportamiento
-    /// correcto, no un bug.
-    pub async fn generate_607(&self, tenant_id: &str, period: &str) -> anyhow::Result<String> {
-        let (desde, hasta) = Self::period_bounds(period)?;
-        let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
-            r#"SELECT cl.rnc_cedula, v.ncf_no_electronico, v.created_at, v.subtotal, v.itbis_total
-               FROM ventas v LEFT JOIN clientes cl ON cl.id = v.cliente_id
-               WHERE v.tenant_id = $1 AND v.created_at >= $2 AND v.created_at < $3
-                 AND v.e_ncf IS NULL AND v.ncf_no_electronico IS NOT NULL AND v.estado = 'COMPLETADA'
-               ORDER BY v.created_at"#,
-        )
-        .bind(tenant_id)
-        .bind(desde)
-        .bind(hasta)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut txt = format!("{}|{}|{}\n", tenant_id, period, rows.len());
-        for (rnc, ncf, fecha, monto, itbis) in rows {
-            txt.push_str(&format!(
-                "{}|{}|{}|{}|{}|01\n",
-                rnc.unwrap_or_else(|| "000000000".to_string()),
-                ncf.unwrap_or_default(),
-                fecha.format("%d-%m-%Y"),
-                monto,
-                itbis
-            ));
         }
         Ok(txt)
     }
@@ -298,38 +252,6 @@ impl ReportService {
                 r.otros_impuestos,
                 r.propina_legal,
                 forma_pago,
-            ));
-        }
-        Ok(csv)
-    }
-
-    /// 607 en CSV para un rango de fechas arbitrario — misma relación con
-    /// `generate_607` que `generate_606_csv` tiene con `generate_606`, y la
-    /// misma exclusión de ventas e-CF (ver comentario de `generate_607`).
-    pub async fn generate_607_csv(&self, tenant_id: &str, fecha_desde: chrono::NaiveDate, fecha_hasta: chrono::NaiveDate) -> anyhow::Result<String> {
-        let (desde, hasta) = Self::date_range_bounds(fecha_desde, fecha_hasta)?;
-        let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
-            r#"SELECT cl.rnc_cedula, v.ncf_no_electronico, v.created_at, v.subtotal, v.itbis_total
-               FROM ventas v LEFT JOIN clientes cl ON cl.id = v.cliente_id
-               WHERE v.tenant_id = $1 AND v.created_at >= $2 AND v.created_at < $3
-                 AND v.e_ncf IS NULL AND v.ncf_no_electronico IS NOT NULL AND v.estado = 'COMPLETADA'
-               ORDER BY v.created_at"#,
-        )
-        .bind(tenant_id)
-        .bind(desde)
-        .bind(hasta)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut csv = String::from("RNC/Cédula Cliente,NCF (no electrónico),Fecha,Monto Facturado,ITBIS Facturado\n");
-        for (rnc, ncf, fecha, monto, itbis) in rows {
-            csv.push_str(&format!(
-                "{},{},{},{},{}\n",
-                csv_escape(&rnc.unwrap_or_else(|| "000000000".to_string())),
-                csv_escape(&ncf.unwrap_or_default()),
-                fecha.format("%d-%m-%Y"),
-                monto,
-                itbis
             ));
         }
         Ok(csv)

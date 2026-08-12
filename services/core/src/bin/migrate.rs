@@ -797,7 +797,7 @@ async fn main() -> anyhow::Result<()> {
             ('CONTABILIDAD', 'Contabilidad', 'Libro diario, libro mayor y períodos contables.', 40),
             ('CAJA_BANCOS', 'Caja y Bancos', 'Apertura/cierre de caja y cuentas bancarias.', 50),
             ('NOMINA', 'Nómina', 'Empleados, nómina y adelantos de sueldo.', 60),
-            ('REPORTES', 'Reportes', 'Reportes DGII 606/607, financieros, de inventario y de ventas.', 70),
+            ('REPORTES', 'Reportes', 'Reportes DGII 606, financieros, de inventario y de ventas.', 70),
             ('DGII_ECF', 'Facturación Electrónica DGII', 'Firma y envío de e-CF, secuencias NCF y certificado.', 80),
             ('MOVIL', 'App Móvil', 'Acceso a la app móvil para POS y adelantos.', 90),
             ('IA_ASISTENTE', 'Asistente IA', 'Resumen del día y chat con IA.', 100)
@@ -823,13 +823,6 @@ async fn main() -> anyhow::Result<()> {
         ALTER TABLE compras ADD COLUMN IF NOT EXISTS isc DECIMAL(12,2) NOT NULL DEFAULT 0; -- Impuesto Selectivo al Consumo
         ALTER TABLE compras ADD COLUMN IF NOT EXISTS otros_impuestos DECIMAL(12,2) NOT NULL DEFAULT 0;
         ALTER TABLE compras ADD COLUMN IF NOT EXISTS propina_legal DECIMAL(12,2) NOT NULL DEFAULT 0;
-
-        -- 607 complementario (Norma 07-2018, Art. 4 Párrafo III): solo
-        -- ventas AUTORIZADAS por DGII a facturarse fuera de la Solución
-        -- Fiscal (e-CF) van en el 607. `ventas.e_ncf` sigue siendo el único
-        -- comprobante para el resto — este campo es el hueco que faltaba
-        -- para representar esa excepción cuando de verdad aplique.
-        ALTER TABLE ventas ADD COLUMN IF NOT EXISTS ncf_no_electronico TEXT;
         "#
     )
     .execute(&pool)

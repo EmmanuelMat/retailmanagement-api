@@ -277,7 +277,6 @@ fn required_roles(path: &str, method: &Method) -> Option<&'static [&'static str]
             || p.starts_with("/v1/bancos")
             || p.starts_with("/v1/gastos")
             || p.starts_with("/v1/reports/606")
-            || p.starts_with("/v1/reports/607")
             || p.starts_with("/v1/auditoria") =>
         {
             Some(&["CONTADOR"])
@@ -480,9 +479,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/contabilidad/sincronizar", post(http_sincronizar_contabilidad))
         // MODULO 10: Reportes y Dashboard
         .route("/v1/reports/606", get(http_report_606))
-        .route("/v1/reports/607", get(http_report_607))
         .route("/v1/reports/606/csv", get(http_report_606_csv))
-        .route("/v1/reports/607/csv", get(http_report_607_csv))
         .route("/v1/reports/dashboard", get(http_dashboard_resumen))
         .route("/v1/ai/digest", get(http_ai_digest))
         .route("/v1/ai/chat", post(http_ai_chat))
@@ -3220,16 +3217,6 @@ async fn http_report_606(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
-async fn http_report_607(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Query(params): Query<ReportParams>,
-) -> Result<String, (StatusCode, String)> {
-    let claims = claims_from_headers(&state.auth_service, &headers)?;
-    state.report_service.generate_607(&claims.tenant_id, &params.period).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
-}
-
 #[derive(Debug, Deserialize)]
 struct ReportCsvParams {
     #[serde(rename = "fechaDesde")] fecha_desde: chrono::NaiveDate,
@@ -3254,17 +3241,6 @@ async fn http_report_606_csv(
     let csv = state.report_service.generate_606_csv(&claims.tenant_id, params.fecha_desde, params.fecha_hasta).await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     csv_response(csv, &format!("606_{}_{}.csv", params.fecha_desde, params.fecha_hasta))
-}
-
-async fn http_report_607_csv(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Query(params): Query<ReportCsvParams>,
-) -> Result<Response, (StatusCode, String)> {
-    let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let csv = state.report_service.generate_607_csv(&claims.tenant_id, params.fecha_desde, params.fecha_hasta).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    csv_response(csv, &format!("607_{}_{}.csv", params.fecha_desde, params.fecha_hasta))
 }
 
 async fn http_dashboard_resumen(
