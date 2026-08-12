@@ -802,6 +802,34 @@ async fn main() -> anyhow::Result<()> {
             ('MOVIL', 'App Móvil', 'Acceso a la app móvil para POS y adelantos.', 90),
             ('IA_ASISTENTE', 'Asistente IA', 'Resumen del día y chat con IA.', 100)
         ON CONFLICT (codigo) DO NOTHING;
+
+        -- Formato 606 (DGII, Norma 07-2018, instructivo vigente) tiene 23
+        -- columnas; `compras` solo cubría 5. Estas columnas cierran esa
+        -- brecha para poder generar el 606 completo sin inventar datos.
+        -- Todas son nullable o tienen default porque las compras existentes
+        -- no las tienen — se completan hacia adelante.
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'COMPLETADA'; -- COMPLETADA | ANULADA
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS tipo_documento TEXT NOT NULL DEFAULT 'FACTURA'; -- FACTURA | NOTA_CREDITO | NOTA_DEBITO
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS ncf_modificado TEXT; -- NCF original afectado por NC/ND (columna 4 del 606)
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS tipo_bienes_servicios SMALLINT; -- 1-11, columna 3 del 606
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS fecha_pago TIMESTAMPTZ;
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS monto_facturado_servicios DECIMAL(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS monto_facturado_bienes DECIMAL(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS itbis_retenido DECIMAL(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS itbis_proporcionalidad DECIMAL(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS itbis_costo DECIMAL(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS tipo_retencion_isr SMALLINT; -- 1-9, columna 17 del 606
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS monto_retencion_renta DECIMAL(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS isc DECIMAL(12,2) NOT NULL DEFAULT 0; -- Impuesto Selectivo al Consumo
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS otros_impuestos DECIMAL(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS propina_legal DECIMAL(12,2) NOT NULL DEFAULT 0;
+
+        -- 607 complementario (Norma 07-2018, Art. 4 Párrafo III): solo
+        -- ventas AUTORIZADAS por DGII a facturarse fuera de la Solución
+        -- Fiscal (e-CF) van en el 607. `ventas.e_ncf` sigue siendo el único
+        -- comprobante para el resto — este campo es el hueco que faltaba
+        -- para representar esa excepción cuando de verdad aplique.
+        ALTER TABLE ventas ADD COLUMN IF NOT EXISTS ncf_no_electronico TEXT;
         "#
     )
     .execute(&pool)

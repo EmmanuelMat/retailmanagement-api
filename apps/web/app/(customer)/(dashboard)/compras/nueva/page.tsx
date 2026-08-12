@@ -27,6 +27,35 @@ interface Linea {
 
 const ITBIS_RATE: Record<string, number> = { GRAVADO_18: 0.18, GRAVADO_16: 0.16, EXENTO: 0 };
 
+// Tipo de Bienes y Servicios Comprados — formato 606 DGII (instructivo
+// oficial, casilla 3). Determina cómo se clasifica la compra ante la DGII.
+const TIPO_BIENES_SERVICIOS: [string, string][] = [
+  ["1", "Gastos de personal"],
+  ["2", "Gastos por trabajos, suministros y servicios"],
+  ["3", "Arrendamientos"],
+  ["4", "Gastos de activos fijos"],
+  ["5", "Gastos de representación"],
+  ["6", "Otras deducciones admitidas"],
+  ["7", "Gastos financieros"],
+  ["8", "Gastos extraordinarios"],
+  ["9", "Compras y gastos que formarán parte del costo de venta"],
+  ["10", "Adquisiciones de activos"],
+  ["11", "Gastos de seguros"],
+];
+
+// Tipo de Retención en ISR — formato 606 DGII (instructivo oficial, casilla 17).
+const TIPO_RETENCION_ISR: [string, string][] = [
+  ["1", "Alquileres"],
+  ["2", "Honorarios por servicios"],
+  ["3", "Otras rentas"],
+  ["4", "Otras rentas (rentas presuntas)"],
+  ["5", "Intereses pagados a personas jurídicas residentes"],
+  ["6", "Intereses pagados a personas físicas residentes"],
+  ["7", "Retención por proveedores del Estado"],
+  ["8", "Juegos telefónicos"],
+  ["9", "Retenciones subsector de ganadería de carne bovina"],
+];
+
 export default function NuevaCompraPage() {
   const router = useRouter();
   const [productos, setProductos] = useState<Producto[]>([]);
@@ -34,6 +63,11 @@ export default function NuevaCompraPage() {
   const [proveedorId, setProveedorId] = useState("");
   const [ncfProveedor, setNcfProveedor] = useState("");
   const [metodoPago, setMetodoPago] = useState("EFECTIVO");
+  const [tipoBienesServicios, setTipoBienesServicios] = useState("9");
+  const [fechaPago, setFechaPago] = useState("");
+  const [itbisRetenido, setItbisRetenido] = useState("");
+  const [tipoRetencionIsr, setTipoRetencionIsr] = useState("");
+  const [montoRetencionRenta, setMontoRetencionRenta] = useState("");
   const [lineas, setLineas] = useState<Linea[]>([{ productoId: "", cantidad: "", costoUnitario: "", itbisTipo: "EXENTO" }]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -67,6 +101,11 @@ export default function NuevaCompraPage() {
       setError("Agrega al menos un producto con cantidad y costo.");
       return;
     }
+    const tieneRetencion = !!(itbisRetenido || tipoRetencionIsr || montoRetencionRenta);
+    if (tieneRetencion && !fechaPago) {
+      setError("Si reportas una retención (ITBIS o ISR), la fecha de pago es requerida.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -76,6 +115,11 @@ export default function NuevaCompraPage() {
           proveedor_id: proveedorId || undefined,
           ncf_proveedor: ncfProveedor || undefined,
           metodo_pago: metodoPago,
+          tipo_bienes_servicios: Number(tipoBienesServicios),
+          fecha_pago: fechaPago ? new Date(fechaPago).toISOString() : undefined,
+          itbis_retenido: itbisRetenido || undefined,
+          tipo_retencion_isr: tipoRetencionIsr ? Number(tipoRetencionIsr) : undefined,
+          monto_retencion_renta: montoRetencionRenta || undefined,
           items: items.map((l) => ({
             producto_id: l.productoId,
             cantidad: l.cantidad,
@@ -112,8 +156,17 @@ export default function NuevaCompraPage() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="ncf">NCF del proveedor</Label>
-                <Input id="ncf" value={ncfProveedor} onChange={(e) => setNcfProveedor(e.target.value)} placeholder="B0100000123" />
+                <Input id="ncf" value={ncfProveedor} onChange={(e) => setNcfProveedor(e.target.value)} placeholder="B0100000123 / E310000000123" />
               </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="tipoBienes">Tipo de bienes y servicios comprados (DGII 606)</Label>
+              <Select id="tipoBienes" value={tipoBienesServicios} onChange={(e) => setTipoBienesServicios(e.target.value)}>
+                {TIPO_BIENES_SERVICIOS.map(([code, label]) => (
+                  <option key={code} value={code}>{code} · {label}</option>
+                ))}
+              </Select>
             </div>
 
             <div className="space-y-2">
@@ -157,6 +210,35 @@ export default function NuevaCompraPage() {
                 <p className="text-lg font-bold">Total: {formatDOP(total)}</p>
               </div>
             </div>
+
+            <details className="rounded-md border border-border p-3">
+              <summary className="text-sm font-medium cursor-pointer select-none">
+                Retenciones (ITBIS/ISR) — solo si el proveedor te retuvo algo
+              </summary>
+              <div className="grid grid-cols-2 gap-4 mt-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="fechaPago">Fecha de pago</Label>
+                  <Input id="fechaPago" type="date" value={fechaPago} onChange={(e) => setFechaPago(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="itbisRetenido">ITBIS retenido</Label>
+                  <Input id="itbisRetenido" type="number" step="0.01" value={itbisRetenido} onChange={(e) => setItbisRetenido(e.target.value)} placeholder="0.00" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="tipoRetencionIsr">Tipo de retención ISR</Label>
+                  <Select id="tipoRetencionIsr" value={tipoRetencionIsr} onChange={(e) => setTipoRetencionIsr(e.target.value)}>
+                    <option value="">Sin retención de ISR</option>
+                    {TIPO_RETENCION_ISR.map(([code, label]) => (
+                      <option key={code} value={code}>{code} · {label}</option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="montoRetencionRenta">Monto retención renta (ISR)</Label>
+                  <Input id="montoRetencionRenta" type="number" step="0.01" value={montoRetencionRenta} onChange={(e) => setMontoRetencionRenta(e.target.value)} placeholder="0.00" />
+                </div>
+              </div>
+            </details>
 
             {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
 

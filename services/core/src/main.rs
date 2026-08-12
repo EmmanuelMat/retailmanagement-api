@@ -449,6 +449,7 @@ async fn main() -> anyhow::Result<()> {
         // MODULO 6: Compras y Gastos
         .route("/v1/compras", get(http_list_compras).post(http_create_compra))
         .route("/v1/compras/:id", get(http_get_compra))
+        .route("/v1/compras/:id/anular", post(http_anular_compra))
         .route("/v1/gastos", get(http_list_gastos).post(http_create_gasto))
         // MODULO 9: Caja y Bancos
         .route("/v1/caja/resumen", get(http_caja_resumen))
@@ -2632,6 +2633,21 @@ async fn http_get_compra(
     let completa = state.compras_service.get_compra(&claims.tenant_id, id).await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     Ok(Json(CompraCompletaResponse { compra: completa.compra, items: completa.items }))
+}
+
+/// Anula una compra para que quede excluida del 606 (ver
+/// ComprasService::anular_compra). Si la compra ya fue reportada en un
+/// período anterior, la corrección correcta es una Nota de Crédito de
+/// compra (POST /v1/compras con tipo_documento=NOTA_CREDITO), no anular.
+async fn http_anular_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::compras_service::Compra>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let compra = state.compras_service.anular_compra(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(compra))
 }
 
 #[derive(Debug, Deserialize)]
