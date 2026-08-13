@@ -105,8 +105,11 @@ fn compra_606_line(r: &Compra606Row) -> String {
     let total_facturado = r.monto_servicios + r.monto_bienes;
     let itbis_por_adelantar = r.itbis_facturado - r.itbis_costo;
     let forma_pago = forma_pago_606(&r.metodo_pago);
+    // {:.2}, no {}: un Decimal en cero llega de Postgres sin escala (ndigits=0
+    // en el wire protocol de NUMERIC), así que Display lo muestra "0" en vez
+    // de "0.00" — inconsistente con el resto de montos del archivo DGII.
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
+        "{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{}\n",
         r.rnc.clone().unwrap_or_default(),
         tipo_id,
         tipo_bienes,
@@ -230,7 +233,7 @@ impl ReportService {
             let itbis_por_adelantar = r.itbis_facturado - r.itbis_costo;
             let forma_pago = forma_pago_606(&r.metodo_pago);
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{:.2},{:.2},{:.2},{:.2},{}\n",
                 csv_escape(r.rnc.as_deref().unwrap_or_default()),
                 tipo_id,
                 tipo_bienes,
