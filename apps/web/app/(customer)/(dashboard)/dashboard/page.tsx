@@ -42,7 +42,7 @@ function DashboardPageContent() {
   const searchParams = useSearchParams();
   const [resumen, setResumen] = useState<DashboardResumen | null>(null);
   const [tenant, setTenant] = useState<{ razon_social?: string; rnc?: string } | null>(null);
-  const [usuario, setUsuario] = useState<{ rol?: string } | null>(null);
+  const [usuario, setUsuario] = useState<{ rol?: string; es_admin?: boolean; permisos?: string[] } | null>(null);
   const [denied, setDenied] = useState(searchParams.get("denied"));
   const [digest, setDigest] = useState<AiDigest | null>(null);
   const [digestLoading, setDigestLoading] = useState(true);
@@ -79,7 +79,7 @@ function DashboardPageContent() {
       .finally(() => setDigestLoading(false));
   }, [iaActiva]);
 
-  const acciones = ACCIONES.filter((a) => isRouteAllowed(a.href, usuario?.rol));
+  const acciones = ACCIONES.filter((a) => isRouteAllowed(a.href, usuario));
 
   return (
     <div className="space-y-6">

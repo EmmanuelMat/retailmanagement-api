@@ -96,7 +96,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const router = useRouter();
   const [tenant, setTenant] = useState<{ razon_social?: string; nombre_comercial?: string | null; logo_url?: string | null; factura_electronica_activa?: boolean } | null>(null);
-  const [usuario, setUsuario] = useState<{ nombre?: string; rol?: string } | null>(null);
+  const [usuario, setUsuario] = useState<{ nombre?: string; rol?: string; es_admin?: boolean; permisos?: string[]; must_change_password?: boolean } | null>(null);
   const [licencia, setLicencia] = useState<{ status: "trial" | "active" | "expired"; dias_restantes: number } | null>(null);
   const [modulosActivos, setModulosActivos] = useState<Set<string> | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
@@ -193,7 +193,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // to stop a Cajero/Almacén/Contador from landing on a section they can't
   // use if they type the URL directly, since the sidebar already hides it.
   useEffect(() => {
-    if (usuario?.rol && !isRouteAllowed(pathname, usuario.rol)) {
+    if (usuario?.must_change_password) {
+      router.replace("/cambiar-password");
+      return;
+    }
+    if (usuario && !isRouteAllowed(pathname, usuario)) {
       router.replace("/dashboard?denied=1");
       return;
     }
@@ -210,7 +214,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     ...group,
     items: group.items.filter(
       (item) =>
-        isRouteAllowed(item.href, usuario?.rol) &&
+        isRouteAllowed(item.href, usuario) &&
         !(tenant?.factura_electronica_activa === false && isDgiiRoute(item.href)) &&
         isModuloAllowed(item.href, modulosActivos, licencia?.status)
     ),

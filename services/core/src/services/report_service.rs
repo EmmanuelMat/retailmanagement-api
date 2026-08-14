@@ -25,6 +25,26 @@ pub struct DashboardResumen {
     pub caja_abierta: bool,
 }
 
+/// Declaración Mensual de ITBIS (IT-1, Norma General 07-2018). Solo los
+/// totales núcleo — ver comentario de `generate_it1` para el alcance
+/// exacto y lo que queda fuera (retenciones/anticipos, desglose Anexo A).
+#[derive(Debug, Serialize)]
+pub struct It1Resumen {
+    pub period: String,
+    /// ITBIS trasladado (cobrado en ventas) del período, neto de notas de
+    /// crédito emitidas en el mismo período.
+    pub itbis_trasladado: Decimal,
+    /// ITBIS acreditable (pagado en compras) del período - misma cantidad
+    /// que 606 reporta por fila como `itbis_por_adelantar`, sumada.
+    pub itbis_acreditable: Decimal,
+    /// Excedente de ITBIS arrastrado de períodos anteriores (positivo =
+    /// crédito a favor del contribuyente). Recalculado en vivo sobre todo
+    /// el histórico previo al período — no hay snapshot persistido.
+    pub saldo_periodo_anterior: Decimal,
+    pub itbis_a_pagar: Decimal,
+    pub saldo_a_favor_siguiente: Decimal,
+}
+
 /// Envuelve en comillas y escapa comillas internas solo si el campo lo
 /// necesita (coma, comilla o salto de línea) — evita ensuciar el CSV con
 /// comillas innecesarias en el caso común (RNC/NCF sin caracteres especiales).
@@ -288,6 +308,86 @@ impl ReportService {
             productos_bajo_minimo: inv_row.1,
             valor_inventario: inv_row.0.unwrap_or_default(),
             caja_abierta,
+        })
+    }
+
+    /// ITBIS trasladado (ventas, neto de notas de crédito) y acreditable
+    /// (compras) para el rango `[desde, hasta)` — la misma pareja de
+    /// números se usa tanto para el período declarado como, con un rango
+    /// que cubre todo el histórico previo, para el saldo arrastrado.
+    async fn itbis_neto_del_rango(&self, tenant_id: &str, desde: DateTime<Utc>, hasta: DateTime<Utc>) -> anyhow::Result<(Decimal, Decimal)> {
+        let trasladado_ventas: Decimal = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(itbis_total), 0) FROM ventas
+             WHERE tenant_id = $1 AND estado = 'COMPLETADA' AND created_at >= $2 AND created_at < $3",
+        )
+        .bind(tenant_id)
+        .bind(desde)
+        .bind(hasta)
+        .fetch_one(&self.pool)
+        .await?;
+        let trasladado_nc: Decimal = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(itbis_total), 0) FROM notas_credito
+             WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3",
+        )
+        .bind(tenant_id)
+        .bind(desde)
+        .bind(hasta)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Misma cantidad que 606 reporta por fila como `itbis_por_adelantar`
+        // (itbis_total - itbis_costo), sumada sobre el rango.
+        let acreditable: Decimal = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(itbis_total - itbis_costo), 0) FROM compras
+             WHERE tenant_id = $1 AND estado = 'COMPLETADA' AND created_at >= $2 AND created_at < $3",
+        )
+        .bind(tenant_id)
+        .bind(desde)
+        .bind(hasta)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok((trasladado_ventas - trasladado_nc, acreditable))
+    }
+
+    /// Declaración Mensual de ITBIS (IT-1). Alcance deliberadamente acotado
+    /// a los totales núcleo de la fórmula oficial - ITBIS trasladado menos
+    /// ITBIS acreditable, ajustado por el excedente arrastrado del período
+    /// anterior. El formulario real (Anexo A) además desglosa ventas por
+    /// tasa (18%/16%/exenta) y renglones de retenciones/anticipos que este
+    /// sistema no modela hoy del lado de ventas (sí existen `itbis_retenido`
+    /// y demás en `compras`, ver 606, pero no hay equivalente en `ventas`) -
+    /// deliberadamente fuera de alcance por ahora en vez de aproximarlo mal.
+    pub async fn generate_it1(&self, tenant_id: &str, period: &str) -> anyhow::Result<It1Resumen> {
+        let (desde, hasta) = Self::period_bounds(period)?;
+
+        let (itbis_trasladado, itbis_acreditable) = self.itbis_neto_del_rango(tenant_id, desde, hasta).await?;
+
+        // Saldo arrastrado: la posición neta acumulada de TODO el histórico
+        // anterior a este período, en una sola consulta (equivalente
+        // matemáticamente a sumar el arrastre período a período, ya que es
+        // una posición neta corrida) - no hay snapshot persistido por
+        // período en este schema (`periodos_contables` solo trackea
+        // ABIERTO/CERRADO), así que esto se recalcula en cada llamada.
+        let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let (trasladado_previo, acreditable_previo) = self.itbis_neto_del_rango(tenant_id, epoch, desde).await?;
+        let neto_previo = trasladado_previo - acreditable_previo;
+        let saldo_periodo_anterior = if neto_previo < Decimal::ZERO { -neto_previo } else { Decimal::ZERO };
+
+        let neto = itbis_trasladado - itbis_acreditable - saldo_periodo_anterior;
+        let (itbis_a_pagar, saldo_a_favor_siguiente) = if neto > Decimal::ZERO {
+            (neto, Decimal::ZERO)
+        } else {
+            (Decimal::ZERO, -neto)
+        };
+
+        Ok(It1Resumen {
+            period: period.to_string(),
+            itbis_trasladado,
+            itbis_acreditable,
+            saldo_periodo_anterior,
+            itbis_a_pagar,
+            saldo_a_favor_siguiente,
         })
     }
 }

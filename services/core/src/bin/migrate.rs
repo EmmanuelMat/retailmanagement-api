@@ -823,6 +823,98 @@ async fn main() -> anyhow::Result<()> {
         ALTER TABLE compras ADD COLUMN IF NOT EXISTS isc DECIMAL(12,2) NOT NULL DEFAULT 0; -- Impuesto Selectivo al Consumo
         ALTER TABLE compras ADD COLUMN IF NOT EXISTS otros_impuestos DECIMAL(12,2) NOT NULL DEFAULT 0;
         ALTER TABLE compras ADD COLUMN IF NOT EXISTS propina_legal DECIMAL(12,2) NOT NULL DEFAULT 0;
+
+        -- MODULO 17: Permisos + roles - reemplaza usuarios.rol (texto fijo,
+        -- 4 valores hardcodeados) como fuente real de autorización.
+        -- usuarios.rol se conserva como etiqueta legible y fallback de
+        -- migración (ver permission_guard en main.rs) - no se borra.
+        --
+        -- Catálogo GLOBAL (sin tenant_id), igual que modulos_catalogo:
+        -- todos los tenants comparten el mismo catálogo de roles. Conectar
+        -- un permiso nuevo a una ruta real todavía requiere un cambio en
+        -- `required_permiso` (main.rs), igual que `required_modulo`.
+        CREATE TABLE IF NOT EXISTS permisos_catalogo (
+            codigo TEXT PRIMARY KEY,   -- ventas.gestionar, conduces.crear_retroactivo, ...
+            nombre TEXT NOT NULL,
+            descripcion TEXT,
+            orden INT NOT NULL DEFAULT 0,
+            activo BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS roles (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            codigo TEXT NOT NULL UNIQUE,  -- ADMIN, CAJERO, ALMACEN, CONTADOR, + los que cree el staff
+            nombre TEXT NOT NULL,
+            es_admin BOOLEAN NOT NULL DEFAULT false, -- bypass total, igual al "ADMIN always passes" de hoy
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS role_permisos (
+            role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+            permiso_codigo TEXT NOT NULL REFERENCES permisos_catalogo(codigo) ON DELETE CASCADE,
+            PRIMARY KEY (role_id, permiso_codigo)
+        );
+
+        ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol_id UUID REFERENCES roles(id);
+        ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;
+        CREATE INDEX IF NOT EXISTS idx_usuarios_rol_id ON usuarios(rol_id);
+
+        INSERT INTO permisos_catalogo (codigo, nombre, orden) VALUES
+            ('productos.ver', 'Ver productos y categorías', 10),
+            ('productos.editar', 'Editar productos y categorías', 11),
+            ('ventas.gestionar', 'Punto de venta y ventas', 20),
+            ('notas_credito.gestionar', 'Notas de crédito', 21),
+            ('caja.gestionar', 'Caja', 22),
+            ('clientes.gestionar', 'Clientes', 23),
+            ('cotizaciones.gestionar', 'Cotizaciones', 24),
+            ('conduces.gestionar', 'Conduces (entrega diferida)', 25),
+            ('conduces.crear_retroactivo', 'Generar conduce de una venta ya completada (cuando no se marcó entrega diferida)', 26),
+            ('inventario.gestionar', 'Inventario / kardex', 30),
+            ('compras.gestionar', 'Compras', 31),
+            ('proveedores.gestionar', 'Proveedores', 32),
+            ('contabilidad.gestionar', 'Contabilidad', 40),
+            ('bancos.gestionar', 'Bancos', 41),
+            ('gastos.gestionar', 'Gastos', 42),
+            ('reportes.dgii', 'Reportes DGII (606, IT-1)', 43),
+            ('auditoria.ver', 'Auditoría', 44),
+            ('nomina.gestionar', 'Empleados, nómina y adelantos', 50),
+            ('config.gestionar', 'Configuración de la empresa', 60),
+            ('tenants.ver', 'Ver datos del propio negocio', 61),
+            ('backup.descargar', 'Descargar respaldo', 62),
+            ('ecf.documentos', 'Documentos e-CF emitidos', 70),
+            ('ecf.dev_tools', 'Herramientas internas de firma/pruebas e-CF', 71)
+        ON CONFLICT (codigo) DO NOTHING;
+
+        INSERT INTO roles (codigo, nombre, es_admin) VALUES
+            ('ADMIN', 'Administrador', true),
+            ('CAJERO', 'Cajero', false),
+            ('ALMACEN', 'Almacén', false),
+            ('CONTADOR', 'Contador', false)
+        ON CONFLICT (codigo) DO NOTHING;
+
+        -- Reproduce el acceso EFECTIVO de hoy exactamente (ver required_roles
+        -- en main.rs) - nadie pierde ni gana acceso el día que esto corre.
+        INSERT INTO role_permisos (role_id, permiso_codigo)
+        SELECT r.id, seed.permiso_codigo FROM roles r
+        JOIN (VALUES
+            ('CAJERO', 'productos.ver'), ('CAJERO', 'ventas.gestionar'), ('CAJERO', 'notas_credito.gestionar'),
+            ('CAJERO', 'caja.gestionar'), ('CAJERO', 'clientes.gestionar'), ('CAJERO', 'cotizaciones.gestionar'),
+            ('CAJERO', 'conduces.gestionar'),
+            ('ALMACEN', 'productos.ver'), ('ALMACEN', 'productos.editar'), ('ALMACEN', 'inventario.gestionar'),
+            ('ALMACEN', 'compras.gestionar'), ('ALMACEN', 'proveedores.gestionar'),
+            ('CONTADOR', 'contabilidad.gestionar'), ('CONTADOR', 'bancos.gestionar'), ('CONTADOR', 'gastos.gestionar'),
+            ('CONTADOR', 'reportes.dgii'), ('CONTADOR', 'auditoria.ver'), ('CONTADOR', 'ecf.documentos')
+        ) AS seed(rol_codigo, permiso_codigo) ON seed.rol_codigo = r.codigo
+        ON CONFLICT DO NOTHING;
+
+        -- Backfill: cada usuario existente apunta al role_id que coincide
+        -- con su rol TEXT actual - migración sin pérdida de acceso.
+        UPDATE usuarios u SET rol_id = r.id FROM roles r WHERE r.codigo = u.rol AND u.rol_id IS NULL;
+
+        -- Conduce retroactivo (Feature 1): distingue de un conduce normal de
+        -- entrega diferida - ver conduce_service::create_conduce_retroactivo.
+        ALTER TABLE conduces ADD COLUMN IF NOT EXISTS retroactivo BOOLEAN NOT NULL DEFAULT false;
         "#
     )
     .execute(&pool)
