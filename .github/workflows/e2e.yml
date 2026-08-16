@@ -47,8 +47,16 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - name: Install JS dependencies (also installs the Cypress binary)
+      - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install Cypress binary
+        # The pnpm store cache can restore Cypress's npm package without its
+        # binary (downloaded separately, by a postinstall script, into
+        # ~/.cache/Cypress - not part of the pnpm store) - explicit install
+        # here doesn't depend on that postinstall step having actually run.
+        working-directory: apps/web
+        run: pnpm exec cypress install
 
       - name: Generate ephemeral server env
         # JWT_SECRET/VENDOR_ADMIN_SECRET/LICENSE_SECRET/CERT_ENCRYPTION_KEY
