@@ -133,11 +133,11 @@ export default function RegistroPage() {
               <div className="grid grid-cols-2 gap-4 mt-3">
                 <div className="col-span-2 space-y-1.5">
                   <Label htmlFor="admin_nombre">Nombre completo *</Label>
-                  <Input id="admin_nombre" name="admin_nombre" required placeholder="Emmanuel Rosario" />
+                  <Input id="admin_nombre" name="admin_nombre" required placeholder="Juan Pérez" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="admin_email">Email *</Label>
-                  <Input id="admin_email" name="admin_email" type="email" required placeholder="emmanuel@colmado.com" />
+                  <Input id="admin_email" name="admin_email" type="email" required placeholder="juan@colmadoelsol.do" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="admin_password">Contraseña *</Label>

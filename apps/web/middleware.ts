@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 // file for why. This middleware makes /staff invisible on the staff host
 // (rewrite) and unreachable on the main host (redirect), so neither site
 // leaks into the other's URL space.
-const PUBLIC_CUSTOMER_PATHS = new Set(["/", "/login", "/registro", "/olvide-password", "/restablecer-password"]);
+const PUBLIC_CUSTOMER_PATHS = new Set(["/", "/login", "/registro", "/olvide-password", "/restablecer-password", "/recorrido"]);
 
 export function middleware(req: NextRequest) {
   const host = req.headers.get("host") || "";

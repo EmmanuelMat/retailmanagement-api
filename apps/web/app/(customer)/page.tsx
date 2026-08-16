@@ -148,6 +148,9 @@ function MobileNav({ open, onClose }: { open: boolean; onClose: () => void }) {
           </a>
         ))}
         <div className="h-px bg-border my-3" />
+        <Link href="/recorrido" onClick={onClose} className="px-3 py-3 rounded-md text-base font-medium hover:bg-muted">
+          Recorrido
+        </Link>
         <Link href="/login" onClick={onClose} className="px-3 py-3 rounded-md text-base font-medium hover:bg-muted">
           Iniciar sesión
         </Link>
@@ -425,6 +428,7 @@ export default function LandingPage() {
                 {link.label}
               </a>
             ))}
+            <Link href="/recorrido" className="hover:text-foreground transition-colors">Recorrido</Link>
             <Link href="/login" className="hover:text-foreground transition-colors">Iniciar sesión</Link>
           </nav>
         </div>
