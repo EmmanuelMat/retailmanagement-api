@@ -3,11 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Building2, LayoutGrid, LogOut, ShieldCheck } from "lucide-react";
+import { Building2, LayoutGrid, LogOut, ShieldCheck, Users } from "lucide-react";
 
 const NAV = [
   { label: "Negocios", href: "/tenants", icon: Building2 },
   { label: "Catálogo de módulos", href: "/modulos", icon: LayoutGrid },
+  { label: "Roles", href: "/roles", icon: Users },
 ];
 
 export default function StaffLayout({ children }: { children: React.ReactNode }) {

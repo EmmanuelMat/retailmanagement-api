@@ -1,36 +1,44 @@
 /**
- * Frontend mirror of the role/route matrix enforced for real in
- * services/core/src/main.rs (`required_roles`). This copy only drives
+ * Frontend mirror of the permission/route matrix enforced for real in
+ * services/core/src/main.rs (`required_permiso`). This copy only drives
  * nav visibility and a redirect for UX — the Rust core is the source
  * of truth for actual authorization. Keep the two in sync.
+ *
+ * Roles are no longer a fixed 4-value enum: they're created and assigned
+ * from the staff site (see apps/web/app/staff/(dashboard)/roles), each one
+ * a bundle of permission codes from `permisos_catalogo`. `usuario.rol` is
+ * kept only as a display label.
  */
-export const ROLES = ["ADMIN", "CAJERO", "ALMACEN", "CONTADOR"] as const;
-export type Role = (typeof ROLES)[number];
+export interface UsuarioAuth {
+  rol?: string;
+  es_admin?: boolean;
+  permisos?: string[];
+}
 
-const ROUTE_ROLES: [string, Role[]][] = [
-  ["/pos", ["CAJERO"]],
-  ["/ventas", ["CAJERO"]],
-  ["/cotizaciones", ["CAJERO"]],
-  ["/conduces", ["CAJERO"]],
-  ["/caja", ["CAJERO"]],
-  ["/clientes", ["CAJERO"]],
-  ["/inventario", ["ALMACEN"]],
-  ["/compras", ["ALMACEN"]],
-  ["/proveedores", ["ALMACEN"]],
-  ["/contabilidad", ["CONTADOR"]],
-  ["/bancos", ["CONTADOR"]],
-  ["/gastos", ["CONTADOR"]],
-  ["/reportes", ["CONTADOR"]],
-  ["/nomina", ["ADMIN"]],
-  ["/configuracion", ["ADMIN"]],
+const ROUTE_PERMISOS: [string, string][] = [
+  ["/pos", "ventas.gestionar"],
+  ["/ventas", "ventas.gestionar"],
+  ["/cotizaciones", "cotizaciones.gestionar"],
+  ["/conduces", "conduces.gestionar"],
+  ["/caja", "caja.gestionar"],
+  ["/clientes", "clientes.gestionar"],
+  ["/inventario", "inventario.gestionar"],
+  ["/compras", "compras.gestionar"],
+  ["/proveedores", "proveedores.gestionar"],
+  ["/contabilidad", "contabilidad.gestionar"],
+  ["/bancos", "bancos.gestionar"],
+  ["/gastos", "gastos.gestionar"],
+  ["/reportes", "reportes.dgii"],
+  ["/nomina", "nomina.gestionar"],
+  ["/configuracion", "config.gestionar"],
 ];
 
-/** `/dashboard` and any other unlisted route are allowed for every role. */
-export function isRouteAllowed(pathname: string, rol?: string): boolean {
-  if (!rol) return false;
-  if (rol === "ADMIN") return true;
-  const match = ROUTE_ROLES.find(([prefix]) => pathname.startsWith(prefix));
-  return !match || match[1].includes(rol as Role);
+/** `/dashboard` and any other unlisted route are allowed for every user. */
+export function isRouteAllowed(pathname: string, usuario?: UsuarioAuth | null): boolean {
+  if (!usuario) return false;
+  if (usuario.es_admin) return true;
+  const match = ROUTE_PERMISOS.find(([prefix]) => pathname.startsWith(prefix));
+  return !match || (usuario.permisos ?? []).includes(match[1]);
 }
 
 const DGII_ROUTE_PREFIXES = ["/reportes/dgii", "/configuracion/dgii"];

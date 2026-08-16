@@ -4,7 +4,6 @@ import { Card, CardContent } from "@repo/ui";
 
 const REPORTES = [
   { label: "606 · Compras", href: "/reportes/dgii/606", desc: "TXT de compras del período" },
-  { label: "607 · Ventas", href: "/reportes/dgii/607", desc: "TXT de ventas con e-NCF" },
   { label: "IT-1", href: "/reportes/dgii/it1", desc: "Declaración mensual de ITBIS" },
 ];
 
@@ -16,7 +15,7 @@ export default function ReportesDgiiPage() {
         <p className="text-sm text-muted-foreground mt-1">Formatos de cumplimiento fiscal, generados desde tus ventas y compras reales.</p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {REPORTES.map((r) => (
           <Link key={r.href} href={r.href as any}>
             <Card className="h-full hover:border-primary transition-colors">

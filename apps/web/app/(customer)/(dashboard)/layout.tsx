@@ -29,6 +29,8 @@ import {
   PackageCheck,
   ChevronDown,
   ChevronRight,
+  Compass,
+  X,
 } from "lucide-react";
 import { isRouteAllowed, isDgiiRoute, isModuloAllowed, isModuloActivo } from "@/lib/roles";
 import { apiFetch } from "@/lib/api";
@@ -92,11 +94,26 @@ const NAV: NavGroup[] = [
   },
 ];
 
+// Recorrido guiado: apunta a los mismos href que ya existen en NAV, así
+// que no depende de nada más que el sidebar real - si el usuario no tiene
+// permiso para ver un ítem, ese paso simplemente se filtra del recorrido.
+const TOUR_STEPS: { href: string; title: string; body: string }[] = [
+  { href: "/dashboard", title: "Tu resumen del día", body: "Ventas, caja e inventario de un vistazo cada vez que entras." },
+  { href: "/pos", title: "Punto de Venta", body: "Cobra y el e-CF se firma y numera solo, sin pasos de facturación aparte." },
+  { href: "/conduces", title: "Conduces", body: "Entregas de mercancía — incluso de forma retroactiva si el cajero olvidó marcarla, con permiso." },
+  { href: "/inventario/productos", title: "Inventario", body: "El stock se descuenta y repone solo con cada venta y compra." },
+  { href: "/compras", title: "Compras", body: "Cada compra a suplidor queda lista para el reporte 606 del mes." },
+  { href: "/contabilidad", title: "Contabilidad", body: "Libro Diario y Mayor se arman solos — sin asientos manuales." },
+  { href: "/nomina", title: "Nómina", body: "Empleados, adelantos, y el cálculo exacto de neto con Mandato." },
+  { href: "/reportes/dgii", title: "Reportes DGII", body: "606 e IT-1 listos para declarar, sin reconstruir nada a mano." },
+  { href: "/configuracion/usuarios", title: "Usuarios y Roles", body: "Arma los permisos a la medida y restablece contraseñas sin correo." },
+];
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [tenant, setTenant] = useState<{ razon_social?: string; nombre_comercial?: string | null; logo_url?: string | null; factura_electronica_activa?: boolean } | null>(null);
-  const [usuario, setUsuario] = useState<{ nombre?: string; rol?: string } | null>(null);
+  const [usuario, setUsuario] = useState<{ nombre?: string; rol?: string; es_admin?: boolean; permisos?: string[]; must_change_password?: boolean } | null>(null);
   const [licencia, setLicencia] = useState<{ status: "trial" | "active" | "expired"; dias_restantes: number } | null>(null);
   const [modulosActivos, setModulosActivos] = useState<Set<string> | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
@@ -108,6 +125,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       return new Set();
     }
   });
+
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourIndex, setTourIndex] = useState(0);
 
   function toggleGroup(title: string) {
     setCollapsedGroups((prev) => {
@@ -193,7 +213,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // to stop a Cajero/Almacén/Contador from landing on a section they can't
   // use if they type the URL directly, since the sidebar already hides it.
   useEffect(() => {
-    if (usuario?.rol && !isRouteAllowed(pathname, usuario.rol)) {
+    if (usuario?.must_change_password) {
+      router.replace("/cambiar-password");
+      return;
+    }
+    if (usuario && !isRouteAllowed(pathname, usuario)) {
       router.replace("/dashboard?denied=1");
       return;
     }
@@ -210,11 +234,35 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     ...group,
     items: group.items.filter(
       (item) =>
-        isRouteAllowed(item.href, usuario?.rol) &&
+        isRouteAllowed(item.href, usuario) &&
         !(tenant?.factura_electronica_activa === false && isDgiiRoute(item.href)) &&
         isModuloAllowed(item.href, modulosActivos, licencia?.status)
     ),
   })).filter((group) => group.items.length > 0);
+
+  const visibleHrefs = new Set(navFiltered.flatMap((g) => g.items.map((i) => i.href)));
+  const tourSteps = TOUR_STEPS.filter((s) => visibleHrefs.has(s.href));
+
+  // Si el paso activo vive dentro de un grupo colapsado, lo expande - el
+  // recorrido no debería depender de que el usuario ya haya abierto esa
+  // sección del sidebar.
+  useEffect(() => {
+    if (!tourOpen) return;
+    const step = tourSteps[tourIndex];
+    if (!step) return;
+    const group = NAV.find((g) => g.items.some((i) => i.href === step.href));
+    if (!group) return;
+    setCollapsedGroups((prev) => {
+      if (!prev.has(group.title)) return prev;
+      const next = new Set(prev);
+      next.delete(group.title);
+      try {
+        localStorage.setItem("nav_collapsed_groups", JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourOpen, tourIndex]);
 
   function cerrarSesion() {
     localStorage.removeItem("token");
@@ -315,13 +363,27 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <span className="font-serif font-semibold text-sm truncate">{tenant?.nombre_comercial || tenant?.razon_social || "Colmado POS"}</span>
             </div>
             <div className="hidden lg:block" />
-            <button
-              onClick={cerrarSesion}
-              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <LogOut className="h-4 w-4" />
-              Cerrar sesión
-            </button>
+            <div className="flex items-center gap-4">
+              {tourSteps.length > 0 && (
+                <button
+                  onClick={() => {
+                    setTourIndex(0);
+                    setTourOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Compass className="h-4 w-4" />
+                  Recorrido
+                </button>
+              )}
+              <button
+                onClick={cerrarSesion}
+                className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <LogOut className="h-4 w-4" />
+                Cerrar sesión
+              </button>
+            </div>
           </header>
           {licencia?.status === "trial" && licencia.dias_restantes <= 14 && (
             <div className="flex items-center gap-2 border-b border-warning/20 bg-warning/10 text-warning px-5 py-2 text-sm">
@@ -338,6 +400,149 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       </div>
       {isModuloActivo("IA_ASISTENTE", modulosActivos, licencia?.status) && <AiChatWidget />}
+      {tourOpen && tourSteps.length > 0 && (
+        <ProductTour
+          steps={tourSteps}
+          index={Math.min(tourIndex, tourSteps.length - 1)}
+          onNext={() => setTourIndex((i) => Math.min(i + 1, tourSteps.length - 1))}
+          onPrev={() => setTourIndex((i) => Math.max(i - 1, 0))}
+          onClose={() => setTourOpen(false)}
+          onFinish={() => setTourOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProductTour({
+  steps,
+  index,
+  onNext,
+  onPrev,
+  onClose,
+  onFinish,
+}: {
+  steps: { href: string; title: string; body: string }[];
+  index: number;
+  onNext: () => void;
+  onPrev: () => void;
+  onClose: () => void;
+  onFinish: () => void;
+}) {
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const step = steps[index];
+
+  useEffect(() => {
+    if (!step) return;
+    let cancelled = false;
+    let raf1 = 0;
+    let raf2 = 0;
+    let attempts = 0;
+
+    // El paso puede apuntar a un ítem dentro de un grupo que el layout
+    // todavía está expandiendo (efecto aparte, en el componente padre) -
+    // reintenta unos cuantos frames en vez de rendirse al primer intento.
+    function tryMeasure() {
+      if (cancelled) return;
+      const el = document.querySelector<HTMLAnchorElement>(`aside nav a[href="${CSS.escape(step.href)}"]`);
+      if (!el) {
+        if (attempts++ < 30) {
+          raf1 = requestAnimationFrame(tryMeasure);
+        } else {
+          setRect(null);
+        }
+        return;
+      }
+      el.scrollIntoView({ block: "nearest" });
+      raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          if (!cancelled) setRect(el.getBoundingClientRect());
+        });
+      });
+    }
+
+    tryMeasure();
+    window.addEventListener("resize", tryMeasure);
+    window.addEventListener("scroll", tryMeasure, true);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      window.removeEventListener("resize", tryMeasure);
+      window.removeEventListener("scroll", tryMeasure, true);
+    };
+  }, [step]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight") onNext();
+      if (e.key === "ArrowLeft") onPrev();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, onNext, onPrev]);
+
+  if (!step) return null;
+
+  const cardWidth = 320;
+  const top = rect
+    ? Math.min(Math.max(rect.top, 16), window.innerHeight - 240)
+    : window.innerHeight / 2 - 110;
+  const left = rect
+    ? Math.min(rect.right + 16, window.innerWidth - cardWidth - 16)
+    : window.innerWidth / 2 - cardWidth / 2;
+
+  return (
+    <div className="fixed inset-0 z-[100]">
+      {rect ? (
+        <div
+          className="fixed rounded-md pointer-events-none transition-all duration-200"
+          style={{
+            top: rect.top - 4,
+            left: rect.left - 4,
+            width: rect.width + 8,
+            height: rect.height + 8,
+            boxShadow: "0 0 0 9999px hsl(var(--foreground) / 0.55)",
+            outline: "2px solid hsl(var(--accent))",
+          }}
+        />
+      ) : (
+        <div className="fixed inset-0 bg-foreground/55" />
+      )}
+      <div
+        className="fixed rounded-lg border border-border bg-surface-raised shadow-lg p-5 transition-all duration-200"
+        style={{ top, left, width: cardWidth }}
+      >
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-xs text-muted-foreground">
+            {index + 1} / {steps.length}
+          </span>
+          <button onClick={onClose} aria-label="Cerrar recorrido" className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <h3 className="mt-2 font-serif font-semibold text-base">{step.title}</h3>
+        <p className="mt-1.5 text-sm text-foreground-soft leading-relaxed">{step.body}</p>
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">
+            Saltar
+          </button>
+          <div className="flex items-center gap-2">
+            {index > 0 && (
+              <button onClick={onPrev} className="h-8 px-3 rounded-md border border-border text-sm hover:bg-muted">
+                Atrás
+              </button>
+            )}
+            <button
+              onClick={index === steps.length - 1 ? onFinish : onNext}
+              className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary-hover"
+            >
+              {index === steps.length - 1 ? "Listo" : "Siguiente"}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

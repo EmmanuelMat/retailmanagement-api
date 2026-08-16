@@ -3,7 +3,7 @@ import { FileText, TrendingUp, Package, DollarSign, ArrowRight } from "lucide-re
 import { Card, CardContent } from "@repo/ui";
 
 const REPORTES = [
-  { label: "DGII (606/607)", href: "/reportes/dgii", icon: FileText, desc: "Reportes fiscales para la DGII" },
+  { label: "DGII (606)", href: "/reportes/dgii", icon: FileText, desc: "Reportes fiscales para la DGII" },
   { label: "Ventas", href: "/reportes/ventas", icon: TrendingUp, desc: "Historial detallado — ver Ventas" },
   { label: "Inventario", href: "/reportes/inventario", icon: Package, desc: "Valorización y kardex — ver Movimientos" },
   { label: "Financiero", href: "/reportes/financiero", icon: DollarSign, desc: "Libro mayor — ver Contabilidad" },

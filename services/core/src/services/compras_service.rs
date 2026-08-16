@@ -21,6 +21,22 @@ pub struct Compra {
     pub total: Decimal,
     pub metodo_pago: String,
     pub created_at: DateTime<Utc>,
+    // Campos DGII 606 (Norma 07-2018) - ver report_service::generate_606.
+    pub estado: String,          // COMPLETADA | ANULADA
+    pub tipo_documento: String,  // FACTURA | NOTA_CREDITO | NOTA_DEBITO
+    pub ncf_modificado: Option<String>,
+    pub tipo_bienes_servicios: Option<i16>,
+    pub fecha_pago: Option<DateTime<Utc>>,
+    pub monto_facturado_servicios: Decimal,
+    pub monto_facturado_bienes: Decimal,
+    pub itbis_retenido: Decimal,
+    pub itbis_proporcionalidad: Decimal,
+    pub itbis_costo: Decimal,
+    pub tipo_retencion_isr: Option<i16>,
+    pub monto_retencion_renta: Decimal,
+    pub isc: Decimal,
+    pub otros_impuestos: Decimal,
+    pub propina_legal: Decimal,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -64,6 +80,30 @@ pub struct CreateCompraRequest {
     pub ncf_proveedor: Option<String>,
     pub metodo_pago: Option<String>,
     pub items: Vec<CreateCompraItemRequest>,
+    // Campos DGII 606 (Norma 07-2018). Todos opcionales: si el suplidor no
+    // tiene NCF (o el NCF no exige estas casillas) simplemente se omiten.
+    /// Tipo de Bienes y Servicios Comprados (1-11). Requerido por DGII para
+    /// que la compra sea deducible/reportable en 606; si se omite, esta
+    /// compra queda excluida del 606 hasta que se corrija (ver
+    /// report_service::generate_606).
+    pub tipo_bienes_servicios: Option<i16>,
+    /// NCF o Documento Modificado — solo cuando `tipo_documento` es
+    /// NOTA_CREDITO o NOTA_DEBITO.
+    pub tipo_documento: Option<String>,
+    pub ncf_modificado: Option<String>,
+    pub fecha_pago: Option<DateTime<Utc>>,
+    /// Si se omiten, todo el subtotal se reporta como "bienes" (default
+    /// razonable para un negocio de retail/mercancía).
+    pub monto_facturado_servicios: Option<Decimal>,
+    pub monto_facturado_bienes: Option<Decimal>,
+    pub itbis_retenido: Option<Decimal>,
+    pub itbis_proporcionalidad: Option<Decimal>,
+    pub itbis_costo: Option<Decimal>,
+    pub tipo_retencion_isr: Option<i16>,
+    pub monto_retencion_renta: Option<Decimal>,
+    pub isc: Option<Decimal>,
+    pub otros_impuestos: Option<Decimal>,
+    pub propina_legal: Option<Decimal>,
 }
 
 fn itbis_rate(tipo: &str) -> Decimal {
@@ -107,6 +147,32 @@ impl ComprasService {
             anyhow::bail!("La compra necesita al menos un producto");
         }
         let metodo_pago = req.metodo_pago.unwrap_or_else(|| "EFECTIVO".to_string());
+
+        if let Some(t) = req.tipo_bienes_servicios {
+            if !(1..=11).contains(&t) {
+                anyhow::bail!("Tipo de Bienes y Servicios Comprados inválido (debe ser 1-11)");
+            }
+        }
+        if let Some(t) = req.tipo_retencion_isr {
+            if !(1..=9).contains(&t) {
+                anyhow::bail!("Tipo de Retención en ISR inválido (debe ser 1-9)");
+            }
+        }
+        // DGII: "Siempre que se llene ITBIS Retenido / Retención Renta, debe
+        // existir una Fecha de Pago" (instructivo 606, casillas 12 y 18).
+        let tiene_retencion = req.itbis_retenido.map(|v| v != Decimal::ZERO).unwrap_or(false)
+            || req.monto_retencion_renta.map(|v| v != Decimal::ZERO).unwrap_or(false)
+            || req.tipo_retencion_isr.is_some();
+        if tiene_retencion && req.fecha_pago.is_none() {
+            anyhow::bail!("Si se reporta una retención (ITBIS o ISR), la Fecha de Pago es requerida");
+        }
+        let tipo_documento = req.tipo_documento.clone().unwrap_or_else(|| "FACTURA".to_string());
+        if !matches!(tipo_documento.as_str(), "FACTURA" | "NOTA_CREDITO" | "NOTA_DEBITO") {
+            anyhow::bail!("Tipo de documento inválido (FACTURA, NOTA_CREDITO o NOTA_DEBITO)");
+        }
+        if tipo_documento != "FACTURA" && req.ncf_modificado.is_none() {
+            anyhow::bail!("Una Nota de Crédito/Débito debe indicar el NCF o Documento Modificado");
+        }
 
         let mut tx = self.pool.begin().await?;
 
@@ -153,11 +219,24 @@ impl ComprasService {
 
         let total = subtotal_total + itbis_total;
 
-        let compra = sqlx::query_as::<_, Compra>(
-            r#"INSERT INTO compras (tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-               RETURNING id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, created_at"#,
-        )
+        // Monto Facturado en Servicios/Bienes (casillas 8-9 del 606): si no
+        // se especifican, se asume que todo es mercancía (bienes) — default
+        // razonable para un negocio de retail.
+        let monto_facturado_servicios = req.monto_facturado_servicios.unwrap_or(Decimal::ZERO);
+        let monto_facturado_bienes = req.monto_facturado_bienes.unwrap_or(subtotal_total - monto_facturado_servicios);
+
+        let compra = sqlx::query_as::<_, Compra>(&format!(
+            r#"INSERT INTO compras (
+                   tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago,
+                   tipo_documento, ncf_modificado, tipo_bienes_servicios, fecha_pago,
+                   monto_facturado_servicios, monto_facturado_bienes, itbis_retenido,
+                   itbis_proporcionalidad, itbis_costo, tipo_retencion_isr, monto_retencion_renta,
+                   isc, otros_impuestos, propina_legal
+               )
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+               RETURNING {}"#,
+            Self::COMPRA_COLUMNS
+        ))
         .bind(tenant_id)
         .bind(req.proveedor_id)
         .bind(usuario_id)
@@ -166,6 +245,20 @@ impl ComprasService {
         .bind(itbis_total)
         .bind(total)
         .bind(&metodo_pago)
+        .bind(&tipo_documento)
+        .bind(&req.ncf_modificado)
+        .bind(req.tipo_bienes_servicios)
+        .bind(req.fecha_pago)
+        .bind(monto_facturado_servicios)
+        .bind(monto_facturado_bienes)
+        .bind(req.itbis_retenido.unwrap_or(Decimal::ZERO))
+        .bind(req.itbis_proporcionalidad.unwrap_or(Decimal::ZERO))
+        .bind(req.itbis_costo.unwrap_or(Decimal::ZERO))
+        .bind(req.tipo_retencion_isr)
+        .bind(req.monto_retencion_renta.unwrap_or(Decimal::ZERO))
+        .bind(req.isc.unwrap_or(Decimal::ZERO))
+        .bind(req.otros_impuestos.unwrap_or(Decimal::ZERO))
+        .bind(req.propina_legal.unwrap_or(Decimal::ZERO))
         .fetch_one(&mut *tx)
         .await?;
 
@@ -270,11 +363,17 @@ impl ComprasService {
         Ok((rows, total))
     }
 
+    const COMPRA_COLUMNS: &'static str = "id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, created_at,
+               estado, tipo_documento, ncf_modificado, tipo_bienes_servicios, fecha_pago,
+               monto_facturado_servicios, monto_facturado_bienes, itbis_retenido,
+               itbis_proporcionalidad, itbis_costo, tipo_retencion_isr, monto_retencion_renta,
+               isc, otros_impuestos, propina_legal";
+
     pub async fn get_compra(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<CompraCompleta> {
-        let compra = sqlx::query_as::<_, Compra>(
-            r#"SELECT id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, created_at
-               FROM compras WHERE id = $1 AND tenant_id = $2"#,
-        )
+        let compra = sqlx::query_as::<_, Compra>(&format!(
+            "SELECT {} FROM compras WHERE id = $1 AND tenant_id = $2",
+            Self::COMPRA_COLUMNS
+        ))
         .bind(id)
         .bind(tenant_id)
         .fetch_optional(&self.pool)
@@ -289,6 +388,25 @@ impl ComprasService {
         .await?;
 
         Ok(CompraCompleta { compra, items })
+    }
+
+    /// Anula una compra (DGII 606: una compra anulada se excluye del envío
+    /// normal; si ya fue reportada en un período previo, debe corregirse
+    /// mediante una Nota de Crédito de compra referenciando su NCF, no
+    /// simplemente omitiéndola). No revierte stock/costo/caja: hacerlo
+    /// automáticamente podría enmascarar el motivo real de la anulación;
+    /// la reversión de inventario/caja se maneja aparte si aplica.
+    pub async fn anular_compra(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<Compra> {
+        let compra = sqlx::query_as::<_, Compra>(&format!(
+            "UPDATE compras SET estado = 'ANULADA' WHERE id = $1 AND tenant_id = $2 AND estado = 'COMPLETADA' RETURNING {}",
+            Self::COMPRA_COLUMNS
+        ))
+        .bind(id)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Compra no encontrada o ya anulada"))?;
+        Ok(compra)
     }
 
     // ---- Gastos ----

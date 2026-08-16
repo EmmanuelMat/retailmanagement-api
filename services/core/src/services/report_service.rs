@@ -1,6 +1,11 @@
-//! Reportes DGII (606/607) y resumen del Dashboard - Módulo 10
+//! Reporte DGII 606 y resumen del Dashboard - Módulo 10
 //! Reescrito sobre datos reales de compras/ventas (antes era un stub con TXT
 //! fijo, sin conexión a ninguna tabla — confirmado muerto por `cargo build`).
+//!
+//! No hay generador de 607: este sistema es 100% e-CF y no emite ventas
+//! fuera de la Solución Fiscal, así que el 607 (formato "complementario"
+//! por Norma 07-2018 Art. 4 Párrafo III) no aplica — el contribuyente queda
+//! eximido de remitirlo. Ver docs/02-DGII-COMPLIANCE.md.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -20,6 +25,26 @@ pub struct DashboardResumen {
     pub caja_abierta: bool,
 }
 
+/// Declaración Mensual de ITBIS (IT-1, Norma General 07-2018). Solo los
+/// totales núcleo — ver comentario de `generate_it1` para el alcance
+/// exacto y lo que queda fuera (retenciones/anticipos, desglose Anexo A).
+#[derive(Debug, Serialize)]
+pub struct It1Resumen {
+    pub period: String,
+    /// ITBIS trasladado (cobrado en ventas) del período, neto de notas de
+    /// crédito emitidas en el mismo período.
+    pub itbis_trasladado: Decimal,
+    /// ITBIS acreditable (pagado en compras) del período - misma cantidad
+    /// que 606 reporta por fila como `itbis_por_adelantar`, sumada.
+    pub itbis_acreditable: Decimal,
+    /// Excedente de ITBIS arrastrado de períodos anteriores (positivo =
+    /// crédito a favor del contribuyente). Recalculado en vivo sobre todo
+    /// el histórico previo al período — no hay snapshot persistido.
+    pub saldo_periodo_anterior: Decimal,
+    pub itbis_a_pagar: Decimal,
+    pub saldo_a_favor_siguiente: Decimal,
+}
+
 /// Envuelve en comillas y escapa comillas internas solo si el campo lo
 /// necesita (coma, comilla o salto de línea) — evita ensuciar el CSV con
 /// comillas innecesarias en el caso común (RNC/NCF sin caracteres especiales).
@@ -29,6 +54,106 @@ fn csv_escape(field: &str) -> String {
     } else {
         field.to_string()
     }
+}
+
+/// Tipo Id (casilla 2 del 606): RNC dominicano son 9 dígitos, Cédula son
+/// 11. No hay campo separado que lo indique en el schema, así que se
+/// deriva del largo del identificador (después de quitar guiones/espacios),
+/// como hace la propia herramienta de la DGII.
+fn tipo_id_dgii(identificador: &str) -> u8 {
+    let digitos: String = identificador.chars().filter(|c| c.is_ascii_digit()).collect();
+    match digitos.len() {
+        11 => 2, // Cédula
+        _ => 1,  // RNC
+    }
+}
+
+/// Forma de Pago (casilla 23 del 606) según el instructivo oficial DGII.
+/// `compras.metodo_pago` solo tiene 4 valores (no incluye Permuta/Notas de
+/// crédito/Mixto), así que el mapeo es total.
+fn forma_pago_606(metodo_pago: &str) -> u8 {
+    match metodo_pago {
+        "EFECTIVO" => 1,
+        "TRANSFERENCIA" => 2, // Cheques/Transferencias/Depósito
+        "TARJETA" => 3,
+        "FIADO" => 4, // Compra a crédito
+        _ => 1,
+    }
+}
+
+/// Fila cruda de `compras` con todos los campos que exige el Formato 606.
+#[derive(sqlx::FromRow)]
+struct Compra606Row {
+    rnc: Option<String>,
+    ncf: Option<String>,
+    ncf_modificado: Option<String>,
+    tipo_bienes_servicios: Option<i16>,
+    fecha: DateTime<Utc>,
+    fecha_pago: Option<DateTime<Utc>>,
+    monto_servicios: Decimal,
+    monto_bienes: Decimal,
+    itbis_facturado: Decimal,
+    itbis_retenido: Decimal,
+    itbis_proporcionalidad: Decimal,
+    itbis_costo: Decimal,
+    tipo_retencion_isr: Option<i16>,
+    monto_retencion_renta: Decimal,
+    isc: Decimal,
+    otros_impuestos: Decimal,
+    propina_legal: Decimal,
+    metodo_pago: String,
+}
+
+const COMPRA_606_SELECT: &str = r#"SELECT p.rnc, c.ncf_proveedor AS ncf, c.ncf_modificado, c.tipo_bienes_servicios,
+              c.created_at AS fecha, c.fecha_pago, c.monto_facturado_servicios AS monto_servicios,
+              c.monto_facturado_bienes AS monto_bienes, c.itbis_total AS itbis_facturado,
+              c.itbis_retenido, c.itbis_proporcionalidad, c.itbis_costo, c.tipo_retencion_isr,
+              c.monto_retencion_renta, c.isc, c.otros_impuestos, c.propina_legal, c.metodo_pago
+       FROM compras c LEFT JOIN proveedores p ON p.id = c.proveedor_id
+       WHERE c.tenant_id = $1 AND c.created_at >= $2 AND c.created_at < $3 AND c.estado = 'COMPLETADA'
+       ORDER BY c.created_at"#;
+
+/// Línea pipe-delimitada de 23 columnas por fila, en el orden exacto del
+/// instructivo oficial DGII "Llenado y Remisión del Formato 606" (rev.
+/// febrero 2026). Compras sin `tipo_bienes_servicios` (campo requerido por
+/// DGII, casilla 3) se reportan con el default 9 "Compras y gastos que
+/// formarán parte del costo de venta" — el caso típico de un retail que
+/// compra mercancía — en vez de excluirlas silenciosamente del envío.
+fn compra_606_line(r: &Compra606Row) -> String {
+    let tipo_id = tipo_id_dgii(r.rnc.as_deref().unwrap_or_default());
+    let tipo_bienes = r.tipo_bienes_servicios.unwrap_or(9);
+    let total_facturado = r.monto_servicios + r.monto_bienes;
+    let itbis_por_adelantar = r.itbis_facturado - r.itbis_costo;
+    let forma_pago = forma_pago_606(&r.metodo_pago);
+    // {:.2}, no {}: un Decimal en cero llega de Postgres sin escala (ndigits=0
+    // en el wire protocol de NUMERIC), así que Display lo muestra "0" en vez
+    // de "0.00" — inconsistente con el resto de montos del archivo DGII.
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{}|{:.2}|{:.2}|{:.2}|{:.2}|{:.2}|{}\n",
+        r.rnc.clone().unwrap_or_default(),
+        tipo_id,
+        tipo_bienes,
+        r.ncf.clone().unwrap_or_default(),
+        r.ncf_modificado.clone().unwrap_or_default(),
+        r.fecha.format("%Y%m%d"),
+        r.fecha_pago.map(|f| f.format("%Y%m%d").to_string()).unwrap_or_default(),
+        r.monto_servicios,
+        r.monto_bienes,
+        total_facturado,
+        r.itbis_facturado,
+        r.itbis_retenido,
+        r.itbis_proporcionalidad,
+        r.itbis_costo,
+        itbis_por_adelantar,
+        Decimal::ZERO, // 16: ITBIS percibido en compras — no habilitado por DGII aún
+        r.tipo_retencion_isr.map(|t| t.to_string()).unwrap_or_default(),
+        r.monto_retencion_renta,
+        Decimal::ZERO, // 19: ISR Percibido en compras — no habilitado por DGII aún
+        r.isc,
+        r.otros_impuestos,
+        r.propina_legal,
+        forma_pago,
+    )
 }
 
 impl ReportService {
@@ -71,62 +196,34 @@ impl ReportService {
         Ok((desde, hasta))
     }
 
-    /// 606 - Compras del período, por RNC del proveedor.
+    /// 606 - Compras de bienes y servicios del período (Norma General
+    /// 07-2018), formato completo de 23 columnas per el instructivo oficial
+    /// DGII vigente (rev. febrero 2026). El 606 SÍ incluye comprobantes
+    /// e-CF/e-NCF de proveedores: DGII exige reportar aquí "los
+    /// Comprobantes Electrónicos adquiridos de los facturadores
+    /// electrónicos autorizados" — no hay duplicación porque este reporte
+    /// documenta *el gasto/costo deducible del comprador*, no la venta del
+    /// proveedor (esa ya la recibió DGII directamente de él). Por eso
+    /// `ncf_proveedor` — sea e-NCF (prefijo E) o NCF tradicional (prefijo
+    /// B) — se incluye siempre sin distinción de tipo.
+    ///
+    /// Compras ANULADAS se excluyen (ver `ComprasService::anular_compra`);
+    /// si una compra ya reportada en un período anterior necesita
+    /// corregirse, la vía correcta es una fila NOTA_CREDITO/NOTA_DEBITO con
+    /// `ncf_modificado` apuntando al NCF original, no editar el histórico.
     pub async fn generate_606(&self, tenant_id: &str, period: &str) -> anyhow::Result<String> {
         let (desde, hasta) = Self::period_bounds(period)?;
-        let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
-            r#"SELECT p.rnc, c.ncf_proveedor, c.created_at, c.subtotal, c.itbis_total
-               FROM compras c LEFT JOIN proveedores p ON p.id = c.proveedor_id
-               WHERE c.tenant_id = $1 AND c.created_at >= $2 AND c.created_at < $3
-               ORDER BY c.created_at"#,
-        )
-        .bind(tenant_id)
-        .bind(desde)
-        .bind(hasta)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<Compra606Row> = sqlx::query_as(COMPRA_606_SELECT)
+            .bind(tenant_id)
+            .bind(desde)
+            .bind(hasta)
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut txt = format!("{}|{}|{}\n", tenant_id, period, rows.len());
-        for (rnc, ncf, fecha, monto, itbis) in rows {
-            txt.push_str(&format!(
-                "{}|{}|{}|{}|{}|01|01\n",
-                rnc.unwrap_or_else(|| "".to_string()),
-                ncf.unwrap_or_else(|| "".to_string()),
-                fecha.format("%d-%m-%Y"),
-                monto,
-                itbis
-            ));
+        for r in &rows {
+            txt.push_str(&compra_606_line(r));
         }
-        Ok(txt)
-    }
-
-    /// 607 - Ventas del período con e-NCF emitido.
-    pub async fn generate_607(&self, tenant_id: &str, period: &str) -> anyhow::Result<String> {
-        let (desde, hasta) = Self::period_bounds(period)?;
-        let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
-            r#"SELECT cl.rnc_cedula, v.e_ncf, v.created_at, v.subtotal, v.itbis_total
-               FROM ventas v LEFT JOIN clientes cl ON cl.id = v.cliente_id
-               WHERE v.tenant_id = $1 AND v.created_at >= $2 AND v.created_at < $3 AND v.e_ncf IS NOT NULL
-               ORDER BY v.created_at"#,
-        )
-        .bind(tenant_id)
-        .bind(desde)
-        .bind(hasta)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut txt = format!("{}|{}|{}\n", tenant_id, period, rows.len());
-        for (rnc, ncf, fecha, monto, itbis) in rows {
-            txt.push_str(&format!(
-                "{}|{}|{}|{}|{}|01\n",
-                rnc.unwrap_or_else(|| "000000000".to_string()),
-                ncf.unwrap_or_default(),
-                fecha.format("%d-%m-%Y"),
-                monto,
-                itbis
-            ));
-        }
-        txt.push_str("# Resumen General Facturas Consumo <250k via RFCE\n");
         Ok(txt)
     }
 
@@ -136,57 +233,48 @@ impl ReportService {
     /// a la DGII tal cual.
     pub async fn generate_606_csv(&self, tenant_id: &str, fecha_desde: chrono::NaiveDate, fecha_hasta: chrono::NaiveDate) -> anyhow::Result<String> {
         let (desde, hasta) = Self::date_range_bounds(fecha_desde, fecha_hasta)?;
-        let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
-            r#"SELECT p.rnc, c.ncf_proveedor, c.created_at, c.subtotal, c.itbis_total
-               FROM compras c LEFT JOIN proveedores p ON p.id = c.proveedor_id
-               WHERE c.tenant_id = $1 AND c.created_at >= $2 AND c.created_at < $3
-               ORDER BY c.created_at"#,
-        )
-        .bind(tenant_id)
-        .bind(desde)
-        .bind(hasta)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<Compra606Row> = sqlx::query_as(COMPRA_606_SELECT)
+            .bind(tenant_id)
+            .bind(desde)
+            .bind(hasta)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let mut csv = String::from("RNC Proveedor,NCF,Fecha,Monto Facturado,ITBIS Facturado\n");
-        for (rnc, ncf, fecha, monto, itbis) in rows {
+        let mut csv = String::from(
+            "RNC Proveedor,Tipo Id,Tipo Bienes/Servicios,NCF,NCF Modificado,Fecha Comprobante,Fecha Pago,\
+             Monto Facturado Servicios,Monto Facturado Bienes,Total Monto Facturado,ITBIS Facturado,\
+             ITBIS Retenido,ITBIS Proporcionalidad,ITBIS Costo,ITBIS por Adelantar,Tipo Retención ISR,\
+             Monto Retención Renta,ISC,Otros Impuestos,Propina Legal,Forma de Pago\n",
+        );
+        for r in &rows {
+            let tipo_id = tipo_id_dgii(r.rnc.as_deref().unwrap_or_default());
+            let tipo_bienes = r.tipo_bienes_servicios.unwrap_or(9);
+            let total_facturado = r.monto_servicios + r.monto_bienes;
+            let itbis_por_adelantar = r.itbis_facturado - r.itbis_costo;
+            let forma_pago = forma_pago_606(&r.metodo_pago);
             csv.push_str(&format!(
-                "{},{},{},{},{}\n",
-                csv_escape(&rnc.unwrap_or_default()),
-                csv_escape(&ncf.unwrap_or_default()),
-                fecha.format("%d-%m-%Y"),
-                monto,
-                itbis
-            ));
-        }
-        Ok(csv)
-    }
-
-    /// 607 en CSV para un rango de fechas arbitrario — misma relación con
-    /// `generate_607` que `generate_606_csv` tiene con `generate_606`.
-    pub async fn generate_607_csv(&self, tenant_id: &str, fecha_desde: chrono::NaiveDate, fecha_hasta: chrono::NaiveDate) -> anyhow::Result<String> {
-        let (desde, hasta) = Self::date_range_bounds(fecha_desde, fecha_hasta)?;
-        let rows: Vec<(Option<String>, Option<String>, DateTime<Utc>, Decimal, Decimal)> = sqlx::query_as(
-            r#"SELECT cl.rnc_cedula, v.e_ncf, v.created_at, v.subtotal, v.itbis_total
-               FROM ventas v LEFT JOIN clientes cl ON cl.id = v.cliente_id
-               WHERE v.tenant_id = $1 AND v.created_at >= $2 AND v.created_at < $3 AND v.e_ncf IS NOT NULL
-               ORDER BY v.created_at"#,
-        )
-        .bind(tenant_id)
-        .bind(desde)
-        .bind(hasta)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut csv = String::from("RNC/Cédula Cliente,e-NCF,Fecha,Monto Facturado,ITBIS Facturado\n");
-        for (rnc, ncf, fecha, monto, itbis) in rows {
-            csv.push_str(&format!(
-                "{},{},{},{},{}\n",
-                csv_escape(&rnc.unwrap_or_else(|| "000000000".to_string())),
-                csv_escape(&ncf.unwrap_or_default()),
-                fecha.format("%d-%m-%Y"),
-                monto,
-                itbis
+                "{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{:.2},{:.2},{:.2},{:.2},{}\n",
+                csv_escape(r.rnc.as_deref().unwrap_or_default()),
+                tipo_id,
+                tipo_bienes,
+                csv_escape(r.ncf.as_deref().unwrap_or_default()),
+                csv_escape(r.ncf_modificado.as_deref().unwrap_or_default()),
+                r.fecha.format("%d-%m-%Y"),
+                r.fecha_pago.map(|f| f.format("%d-%m-%Y").to_string()).unwrap_or_default(),
+                r.monto_servicios,
+                r.monto_bienes,
+                total_facturado,
+                r.itbis_facturado,
+                r.itbis_retenido,
+                r.itbis_proporcionalidad,
+                r.itbis_costo,
+                itbis_por_adelantar,
+                r.tipo_retencion_isr.map(|t| t.to_string()).unwrap_or_default(),
+                r.monto_retencion_renta,
+                r.isc,
+                r.otros_impuestos,
+                r.propina_legal,
+                forma_pago,
             ));
         }
         Ok(csv)
@@ -220,6 +308,86 @@ impl ReportService {
             productos_bajo_minimo: inv_row.1,
             valor_inventario: inv_row.0.unwrap_or_default(),
             caja_abierta,
+        })
+    }
+
+    /// ITBIS trasladado (ventas, neto de notas de crédito) y acreditable
+    /// (compras) para el rango `[desde, hasta)` — la misma pareja de
+    /// números se usa tanto para el período declarado como, con un rango
+    /// que cubre todo el histórico previo, para el saldo arrastrado.
+    async fn itbis_neto_del_rango(&self, tenant_id: &str, desde: DateTime<Utc>, hasta: DateTime<Utc>) -> anyhow::Result<(Decimal, Decimal)> {
+        let trasladado_ventas: Decimal = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(itbis_total), 0) FROM ventas
+             WHERE tenant_id = $1 AND estado = 'COMPLETADA' AND created_at >= $2 AND created_at < $3",
+        )
+        .bind(tenant_id)
+        .bind(desde)
+        .bind(hasta)
+        .fetch_one(&self.pool)
+        .await?;
+        let trasladado_nc: Decimal = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(itbis_total), 0) FROM notas_credito
+             WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3",
+        )
+        .bind(tenant_id)
+        .bind(desde)
+        .bind(hasta)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Misma cantidad que 606 reporta por fila como `itbis_por_adelantar`
+        // (itbis_total - itbis_costo), sumada sobre el rango.
+        let acreditable: Decimal = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(itbis_total - itbis_costo), 0) FROM compras
+             WHERE tenant_id = $1 AND estado = 'COMPLETADA' AND created_at >= $2 AND created_at < $3",
+        )
+        .bind(tenant_id)
+        .bind(desde)
+        .bind(hasta)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok((trasladado_ventas - trasladado_nc, acreditable))
+    }
+
+    /// Declaración Mensual de ITBIS (IT-1). Alcance deliberadamente acotado
+    /// a los totales núcleo de la fórmula oficial - ITBIS trasladado menos
+    /// ITBIS acreditable, ajustado por el excedente arrastrado del período
+    /// anterior. El formulario real (Anexo A) además desglosa ventas por
+    /// tasa (18%/16%/exenta) y renglones de retenciones/anticipos que este
+    /// sistema no modela hoy del lado de ventas (sí existen `itbis_retenido`
+    /// y demás en `compras`, ver 606, pero no hay equivalente en `ventas`) -
+    /// deliberadamente fuera de alcance por ahora en vez de aproximarlo mal.
+    pub async fn generate_it1(&self, tenant_id: &str, period: &str) -> anyhow::Result<It1Resumen> {
+        let (desde, hasta) = Self::period_bounds(period)?;
+
+        let (itbis_trasladado, itbis_acreditable) = self.itbis_neto_del_rango(tenant_id, desde, hasta).await?;
+
+        // Saldo arrastrado: la posición neta acumulada de TODO el histórico
+        // anterior a este período, en una sola consulta (equivalente
+        // matemáticamente a sumar el arrastre período a período, ya que es
+        // una posición neta corrida) - no hay snapshot persistido por
+        // período en este schema (`periodos_contables` solo trackea
+        // ABIERTO/CERRADO), así que esto se recalcula en cada llamada.
+        let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let (trasladado_previo, acreditable_previo) = self.itbis_neto_del_rango(tenant_id, epoch, desde).await?;
+        let neto_previo = trasladado_previo - acreditable_previo;
+        let saldo_periodo_anterior = if neto_previo < Decimal::ZERO { -neto_previo } else { Decimal::ZERO };
+
+        let neto = itbis_trasladado - itbis_acreditable - saldo_periodo_anterior;
+        let (itbis_a_pagar, saldo_a_favor_siguiente) = if neto > Decimal::ZERO {
+            (neto, Decimal::ZERO)
+        } else {
+            (Decimal::ZERO, -neto)
+        };
+
+        Ok(It1Resumen {
+            period: period.to_string(),
+            itbis_trasladado,
+            itbis_acreditable,
+            saldo_periodo_anterior,
+            itbis_a_pagar,
+            saldo_a_favor_siguiente,
         })
     }
 }

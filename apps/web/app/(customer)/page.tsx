@@ -50,7 +50,7 @@ const FEATURES = [
   {
     icon: FileBarChart,
     title: "Reportes DGII listos",
-    body: "606, 607, 608, IT-1 generados automáticamente. Súbelos y ya — sin hojas de cálculo a última hora.",
+    body: "606, 608, IT-1 generados automáticamente. Súbelos y ya — sin hojas de cálculo a última hora.",
   },
   {
     icon: ShieldCheck,
@@ -70,7 +70,7 @@ const PLANS = [
       "1 terminal POS",
       "Facturación e-CF ilimitada",
       "Inventario y clientes",
-      "Reportes DGII 606/607",
+      "Reportes DGII 606",
       "Soporte por WhatsApp",
     ],
     highlighted: false,
@@ -111,7 +111,7 @@ const PLANS = [
 const FAQS = [
   {
     q: "¿Esto cumple con la Ley 32-23 de facturación electrónica?",
-    a: "Sí. Firmamos cada comprobante con XAdES-BES real (C14N, RSA-SHA256) siguiendo el estándar de la DGII, y generamos el QR de verificación en el momento del cobro. Los reportes 606, 607, 608 e IT-1 salen del mismo dato, así que nunca hay descuadre.",
+    a: "Sí. Firmamos cada comprobante con XAdES-BES real (C14N, RSA-SHA256) siguiendo el estándar de la DGII, y generamos el QR de verificación en el momento del cobro. Los reportes 606, 608 e IT-1 salen del mismo dato, así que nunca hay descuadre.",
   },
   {
     q: "¿Qué pasa si se va la internet en el colmado?",
@@ -148,6 +148,9 @@ function MobileNav({ open, onClose }: { open: boolean; onClose: () => void }) {
           </a>
         ))}
         <div className="h-px bg-border my-3" />
+        <Link href="/recorrido" onClick={onClose} className="px-3 py-3 rounded-md text-base font-medium hover:bg-muted">
+          Recorrido
+        </Link>
         <Link href="/login" onClick={onClose} className="px-3 py-3 rounded-md text-base font-medium hover:bg-muted">
           Iniciar sesión
         </Link>
@@ -264,7 +267,7 @@ export default function LandingPage() {
           <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Firma XAdES-BES real</span>
           <span className="flex items-center gap-2"><Landmark className="h-4 w-4" /> Contabilidad de doble entrada</span>
           <span className="flex items-center gap-2"><Lock className="h-4 w-4" /> Eventos encadenados con hash</span>
-          <span className="flex items-center gap-2"><FileBarChart className="h-4 w-4" /> Reportes 606 · 607 · 608 · IT-1</span>
+          <span className="flex items-center gap-2"><FileBarChart className="h-4 w-4" /> Reportes 606 · 608 · IT-1</span>
         </div>
       </section>
 
@@ -425,6 +428,7 @@ export default function LandingPage() {
                 {link.label}
               </a>
             ))}
+            <Link href="/recorrido" className="hover:text-foreground transition-colors">Recorrido</Link>
             <Link href="/login" className="hover:text-foreground transition-colors">Iniciar sesión</Link>
           </nav>
         </div>
