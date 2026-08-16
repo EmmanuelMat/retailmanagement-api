@@ -74,6 +74,17 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
+          SECRETS="DATABASE_URL=DATABASE_URL:latest,JWT_SECRET=JWT_SECRET:latest,VENDOR_ADMIN_SECRET=VENDOR_ADMIN_SECRET:latest,LICENSE_SECRET=LICENSE_SECRET:latest,CERT_ENCRYPTION_KEY=CERT_ENCRYPTION_KEY:latest"
+
+          # RESEND_API_KEY is optional (see .env.example - the app already
+          # degrades gracefully without it, self-service password-reset
+          # emails just won't send). Only wire it in if the secret actually
+          # exists, instead of hard-requiring it and failing the whole
+          # deploy when it doesn't.
+          if gcloud secrets describe RESEND_API_KEY >/dev/null 2>&1; then
+            SECRETS="$SECRETS,RESEND_API_KEY=RESEND_API_KEY:latest"
+          fi
+
           gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
             --image "$IMAGE:${{ github.sha }}" \
             --region "${{ vars.GCP_REGION }}" \
@@ -84,4 +95,4 @@ jobs:
             --add-volume name=uploads,type=cloud-storage,bucket=${{ vars.UPLOADS_BUCKET }} \
             --add-volume-mount volume=uploads,mount-path=/mnt/uploads \
             --set-env-vars "CORE_HTTP_PORT=8080,UPLOADS_DIR=/mnt/uploads,DGII_ENV=${{ vars.DGII_ENV }},FRONTEND_URL=${{ vars.FRONTEND_URL }},RESEND_FROM_EMAIL=onboarding@resend.dev,RUST_LOG=fiscal_core=info" \
-            --set-secrets "DATABASE_URL=DATABASE_URL:latest,JWT_SECRET=JWT_SECRET:latest,VENDOR_ADMIN_SECRET=VENDOR_ADMIN_SECRET:latest,LICENSE_SECRET=LICENSE_SECRET:latest,CERT_ENCRYPTION_KEY=CERT_ENCRYPTION_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest"
+            --set-secrets "$SECRETS"
