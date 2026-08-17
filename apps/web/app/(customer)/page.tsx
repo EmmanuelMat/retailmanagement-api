@@ -487,7 +487,7 @@ function ProductMockup() {
         <span className="h-2.5 w-2.5 rounded-full bg-warning/50" />
         <span className="h-2.5 w-2.5 rounded-full bg-success/50" />
       </div>
-      <div className="grid grid-cols-[180px_1fr]">
+      <div className="grid grid-cols-1 sm:grid-cols-[180px_1fr]">
         <div className="hidden sm:block border-r border-border bg-muted/30 p-4 space-y-2">
           <div className="h-7 w-7 rounded-md bg-primary/20" />
           {["Dashboard", "Punto de Venta", "Inventario", "Contabilidad", "Nómina"].map((label, i) => (
@@ -503,9 +503,9 @@ function ProductMockup() {
           </div>
           <div className="grid grid-cols-3 gap-3">
             {["RD$8,420", "RD$1,516", "42 uds"].map((v, i) => (
-              <div key={i} className="rounded-lg border border-border p-3">
+              <div key={i} className="min-w-0 rounded-lg border border-border p-3">
                 <div className="h-2.5 w-16 rounded bg-muted mb-2" />
-                <div className="text-base font-bold">{v}</div>
+                <div className="text-base font-bold truncate">{v}</div>
               </div>
             ))}
           </div>
