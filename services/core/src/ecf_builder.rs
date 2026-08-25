@@ -666,9 +666,12 @@ mod tests {
             32,
             "000000000",
             "CONSUMIDOR FINAL",
-            vec![("Arroz".to_string(), dec!(1), dec!(1000))],
+            vec![("Arroz".to_string(), dec!(1), dec!(1000), "GRAVADO_18".to_string())],
             "15-07-2026",
             "31-12-2026",
+            None,
+            0,
+            None,
         );
         let xml = build_ecf_xml(&ecf);
         assert!(xml.contains("<eNCF>E320000000001</eNCF>"));

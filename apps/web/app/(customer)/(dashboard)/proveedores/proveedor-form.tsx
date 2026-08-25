@@ -80,46 +80,52 @@ export function ProveedorForm({
   }
 
   return (
-    <Card className="max-w-xl">
+    <Card className="max-w-4xl">
       <CardContent className="pt-5">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="nombre">Nombre / Razón social *</Label>
-            <Input id="nombre" required value={values.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Distribuidora Nacional SRL" />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="rnc">RNC</Label>
-            <div className="flex gap-2">
-              <Input id="rnc" value={values.rnc} onChange={(e) => set("rnc", e.target.value)} placeholder="130000001" />
-              <Button type="button" variant="secondary" onClick={handleBuscarRnc} disabled={buscando || !values.rnc.trim()}>
-                <Search className="h-4 w-4" />{buscando ? "Buscando..." : "Buscar en DGII"}
-              </Button>
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1.5 md:col-span-2">
+              <Label htmlFor="nombre">Nombre / Razón social *</Label>
+              <Input id="nombre" required value={values.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Distribuidora Nacional SRL" />
             </div>
-            {rncResult && (
-              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                Encontrado: {rncResult.nombre}
-                <Badge variant={rncResult.estado === "ACTIVO" ? "success" : "secondary"}>{rncResult.estado || "—"}</Badge>
-              </p>
-            )}
-            {rncError && <p className="text-xs text-muted-foreground">{rncError}</p>}
+            <div className="space-y-1.5">
+              <Label htmlFor="contacto">Persona de contacto</Label>
+              <Input id="contacto" value={values.contacto} onChange={(e) => set("contacto", e.target.value)} />
+            </div>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="contacto">Persona de contacto</Label>
-            <Input id="contacto" value={values.contacto} onChange={(e) => set("contacto", e.target.value)} />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1.5 md:col-span-2">
+              <Label htmlFor="rnc">RNC</Label>
+              <div className="flex gap-2">
+                <Input id="rnc" value={values.rnc} onChange={(e) => set("rnc", e.target.value)} placeholder="130000001" />
+                <Button type="button" variant="secondary" onClick={handleBuscarRnc} disabled={buscando || !values.rnc.trim()}>
+                  <Search className="h-4 w-4" />{buscando ? "Buscando..." : "Buscar en DGII"}
+                </Button>
+              </div>
+              {rncResult && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  Encontrado: {rncResult.nombre}
+                  <Badge variant={rncResult.estado === "ACTIVO" ? "success" : "secondary"}>{rncResult.estado || "—"}</Badge>
+                </p>
+              )}
+              {rncError && <p className="text-xs text-muted-foreground">{rncError}</p>}
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="telefono">Teléfono</Label>
               <Input id="telefono" value={values.telefono} onChange={(e) => set("telefono", e.target.value)} placeholder="809-555-0101" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1.5 md:col-span-2">
+              <Label htmlFor="direccion">Dirección</Label>
+              <Input id="direccion" value={values.direccion} onChange={(e) => set("direccion", e.target.value)} />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="email">Correo</Label>
               <Input id="email" type="email" value={values.email} onChange={(e) => set("email", e.target.value)} />
             </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="direccion">Dirección</Label>
-            <Input id="direccion" value={values.direccion} onChange={(e) => set("direccion", e.target.value)} />
           </div>
 
           {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}

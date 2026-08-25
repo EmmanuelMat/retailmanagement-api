@@ -55,6 +55,62 @@ async fn purchase_total_matches_hand_computed_math_and_balances_the_ledger() {
 }
 
 #[tokio::test]
+async fn fiado_purchase_credits_cuentas_por_pagar_instead_of_caja() {
+    let session = register_tenant().await;
+    let producto = create_producto(&session, dec!(0), dec!(0)).await;
+    let producto_id = producto["id"].as_str().unwrap();
+
+    let compra = session
+        .post(
+            "/v1/compras",
+            serde_json::json!({
+                "items": [{
+                    "producto_id": producto_id,
+                    "cantidad": "5",
+                    "costo_unitario": "40.00",
+                    "itbis_tipo": "GRAVADO_18",
+                }],
+                "metodo_pago": "FIADO",
+                "fecha_vencimiento": "2026-12-31",
+            }),
+        )
+        .await;
+    assert_decimal_eq(decimal_field(&compra, "total"), dec!(236.00), "compra.total");
+
+    session.post("/v1/contabilidad/sincronizar", serde_json::json!({})).await;
+
+    let asientos = session.get("/v1/contabilidad/asientos?referenciaTipo=COMPRA&pageSize=50").await;
+    let lineas = asientos["items"].as_array().expect("asientos.items");
+    assert_eq!(lineas.len(), 3, "expected 3 ledger lines for one FIADO COMPRA (inventario/itbis/cxp): {lineas:?}");
+    assert!(
+        !lineas.iter().any(|l| l["cuenta"] == "1100 Caja y Bancos"),
+        "a FIADO purchase must not move Caja y Bancos: {lineas:?}"
+    );
+    let cxp = lineas.iter().find(|l| l["cuenta"] == "2110 Cuentas por Pagar").expect("2110 Cuentas por Pagar line");
+    assert_decimal_eq(decimal_field(cxp, "haber"), dec!(236.00), "2110 Cuentas por Pagar haber");
+
+    assert_ledger_balanced(&session).await;
+}
+
+#[tokio::test]
+async fn fiado_purchase_without_fecha_vencimiento_is_rejected() {
+    let session = register_tenant().await;
+    let producto = create_producto(&session, dec!(0), dec!(0)).await;
+    let producto_id = producto["id"].as_str().unwrap();
+
+    let (status, body) = session
+        .post_expect(
+            "/v1/compras",
+            serde_json::json!({
+                "items": [{ "producto_id": producto_id, "cantidad": "1", "costo_unitario": "10.00", "itbis_tipo": "EXENTO" }],
+                "metodo_pago": "FIADO",
+            }),
+        )
+        .await;
+    assert!(status.is_client_error(), "FIADO purchase without fecha_vencimiento should be rejected, got {status}: {body}");
+}
+
+#[tokio::test]
 async fn expense_amount_matches_and_balances_the_ledger() {
     let session = register_tenant().await;
 

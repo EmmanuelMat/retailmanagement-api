@@ -17,7 +17,7 @@ use axum::{
     http::{HeaderMap, Method, Request, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use base64::Engine as _;
@@ -28,6 +28,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use services::ecfl_service::{sign_xml_ecf, generate_qr_url};
 use ecf_builder::{build_ecf_xml, build_simple_pos_ecf, ECF};
 use dgii_client::{DGIIClient, DGIIEnvironment};
+use services::adjunto_service::AdjuntoService;
 use services::audit_service::AuditService;
 use services::auth_service::{AuthService, Claims, RegisterRequest as TenantRegisterRequest, LoginRequest as AuthLoginRequest};
 use services::backup_service::BackupService;
@@ -45,10 +46,13 @@ use services::image_service::ImageService;
 use services::inventario_service::InventarioService;
 use services::license_service::{EstadoLicencia, LicenseService};
 use services::nomina_service::NominaService;
+use services::orden_compra_service::OrdenCompraService;
+use services::orden_servicio_service::OrdenServicioService;
 use services::partner_service::PartnerService;
 use services::rate_limiter::RateLimiter;
 use services::report_service::ReportService;
 use services::rnc_service::RncService;
+use services::roles_service::RolesService;
 use services::staff_service::StaffService;
 use services::ventas_service::VentasService;
 use sqlx::PgPool;
@@ -77,6 +81,10 @@ struct HttpState {
     backup_service: Arc<BackupService>,
     audit_service: Arc<AuditService>,
     image_service: Arc<ImageService>,
+    orden_servicio_service: Arc<OrdenServicioService>,
+    orden_compra_service: Arc<OrdenCompraService>,
+    adjunto_service: Arc<AdjuntoService>,
+    roles_service: Arc<RolesService>,
     vendor_admin_secret: String,
     rate_limiter: Arc<RateLimiter>,
     email_service: Arc<EmailService>,
@@ -142,12 +150,12 @@ async fn license_guard<B>(
     Ok(next.run(req).await)
 }
 
-/// Corre junto a `role_guard`/`license_guard`. Solo bloquea cuando la
-/// licencia ya está `active` (pagada) - durante el `trial` el tenant ve todo
-/// para poder evaluar el sistema completo antes de decidir qué módulos
-/// comprar. Qué módulos terminan activos para el plan pagado lo decide el
-/// sitio de staff (ver `staff_guard` + `services::staff_service`), nunca el
-/// propio tenant - no hay selector de módulos en la app del tenant.
+/// Corre junto a `role_guard`/`license_guard`. Aplica la configuración de
+/// módulos del staff (`tenant_modulos`) sin importar el estado de la
+/// licencia - un tenant en `trial` ve exactamente lo que staff le marcó, no
+/// el sistema completo. Qué módulos terminan activos lo decide el sitio de
+/// staff (ver `staff_guard` + `services::staff_service`), nunca el propio
+/// tenant - no hay selector de módulos en la app del tenant.
 async fn modulo_guard<B>(
     State(state): State<HttpState>,
     req: Request<B>,
@@ -157,14 +165,6 @@ async fn modulo_guard<B>(
         return Ok(next.run(req).await);
     };
     let claims = claims_from_headers(&state.auth_service, req.headers())?;
-    let estado = state
-        .license_service
-        .check_and_update(&claims.tenant_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error verificando licencia: {}", e)))?;
-    if estado.status != EstadoLicencia::Active {
-        return Ok(next.run(req).await);
-    }
     let tiene: Option<(String,)> = sqlx::query_as(
         "SELECT modulo_codigo FROM tenant_modulos WHERE tenant_id = $1 AND modulo_codigo = $2",
     )
@@ -215,14 +215,98 @@ fn required_modulo(path: &str) -> Option<&'static str> {
         p if p.starts_with("/v1/productos") || p.starts_with("/v1/categorias") || p.starts_with("/v1/inventario") => {
             Some("INVENTARIO")
         }
-        p if p.starts_with("/v1/compras") || p.starts_with("/v1/proveedores") || p.starts_with("/v1/gastos") => {
+        p if p.starts_with("/v1/compras") || p.starts_with("/v1/proveedores") || p.starts_with("/v1/gastos")
+            || p.starts_with("/v1/ordenes-compra") =>
+        {
             Some("COMPRAS_GASTOS")
+        }
+        p if p.starts_with("/v1/ordenes-servicio") || p.starts_with("/v1/condiciones-orden") => {
+            Some("ORDENES_SERVICIO")
         }
         p if p.starts_with("/v1/contabilidad") => Some("CONTABILIDAD"),
         p if p.starts_with("/v1/caja") || p.starts_with("/v1/bancos") => Some("CAJA_BANCOS"),
         p if p.starts_with("/v1/empleados") || p.starts_with("/v1/nomina") => Some("NOMINA"),
         _ => None,
     }
+}
+
+/// Permiso granular requerido para una ruta del nuevo módulo de Órdenes de
+/// Servicio / Órdenes de Compra, o `None` para absolutamente cualquier otra
+/// ruta (incluida cada ruta que ya existía antes de este módulo). Este es el
+/// único lugar donde el catálogo `permisos_catalogo` decide algo - a
+/// diferencia de `required_roles`, no reemplaza ningún chequeo existente,
+/// solo agrega uno nuevo. Ver `permiso_guard` y el plan de este módulo.
+fn required_permiso(path: &str, method: &Method) -> Option<&'static str> {
+    if path.ends_with("/convertir-a-orden") {
+        return Some("cotizacion.convertir_a_orden");
+    }
+    if let Some(resto) = path.strip_prefix("/v1/ordenes-servicio") {
+        return Some(if resto.ends_with("/tecnicos") || resto.contains("/tecnicos/") {
+            "orden_servicio.asignar_tecnico"
+        } else if resto.ends_with("/consumir") {
+            "orden_servicio.consumir_material"
+        } else if resto.ends_with("/iniciar") {
+            "orden_servicio.iniciar"
+        } else if resto.ends_with("/pausar") {
+            "orden_servicio.pausar"
+        } else if resto.ends_with("/completar") {
+            "orden_servicio.completar"
+        } else if resto.ends_with("/cancelar") {
+            "orden_servicio.cancelar"
+        } else if resto.ends_with("/crear-factura") {
+            "orden_servicio.crear_factura"
+        } else if method == Method::GET {
+            "orden_servicio.ver"
+        } else if resto.is_empty() {
+            "orden_servicio.crear"
+        } else {
+            "orden_servicio.editar"
+        });
+    }
+    if let Some(resto) = path.strip_prefix("/v1/ordenes-compra") {
+        return Some(if resto.ends_with("/recibir") {
+            "orden_compra.recibir"
+        } else if method == Method::GET {
+            "orden_compra.ver"
+        } else {
+            "orden_compra.crear"
+        });
+    }
+    None
+}
+
+/// Corre después de `modulo_guard` en el mismo router `protected` - `None`
+/// (cualquier ruta fuera del módulo nuevo) siempre pasa sin tocar la base de
+/// datos, así que esto no puede afectar ninguna ruta existente ni siquiera
+/// por omisión. ADMIN siempre pasa, mismo escape hatch que `role_guard`.
+async fn permiso_guard<B>(
+    State(state): State<HttpState>,
+    req: Request<B>,
+    next: Next<B>,
+) -> Result<Response, (StatusCode, String)> {
+    let Some(permiso) = required_permiso(req.uri().path(), req.method()) else {
+        return Ok(next.run(req).await);
+    };
+    let claims = claims_from_headers(&state.auth_service, req.headers())?;
+    if claims.rol == "ADMIN" {
+        return Ok(next.run(req).await);
+    }
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let rol_id: Option<Uuid> = sqlx::query_scalar("SELECT rol_id FROM usuarios WHERE id = $1")
+        .bind(usuario_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .flatten();
+    let tiene = state
+        .roles_service
+        .tiene_permiso(rol_id, permiso)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !tiene {
+        return Err((StatusCode::FORBIDDEN, format!("Tu rol no tiene el permiso '{}' requerido para este recurso", permiso)));
+    }
+    Ok(next.run(req).await)
 }
 
 /// Gatea todas las rutas `/v1/staff/*` - nunca con el JWT de un tenant, solo
@@ -263,13 +347,16 @@ fn required_roles(path: &str, method: &Method) -> Option<&'static [&'static str]
             || p.starts_with("/v1/caja")
             || p.starts_with("/v1/clientes")
             || p.starts_with("/v1/cotizaciones")
-            || p.starts_with("/v1/conduces") =>
+            || p.starts_with("/v1/conduces")
+            || p.starts_with("/v1/ordenes-servicio")
+            || p.starts_with("/v1/condiciones-orden") =>
         {
             Some(&["CAJERO"])
         }
         p if p.starts_with("/v1/inventario")
             || p.starts_with("/v1/compras")
-            || p.starts_with("/v1/proveedores") =>
+            || p.starts_with("/v1/proveedores")
+            || p.starts_with("/v1/ordenes-compra") =>
         {
             Some(&["ALMACEN"])
         }
@@ -351,6 +438,10 @@ async fn main() -> anyhow::Result<()> {
     // estáticamente vía ServeDir en /uploads, ver más abajo).
     let uploads_dir = std::env::var("UPLOADS_DIR").unwrap_or_else(|_| "uploads".to_string());
     let image_service = Arc::new(ImageService::new(uploads_dir.clone()));
+    let orden_servicio_service = Arc::new(OrdenServicioService::new(pool.clone()));
+    let orden_compra_service = Arc::new(OrdenCompraService::new(pool.clone()));
+    let adjunto_service = Arc::new(AdjuntoService::new(pool.clone(), uploads_dir.clone()));
+    let roles_service = Arc::new(RolesService::new(pool.clone()));
     // 5 fallos -> bloqueado 15 min. Compartido entre login y forgot-password
     // (claves con prefijo distinto, ver http_login / http_forgot_password).
     let rate_limiter = Arc::new(RateLimiter::new(5, Duration::from_secs(15 * 60)));
@@ -404,6 +495,10 @@ async fn main() -> anyhow::Result<()> {
         backup_service,
         audit_service,
         image_service,
+        orden_servicio_service,
+        orden_compra_service,
+        adjunto_service,
+        roles_service,
         vendor_admin_secret,
         rate_limiter,
         email_service,
@@ -450,6 +545,29 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/compras", get(http_list_compras).post(http_create_compra))
         .route("/v1/compras/:id", get(http_get_compra))
         .route("/v1/gastos", get(http_list_gastos).post(http_create_gasto))
+        // MODULO 15: Órdenes de Servicio (Work Orders) + Órdenes de Compra + Adjuntos
+        .route("/v1/condiciones-orden", get(http_list_condiciones_orden))
+        .route("/v1/ordenes-servicio", get(http_list_ordenes_servicio).post(http_create_orden_servicio))
+        .route("/v1/ordenes-servicio/:id", get(http_get_orden_servicio).patch(http_update_orden_servicio))
+        .route("/v1/ordenes-servicio/:id/items", post(http_add_orden_servicio_item))
+        .route("/v1/ordenes-servicio/:id/items/:item_id", axum::routing::delete(http_remove_orden_servicio_item))
+        .route("/v1/ordenes-servicio/:id/tecnicos", post(http_asignar_tecnico))
+        .route("/v1/ordenes-servicio/:id/tecnicos/:asignacion_id", axum::routing::delete(http_quitar_tecnico))
+        .route("/v1/ordenes-servicio/:id/materiales", post(http_agregar_material))
+        .route("/v1/ordenes-servicio/:id/materiales/:material_id/consumir", post(http_consumir_material))
+        .route("/v1/ordenes-servicio/:id/notas", post(http_agregar_nota_orden))
+        .route("/v1/ordenes-servicio/:id/iniciar", post(http_iniciar_orden))
+        .route("/v1/ordenes-servicio/:id/pausar", post(http_pausar_orden))
+        .route("/v1/ordenes-servicio/:id/completar", post(http_completar_orden))
+        .route("/v1/ordenes-servicio/:id/cancelar", post(http_cancelar_orden))
+        .route("/v1/ordenes-servicio/:id/crear-factura", post(http_facturar_orden))
+        .route("/v1/cotizaciones/:id/convertir-a-orden", post(http_convertir_cotizacion_a_orden))
+        .route("/v1/ordenes-compra", get(http_list_ordenes_compra).post(http_create_orden_compra))
+        .route("/v1/ordenes-compra/:id", get(http_get_orden_compra))
+        .route("/v1/ordenes-compra/:id/recibir", post(http_recibir_orden_compra))
+        .route("/v1/ordenes-compra/:id/cancelar", post(http_cancelar_orden_compra))
+        .route("/v1/adjuntos", get(http_list_adjuntos).post(http_upload_adjunto))
+        .route("/v1/adjuntos/:id", axum::routing::delete(http_delete_adjunto))
         // MODULO 9: Caja y Bancos
         .route("/v1/caja/resumen", get(http_caja_resumen))
         .route("/v1/caja/abrir", post(http_caja_abrir))
@@ -523,7 +641,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/test/sign-demo", get(http_test_sign_demo_get).post(http_test_sign_demo))
         .route_layer(middleware::from_fn_with_state(http_state.clone(), role_guard))
         .route_layer(middleware::from_fn_with_state(http_state.clone(), license_guard))
-        .route_layer(middleware::from_fn_with_state(http_state.clone(), modulo_guard));
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), modulo_guard))
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), permiso_guard));
 
     // Panel interno del equipo de ventas: nunca alcanzable con el JWT de un
     // tenant, solo con X-Vendor-Secret (ver `staff_guard`). Deliberadamente
@@ -532,6 +651,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/staff/tenants", get(http_staff_list_tenants).post(http_staff_create_tenant))
         .route("/v1/staff/tenants/:rnc", get(http_staff_get_tenant))
         .route("/v1/staff/tenants/:rnc/modulos", get(http_staff_list_modulos_tenant).put(http_staff_set_modulos_tenant))
+        .route("/v1/staff/tenants/:rnc/tipo-negocio", put(http_staff_set_tipo_negocio))
         .route("/v1/staff/tenants/:rnc/empresa", get(http_staff_get_empresa).put(http_staff_update_empresa))
         .route("/v1/staff/tenants/:rnc/certificado", get(http_staff_certificado_status).post(http_staff_upload_certificado))
         .route("/v1/staff/tenants/:rnc/secuencias-ncf", get(http_staff_list_secuencias).post(http_staff_create_secuencia))
@@ -1341,6 +1461,17 @@ async fn http_staff_set_modulos_tenant(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+async fn http_staff_set_tipo_negocio(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+    Json(req): Json<services::staff_service::SetTipoNegocioRequest>,
+) -> Result<Json<services::staff_service::TenantResumen>, (StatusCode, String)> {
+    let tenant = state.staff_service.set_tipo_negocio(&rnc, &req.tipo_negocio).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&rnc, None, "TIPO_NEGOCIO_ACTUALIZADO", "tenant", None, serde_json::json!({ "tipo_negocio": req.tipo_negocio })).await;
+    Ok(Json(tenant))
+}
+
 async fn http_staff_activar_licencia(
     State(state): State<HttpState>,
     Path(rnc): Path<String>,
@@ -1459,6 +1590,7 @@ struct ListAuditoriaParams {
     #[serde(rename = "usuarioId")] usuario_id: Option<Uuid>,
     accion: Option<String>,
     entidad: Option<String>,
+    #[serde(rename = "entidadId")] entidad_id: Option<Uuid>,
     #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
     #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
     page: Option<i64>,
@@ -1480,6 +1612,7 @@ async fn http_list_auditoria(
         params.usuario_id,
         params.accion,
         params.entidad,
+        params.entidad_id,
         params.fecha_desde,
         params.fecha_hasta,
         &page,
@@ -1556,6 +1689,9 @@ struct ListProductosParams {
     search: Option<String>,
     #[serde(rename = "unidadMedida")] unidad_medida: Option<String>,
     activo: Option<bool>,
+    /// PRODUCTO | SERVICIO - usado p.ej. por el selector de Compras para no
+    /// ofrecer servicios (ver catalog_service::CatalogService::list_productos).
+    tipo: Option<String>,
     page: Option<i64>,
     #[serde(rename = "pageSize")] page_size: Option<i64>,
     #[serde(rename = "sortBy")] sort_by: Option<String>,
@@ -1576,6 +1712,7 @@ async fn http_list_productos(
         params.search,
         params.unidad_medida,
         params.activo,
+        params.tipo,
         &page,
         &sort,
     ).await
@@ -2380,6 +2517,10 @@ async fn http_convertir_cotizacion(
             producto_id: it.producto_id,
             cantidad: it.cantidad,
             descuento: Some(it.descuento),
+            // La cotización ya fijó el precio de la línea (incluyendo el de
+            // un Servicio sin precio de catálogo) - se reusa tal cual, no se
+            // vuelve a pedir en la conversión.
+            precio_unitario: Some(it.precio_unitario),
         }).collect(),
         metodo_pago: req.metodo_pago,
         tipo_ecf: req.tipo_ecf,
@@ -2568,6 +2709,536 @@ async fn http_imprimir_venta(
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "impreso": true })))
+}
+
+// ------------------ MODULO 15: Órdenes de Servicio / Órdenes de Compra / Adjuntos ------------------
+
+async fn http_list_condiciones_orden(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let rows: Vec<(Uuid, String, String, i32)> = sqlx::query_as(
+        "SELECT id, codigo, nombre, orden FROM condiciones_orden WHERE tenant_id = $1 AND activo = true ORDER BY orden",
+    )
+    .bind(&claims.tenant_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(rows.into_iter().map(|(id, codigo, nombre, orden)| serde_json::json!({ "id": id, "codigo": codigo, "nombre": nombre, "orden": orden })).collect()))
+}
+
+#[derive(Debug, Serialize)]
+struct OrdenServicioCompletaResponse {
+    #[serde(flatten)]
+    orden: services::orden_servicio_service::OrdenServicio,
+    items: Vec<services::orden_servicio_service::OrdenServicioItem>,
+    tecnicos: Vec<services::orden_servicio_service::OrdenServicioTecnico>,
+    materiales: Vec<services::orden_servicio_service::OrdenServicioMaterial>,
+    // Ojo: distinto de `orden.notas` (el campo de texto libre, viene
+    // aplanado por #[serde(flatten)]) - este es el registro completo de
+    // orden_servicio_notas. Nombres distintos a propósito para no chocar en
+    // el JSON aplanado.
+    notas_registro: Vec<services::orden_servicio_service::OrdenServicioNota>,
+}
+
+impl From<services::orden_servicio_service::OrdenServicioCompleta> for OrdenServicioCompletaResponse {
+    fn from(c: services::orden_servicio_service::OrdenServicioCompleta) -> Self {
+        Self { orden: c.orden, items: c.items, tecnicos: c.tecnicos, materiales: c.materiales, notas_registro: c.notas }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListOrdenesServicioParams {
+    estado: Option<String>,
+    #[serde(rename = "clienteId")] cliente_id: Option<Uuid>,
+    search: Option<String>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+async fn http_list_ordenes_servicio(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ListOrdenesServicioParams>,
+) -> Result<Json<pagination::Page<services::orden_servicio_service::OrdenServicioConCliente>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (rows, total) = state.orden_servicio_service.list_ordenes(
+        &claims.tenant_id, params.estado, params.cliente_id, params.search, &page, &sort,
+    ).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(rows, page.page_number(), page_size, total)))
+}
+
+async fn http_create_orden_servicio(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::orden_servicio_service::CreateOrdenServicioRequest>,
+) -> Result<Json<OrdenServicioCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let completa = state.orden_servicio_service.create_orden(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ORDEN_SERVICIO_CREADA", "orden_servicio", Some(completa.orden.id),
+        serde_json::json!({ "total": completa.orden.total })).await;
+    Ok(Json(completa.into()))
+}
+
+async fn http_get_orden_servicio(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<OrdenServicioCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let completa = state.orden_servicio_service.get_orden(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(completa.into()))
+}
+
+async fn http_update_orden_servicio(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::orden_servicio_service::UpdateOrdenServicioRequest>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicio>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let orden = state.orden_servicio_service.update_orden(&claims.tenant_id, id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "ORDEN_SERVICIO_ACTUALIZADA", "orden_servicio", Some(id), serde_json::json!({})).await;
+    Ok(Json(orden))
+}
+
+async fn http_add_orden_servicio_item(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::orden_servicio_service::CreateOrdenServicioItemRequest>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicioItem>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let item = state.orden_servicio_service.add_item(&claims.tenant_id, id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(item))
+}
+
+async fn http_remove_orden_servicio_item(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((id, item_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.orden_servicio_service.remove_item(&claims.tenant_id, id, item_id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn http_asignar_tecnico(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::orden_servicio_service::AsignarTecnicoRequest>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicioTecnico>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let tecnico = state.orden_servicio_service.asignar_tecnico(&claims.tenant_id, id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "ORDEN_SERVICIO_TECNICO_ASIGNADO", "orden_servicio", Some(id),
+        serde_json::json!({ "empleado_id": tecnico.empleado_id })).await;
+    Ok(Json(tecnico))
+}
+
+async fn http_quitar_tecnico(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((id, asignacion_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.orden_servicio_service.quitar_tecnico(&claims.tenant_id, id, asignacion_id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn http_agregar_material(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::orden_servicio_service::AgregarMaterialRequest>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicioMaterial>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let material = state.orden_servicio_service.agregar_material(&claims.tenant_id, id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "MATERIAL_ADDED", "orden_servicio", Some(id),
+        serde_json::json!({ "producto_id": material.producto_id })).await;
+    Ok(Json(material))
+}
+
+async fn http_consumir_material(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((id, material_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<services::orden_servicio_service::ConsumirMaterialRequest>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicioMaterial>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let material = state.orden_servicio_service.consumir_material(&claims.tenant_id, id, material_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "MATERIAL_CONSUMED", "orden_servicio", Some(id),
+        serde_json::json!({ "material_id": material_id, "cantidad_utilizada": material.cantidad_utilizada })).await;
+    Ok(Json(material))
+}
+
+async fn http_agregar_nota_orden(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::orden_servicio_service::AgregarNotaRequest>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicioNota>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).ok();
+    let nota = state.orden_servicio_service.agregar_nota(&claims.tenant_id, id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(nota))
+}
+
+async fn http_iniciar_orden(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicio>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let orden = state.orden_servicio_service.iniciar(&claims.tenant_id, id).await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "WORK_ORDER_STARTED", "orden_servicio", Some(id), serde_json::json!({})).await;
+    Ok(Json(orden))
+}
+
+async fn http_pausar_orden(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicio>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let orden = state.orden_servicio_service.pausar(&claims.tenant_id, id).await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "WORK_ORDER_PAUSED", "orden_servicio", Some(id), serde_json::json!({})).await;
+    Ok(Json(orden))
+}
+
+async fn http_completar_orden(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicio>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let orden = state.orden_servicio_service.completar(&claims.tenant_id, id).await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "WORK_ORDER_COMPLETED", "orden_servicio", Some(id), serde_json::json!({})).await;
+    Ok(Json(orden))
+}
+
+async fn http_cancelar_orden(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::orden_servicio_service::OrdenServicio>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let orden = state.orden_servicio_service.cancelar(&claims.tenant_id, id).await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "WORK_ORDER_CANCELLED", "orden_servicio", Some(id), serde_json::json!({})).await;
+    Ok(Json(orden))
+}
+
+#[derive(Debug, Deserialize)]
+struct FacturarOrdenRequest {
+    metodo_pago: Option<String>,
+    tipo_ecf: Option<i32>,
+    aprobacion_admin: Option<AprobacionAdmin>,
+}
+
+/// Convierte una Orden de Servicio COMPLETADA en Venta real reutilizando
+/// `ventas_service::create_venta` sin cambios - mismo shape que
+/// `http_convertir_cotizacion`. Este servicio nunca inserta en `ventas`.
+async fn http_facturar_orden(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<FacturarOrdenRequest>,
+) -> Result<Json<VentaCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    let orden_completa = state.orden_servicio_service.get_orden(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    if orden_completa.orden.estado != "COMPLETADA" {
+        return Err((StatusCode::BAD_REQUEST, "Solo una orden de servicio completada puede facturarse".to_string()));
+    }
+    if orden_completa.orden.venta_id.is_some() {
+        return Err((StatusCode::BAD_REQUEST, "Esta orden de servicio ya fue facturada".to_string()));
+    }
+
+    let venta_req = services::ventas_service::CreateVentaRequest {
+        cliente_id: orden_completa.orden.cliente_id,
+        items: orden_completa.items.iter().map(|it| services::ventas_service::CreateVentaItemRequest {
+            producto_id: it.producto_id,
+            cantidad: it.cantidad,
+            descuento: Some(it.descuento),
+            precio_unitario: Some(it.precio_unitario),
+        }).collect(),
+        metodo_pago: req.metodo_pago,
+        tipo_ecf: req.tipo_ecf,
+        entrega_diferida: None,
+    };
+
+    let aprobado_por = match req.aprobacion_admin {
+        Some(a) => Some(
+            state.auth_service.verify_admin_credentials(&claims.tenant_id, &a.email, &a.password).await
+                .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?,
+        ),
+        None => None,
+    };
+
+    let completa = state.ventas_service.create_venta(&claims.tenant_id, usuario_id, &claims.rol, venta_req, aprobado_por).await
+        .map_err(|e| {
+            if e.downcast_ref::<services::ventas_service::DescuentoRequiereAprobacion>().is_some() {
+                (StatusCode::FORBIDDEN, e.to_string())
+            } else {
+                (StatusCode::BAD_REQUEST, e.to_string())
+            }
+        })?;
+
+    state.orden_servicio_service.marcar_facturada(&claims.tenant_id, id, completa.venta.id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "INVOICE_CREATED", "orden_servicio", Some(id),
+        serde_json::json!({ "venta_id": completa.venta.id, "total": completa.venta.total })).await;
+
+    Ok(Json(VentaCompletaResponse { venta: completa.venta, items: completa.items }))
+}
+
+/// Convierte una Cotización en Orden de Servicio (en vez de en Venta directa)
+/// reutilizando `orden_servicio_service::create_orden` - mismo patrón de
+/// orquestación que `http_convertir_cotizacion`.
+async fn http_convertir_cotizacion_a_orden(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<OrdenServicioCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    let cotizacion_completa = state.cotizacion_service.get_cotizacion(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    if cotizacion_completa.cotizacion.estado == "CONVERTIDA" {
+        return Err((StatusCode::BAD_REQUEST, "Esta cotización ya fue convertida".to_string()));
+    }
+    if cotizacion_completa.cotizacion.estado == "RECHAZADA" {
+        return Err((StatusCode::BAD_REQUEST, "Esta cotización fue rechazada".to_string()));
+    }
+
+    let orden_req = services::orden_servicio_service::CreateOrdenServicioRequest {
+        cliente_id: cotizacion_completa.cotizacion.cliente_id,
+        cotizacion_id: Some(id),
+        condicion_id: None,
+        prioridad: None,
+        fecha_programada: None,
+        direccion: None,
+        descripcion: None,
+        notas: None,
+        items: cotizacion_completa.items.iter().map(|it| services::orden_servicio_service::CreateOrdenServicioItemRequest {
+            producto_id: it.producto_id,
+            cantidad: it.cantidad,
+            descuento: Some(it.descuento),
+            precio_unitario: Some(it.precio_unitario),
+            tecnico_id: None,
+            observaciones: None,
+        }).collect(),
+    };
+
+    let completa = state.orden_servicio_service.create_orden(&claims.tenant_id, usuario_id, orden_req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    state.cotizacion_service.marcar_convertida_a_orden(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "COTIZACION_CONVERTIDA", "cotizacion", Some(id),
+        serde_json::json!({ "orden_servicio_id": completa.orden.id })).await;
+
+    Ok(Json(completa.into()))
+}
+
+// ---- Órdenes de Compra ----
+
+#[derive(Debug, Serialize)]
+struct OrdenCompraCompletaResponse {
+    #[serde(flatten)]
+    orden: services::orden_compra_service::OrdenCompra,
+    items: Vec<services::orden_compra_service::OrdenCompraItem>,
+}
+
+impl From<services::orden_compra_service::OrdenCompraCompleta> for OrdenCompraCompletaResponse {
+    fn from(c: services::orden_compra_service::OrdenCompraCompleta) -> Self {
+        Self { orden: c.orden, items: c.items }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListOrdenesCompraParams {
+    estado: Option<String>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+async fn http_list_ordenes_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ListOrdenesCompraParams>,
+) -> Result<Json<pagination::Page<services::orden_compra_service::OrdenCompraConProveedor>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (rows, total) = state.orden_compra_service.list_ordenes_compra(&claims.tenant_id, params.estado, &page, &sort).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(rows, page.page_number(), page_size, total)))
+}
+
+async fn http_create_orden_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<services::orden_compra_service::CreateOrdenCompraRequest>,
+) -> Result<Json<OrdenCompraCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let completa = state.orden_compra_service.create_orden_compra(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ORDEN_COMPRA_CREADA", "orden_compra", Some(completa.orden.id),
+        serde_json::json!({ "total": completa.orden.total })).await;
+    Ok(Json(completa.into()))
+}
+
+async fn http_get_orden_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<OrdenCompraCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let completa = state.orden_compra_service.get_orden_compra(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(completa.into()))
+}
+
+/// Recibir (total o parcialmente) crea la Compra real vía
+/// `compras_service::create_compra` sin cambios - esta orden nunca toca
+/// inventario directamente, igual que una Cotización nunca inserta en `ventas`.
+async fn http_recibir_orden_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::orden_compra_service::RecibirOrdenCompraRequest>,
+) -> Result<Json<CompraCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    let ncf_proveedor = req.ncf_proveedor.clone();
+    let metodo_pago = req.metodo_pago.clone();
+    let fecha_vencimiento = req.fecha_vencimiento;
+    let recepcion = state.orden_compra_service.preparar_recepcion(&claims.tenant_id, id, &req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let compra_req = services::compras_service::CreateCompraRequest {
+        proveedor_id: Some(recepcion.orden.proveedor_id),
+        ncf_proveedor,
+        metodo_pago,
+        fecha_vencimiento,
+        items: recepcion.lineas.iter().map(|(producto_id, cantidad, costo_unitario)| services::compras_service::CreateCompraItemRequest {
+            producto_id: *producto_id,
+            cantidad: *cantidad,
+            costo_unitario: *costo_unitario,
+            itbis_tipo: None,
+        }).collect(),
+    };
+
+    let completa = state.compras_service.create_compra(&claims.tenant_id, usuario_id, compra_req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ORDEN_COMPRA_RECIBIDA", "orden_compra", Some(id),
+        serde_json::json!({ "compra_id": completa.compra.id, "estado": recepcion.orden.estado })).await;
+
+    Ok(Json(CompraCompletaResponse { compra: completa.compra, items: completa.items }))
+}
+
+async fn http_cancelar_orden_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::orden_compra_service::OrdenCompra>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let orden = state.orden_compra_service.cancelar(&claims.tenant_id, id).await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(orden))
+}
+
+// ---- Adjuntos ----
+
+#[derive(Debug, Deserialize)]
+struct ListAdjuntosParams {
+    #[serde(rename = "entidadTipo")] entidad_tipo: String,
+    #[serde(rename = "entidadId")] entidad_id: Uuid,
+}
+
+async fn http_list_adjuntos(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<ListAdjuntosParams>,
+) -> Result<Json<Vec<services::adjunto_service::Adjunto>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let rows = state.adjunto_service.listar(&claims.tenant_id, &params.entidad_tipo, params.entidad_id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(rows))
+}
+
+async fn http_upload_adjunto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<services::adjunto_service::Adjunto>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).ok();
+
+    let mut entidad_tipo: Option<String> = None;
+    let mut entidad_id: Option<Uuid> = None;
+    let mut nombre_archivo: Option<String> = None;
+    let mut mime_type: Option<String> = None;
+    let mut bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, format!("Multipart inválido: {}", e)))? {
+        match field.name() {
+            Some("entidad_tipo") => entidad_tipo = Some(field.text().await.unwrap_or_default()),
+            Some("entidad_id") => entidad_id = field.text().await.ok().and_then(|s| Uuid::parse_str(&s).ok()),
+            Some("archivo") => {
+                nombre_archivo = field.file_name().map(|s| s.to_string());
+                mime_type = field.content_type().map(|s| s.to_string());
+                bytes = Some(field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, format!("No se pudo leer el archivo: {}", e)))?.to_vec());
+            }
+            _ => {}
+        }
+    }
+
+    let entidad_tipo = entidad_tipo.ok_or((StatusCode::BAD_REQUEST, "Falta el campo 'entidad_tipo'".to_string()))?;
+    let entidad_id = entidad_id.ok_or((StatusCode::BAD_REQUEST, "Falta o es inválido el campo 'entidad_id'".to_string()))?;
+    let bytes = bytes.ok_or((StatusCode::BAD_REQUEST, "Falta el campo 'archivo'".to_string()))?;
+    let nombre_archivo = nombre_archivo.unwrap_or_else(|| "archivo".to_string());
+
+    let adjunto = state.adjunto_service.guardar(&claims.tenant_id, &entidad_tipo, entidad_id, usuario_id, &nombre_archivo, mime_type, bytes).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(adjunto))
+}
+
+async fn http_delete_adjunto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.adjunto_service.eliminar(&claims.tenant_id, id).await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ------------------ MODULO 6: Compras y Gastos ------------------

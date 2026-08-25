@@ -3,7 +3,7 @@
 //! promedio ponderado del producto, y registra un egreso de caja. Gastos es
 //! un registro simple sin efecto en inventario (alquiler, servicios, etc).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -20,6 +20,10 @@ pub struct Compra {
     pub itbis_total: Decimal,
     pub total: Decimal,
     pub metodo_pago: String,
+    /// Requerido en la app (no en DB) cuando metodo_pago = FIADO - ver
+    /// create_compra. Alimenta la rama Cuentas por Pagar de
+    /// contabilidad_service::sincronizar.
+    pub fecha_vencimiento: Option<NaiveDate>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -63,6 +67,7 @@ pub struct CreateCompraRequest {
     pub proveedor_id: Option<Uuid>,
     pub ncf_proveedor: Option<String>,
     pub metodo_pago: Option<String>,
+    pub fecha_vencimiento: Option<NaiveDate>,
     pub items: Vec<CreateCompraItemRequest>,
 }
 
@@ -107,6 +112,9 @@ impl ComprasService {
             anyhow::bail!("La compra necesita al menos un producto");
         }
         let metodo_pago = req.metodo_pago.unwrap_or_else(|| "EFECTIVO".to_string());
+        if metodo_pago == "FIADO" && req.fecha_vencimiento.is_none() {
+            anyhow::bail!("Una compra fiada necesita una fecha de vencimiento");
+        }
 
         let mut tx = self.pool.begin().await?;
 
@@ -118,14 +126,17 @@ impl ComprasService {
             if item.cantidad <= Decimal::ZERO {
                 anyhow::bail!("La cantidad debe ser mayor a cero");
             }
-            let row: Option<(String, String, Decimal, Decimal)> = sqlx::query_as(
-                "SELECT sku, nombre, costo, stock_actual FROM productos WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+            let row: Option<(String, String, Decimal, Decimal, String)> = sqlx::query_as(
+                "SELECT sku, nombre, costo, stock_actual, tipo FROM productos WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
             )
             .bind(item.producto_id)
             .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let (sku, nombre, costo_actual, stock_actual) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+            let (sku, nombre, costo_actual, stock_actual, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+            if tipo == "SERVICIO" {
+                anyhow::bail!("No se pueden comprar servicios — usa Gastos para este concepto");
+            }
 
             let line_subtotal = item.costo_unitario * item.cantidad;
             let itbis_tipo = item.itbis_tipo.clone().unwrap_or_else(|| "EXENTO".to_string());
@@ -154,9 +165,9 @@ impl ComprasService {
         let total = subtotal_total + itbis_total;
 
         let compra = sqlx::query_as::<_, Compra>(
-            r#"INSERT INTO compras (tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-               RETURNING id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, created_at"#,
+            r#"INSERT INTO compras (tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, fecha_vencimiento)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               RETURNING id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, fecha_vencimiento, created_at"#,
         )
         .bind(tenant_id)
         .bind(req.proveedor_id)
@@ -166,6 +177,7 @@ impl ComprasService {
         .bind(itbis_total)
         .bind(total)
         .bind(&metodo_pago)
+        .bind(req.fecha_vencimiento)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -203,17 +215,22 @@ impl ComprasService {
             .await?;
         }
 
-        sqlx::query(
-            r#"INSERT INTO caja_movimientos (tenant_id, tipo, concepto, monto, metodo_pago, referencia_tipo, referencia_id, usuario_id)
-               VALUES ($1, 'EGRESO', 'Compra a proveedor', $2, $3, 'COMPRA', $4, $5)"#,
-        )
-        .bind(tenant_id)
-        .bind(total)
-        .bind(&metodo_pago)
-        .bind(compra.id)
-        .bind(usuario_id)
-        .execute(&mut *tx)
-        .await?;
+        // Una compra FIADO no mueve caja - se acredita 2110 Cuentas por
+        // Pagar en su lugar (ver contabilidad_service::sincronizar), igual
+        // que ventas_service salta el ingreso de caja para una venta FIADO.
+        if metodo_pago != "FIADO" {
+            sqlx::query(
+                r#"INSERT INTO caja_movimientos (tenant_id, tipo, concepto, monto, metodo_pago, referencia_tipo, referencia_id, usuario_id)
+                   VALUES ($1, 'EGRESO', 'Compra a proveedor', $2, $3, 'COMPRA', $4, $5)"#,
+            )
+            .bind(tenant_id)
+            .bind(total)
+            .bind(&metodo_pago)
+            .bind(compra.id)
+            .bind(usuario_id)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
         Ok(CompraCompleta { compra, items })
@@ -272,7 +289,7 @@ impl ComprasService {
 
     pub async fn get_compra(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<CompraCompleta> {
         let compra = sqlx::query_as::<_, Compra>(
-            r#"SELECT id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, created_at
+            r#"SELECT id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, fecha_vencimiento, created_at
                FROM compras WHERE id = $1 AND tenant_id = $2"#,
         )
         .bind(id)

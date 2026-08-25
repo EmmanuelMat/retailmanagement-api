@@ -36,6 +36,11 @@ pub struct Tenant {
     pub logo_url: Option<String>,
     pub ambiente_dgii: String, // TesteCF, CerteCF, eCF
     pub factura_electronica_activa: bool,
+    /// COLMADO (retail, default) | SERVICIOS. Cambia terminología/comportamiento
+    /// en la UI y algunas reglas del core (ver ventas_service::create_venta).
+    /// Solo se fija desde el staff console (staff_service::set_tipo_negocio) -
+    /// nunca desde "Mi negocio" del propio tenant, a propósito.
+    pub tipo_negocio: String,
     pub activo: bool,
     pub created_at: chrono::DateTime<Utc>,
 }
@@ -210,9 +215,14 @@ impl AuthService {
         .await?;
 
         // 2. Crear usuario admin
+        // rol_id se resuelve contra el catálogo global `roles` (además del
+        // string `rol` de siempre) - alimenta únicamente el permiso_guard
+        // nuevo (Órdenes de Servicio/Compra); ADMIN también pasa ese guard
+        // por el escape hatch de siempre, así que esto es solo para que
+        // `role_permisos` tenga de qué partir si algún día se afina.
         sqlx::query(
-            r#"INSERT INTO usuarios (id, tenant_id, nombre, email, password_hash, rol, activo, created_at)
-               VALUES ($1, $2, $3, $4, $5, 'ADMIN', true, $6)"#
+            r#"INSERT INTO usuarios (id, tenant_id, nombre, email, password_hash, rol, rol_id, activo, created_at)
+               VALUES ($1, $2, $3, $4, $5, 'ADMIN', (SELECT id FROM roles WHERE codigo = 'ADMIN'), true, $6)"#
         )
         .bind(user_id)
         .bind(&rnc_clean)
@@ -272,6 +282,7 @@ impl AuthService {
             ("1200", "Inventario", "ACTIVO", "DEUDORA"),
             ("1300", "Anticipos a Empleados", "ACTIVO", "DEUDORA"),
             ("2100", "ITBIS por Pagar", "PASIVO", "ACREEDORA"),
+            ("2110", "Cuentas por Pagar", "PASIVO", "ACREEDORA"),
             ("2200", "Retenciones y Descuentos", "PASIVO", "ACREEDORA"),
             ("4100", "Ingresos por Ventas", "INGRESO", "ACREEDORA"),
             ("4200", "Otros Ingresos", "INGRESO", "ACREEDORA"),
@@ -296,6 +307,35 @@ impl AuthService {
             .execute(&mut *tx)
             .await?;
         }
+
+        const CONDICIONES_ORDEN: &[(&str, &str, i32)] = &[
+            ("MANTENIMIENTO", "Mantenimiento", 10),
+            ("REPARACION", "Reparación", 20),
+            ("GARANTIA", "Garantía", 30),
+            ("INSTALACION", "Instalación", 40),
+            ("INSPECCION", "Inspección", 50),
+            ("EMERGENCIA", "Emergencia", 60),
+        ];
+        for (codigo, nombre, orden) in CONDICIONES_ORDEN {
+            sqlx::query("INSERT INTO condiciones_orden (tenant_id, codigo, nombre, orden) VALUES ($1, $2, $3, $4)")
+                .bind(&rnc_clean)
+                .bind(codigo)
+                .bind(nombre)
+                .bind(orden)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        // 5. Módulos: un tenant nuevo arranca viendo todo el catálogo (sin
+        // curar todavía) - staff lo ajusta después desde el sitio interno.
+        // Necesario ahora que el guard respeta tenant_modulos incluso en
+        // trial (antes se saltaba el chequeo entero mientras no era `active`).
+        sqlx::query(
+            "INSERT INTO tenant_modulos (tenant_id, modulo_codigo) SELECT $1, codigo FROM modulos_catalogo",
+        )
+        .bind(&rnc_clean)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
 
@@ -475,7 +515,7 @@ impl AuthService {
     }
 
     pub async fn get_tenant(&self, rnc: &str) -> anyhow::Result<Tenant> {
-        let row = sqlx::query_as::<_, TenantRow>("SELECT rnc, razon_social, nombre_comercial, direccion, telefono, correo, logo_url, ambiente_dgii, factura_electronica_activa, activo, created_at FROM tenants WHERE rnc = $1")
+        let row = sqlx::query_as::<_, TenantRow>("SELECT rnc, razon_social, nombre_comercial, direccion, telefono, correo, logo_url, ambiente_dgii, factura_electronica_activa, tipo_negocio, activo, created_at FROM tenants WHERE rnc = $1")
             .bind(rnc)
             .fetch_optional(&self.pool)
             .await?
@@ -491,6 +531,7 @@ impl AuthService {
             logo_url: row.logo_url,
             ambiente_dgii: row.ambiente_dgii,
             factura_electronica_activa: row.factura_electronica_activa,
+            tipo_negocio: row.tipo_negocio,
             activo: row.activo,
             created_at: row.created_at,
         })
@@ -545,6 +586,7 @@ struct TenantRow {
     logo_url: Option<String>,
     ambiente_dgii: String,
     factura_electronica_activa: bool,
+    tipo_negocio: String,
     activo: bool,
     created_at: chrono::DateTime<Utc>,
 }

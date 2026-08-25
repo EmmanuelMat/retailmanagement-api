@@ -2,9 +2,9 @@
 
 import { Suspense } from "react";
 import Link from "next/link";
-import { PackageCheck, Search } from "lucide-react";
+import { PackageCheck, Plus, Search } from "lucide-react";
 import {
-  Input,
+  Button, Input,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
   Pagination, ScrollableTableCard,
 } from "@repo/ui";
@@ -13,7 +13,8 @@ import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
 
 interface Conduce {
   id: string;
-  venta_id: string;
+  // Ausente en un conduce standalone (sin Venta previa) - ver conduce_service.rs.
+  venta_id: string | null;
   cliente_nombre: string | null;
   direccion_entrega: string | null;
   created_at: string;
@@ -56,9 +57,14 @@ function ConducesPageContent() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold font-serif tracking-tight">Conduces</h1>
-        <p className="text-sm text-muted-foreground mt-1">Historial de entregas parciales — se registran desde la venta a la que pertenecen.</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold font-serif tracking-tight">Conduces</h1>
+          <p className="text-sm text-muted-foreground mt-1">Historial de entregas parciales.</p>
+        </div>
+        <Link href={"/conduces/nuevo" as any}>
+          <Button size="sm"><Plus className="h-4 w-4" />Nuevo conduce</Button>
+        </Link>
       </div>
 
       <div className="flex flex-wrap gap-3">
@@ -115,9 +121,13 @@ function ConducesPageContent() {
                 <TableCell>{c.cliente_nombre || "Consumidor final"}</TableCell>
                 <TableCell className="text-muted-foreground">{c.direccion_entrega || "—"}</TableCell>
                 <TableCell>
-                  <Link href={`/ventas/${c.venta_id}` as any} className="text-primary hover:underline text-xs font-mono">
-                    Ver venta
-                  </Link>
+                  {c.venta_id ? (
+                    <Link href={`/ventas/${c.venta_id}` as any} className="text-primary hover:underline text-xs font-mono">
+                      Ver venta
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

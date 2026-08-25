@@ -52,11 +52,16 @@ pub struct Producto {
     pub unidad_medida: String,
     pub itbis_tipo: String,
     pub costo: Decimal,
-    pub precio_venta: Decimal,
+    /// NULL solo cuando tipo = SERVICIO (sin precio fijo, se captura por
+    /// línea al cotizar/facturar - ver ventas_service/cotizacion_service).
+    pub precio_venta: Option<Decimal>,
     pub stock_actual: Decimal,
     pub stock_minimo: Decimal,
     pub activo: bool,
     pub imagen_url: Option<String>,
+    /// PRODUCTO (default) | SERVICIO. SERVICIO no tiene stock ni precio fijo
+    /// - ver create_producto/update_producto para la validación cruzada.
+    pub tipo: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -75,6 +80,7 @@ pub struct CreateProductoRequest {
     pub precio_venta: Option<Decimal>,
     pub stock_actual: Option<Decimal>,
     pub stock_minimo: Option<Decimal>,
+    pub tipo: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +98,7 @@ pub struct UpdateProductoRequest {
     pub stock_actual: Option<Decimal>,
     pub stock_minimo: Option<Decimal>,
     pub activo: Option<bool>,
+    pub tipo: Option<String>,
 }
 
 pub struct CatalogService {
@@ -212,7 +219,7 @@ impl CatalogService {
 
     // ---- Productos ----
 
-    const PRODUCTO_COLUMNS: &'static str = "id, tenant_id, categoria_id, proveedor_id, sku, codigo_barras, nombre, descripcion, unidad_medida, itbis_tipo, costo, precio_venta, stock_actual, stock_minimo, activo, imagen_url, created_at, updated_at";
+    const PRODUCTO_COLUMNS: &'static str = "id, tenant_id, categoria_id, proveedor_id, sku, codigo_barras, nombre, descripcion, unidad_medida, itbis_tipo, costo, precio_venta, stock_actual, stock_minimo, activo, imagen_url, tipo, created_at, updated_at";
 
     const PRODUCTOS_SORTABLE: &'static [(&'static str, &'static str)] = &[
         ("nombre", "nombre"),
@@ -229,12 +236,14 @@ impl CatalogService {
         search: Option<String>,
         unidad_medida: Option<String>,
         activo: Option<bool>,
+        tipo: Option<String>,
         page: &crate::pagination::PageParams,
         sort: &crate::pagination::SortParams,
     ) -> anyhow::Result<(Vec<Producto>, i64)> {
         let search_raw = search.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         let search_pattern = search_raw.as_ref().map(|s| format!("%{}%", s.to_lowercase()));
         let unidad_medida = unidad_medida.filter(|s| !s.trim().is_empty());
+        let tipo = tipo.filter(|s| !s.trim().is_empty());
 
         // Nombre/SKU: coincidencia parcial (LIKE). Código de barras: exacto —
         // así el flujo de escáner (que manda el código completo) no depende
@@ -243,7 +252,8 @@ impl CatalogService {
                AND ($2::uuid IS NULL OR categoria_id = $2)
                AND ($3::text IS NULL OR LOWER(nombre) LIKE $3 OR LOWER(sku) LIKE $3 OR codigo_barras = $6)
                AND ($4::text IS NULL OR unidad_medida = $4)
-               AND ($5::bool IS NULL OR activo = $5)";
+               AND ($5::bool IS NULL OR activo = $5)
+               AND ($7::text IS NULL OR tipo = $7)";
 
         let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM productos {WHERE_CLAUSE}"))
             .bind(tenant_id)
@@ -252,13 +262,14 @@ impl CatalogService {
             .bind(&unidad_medida)
             .bind(activo)
             .bind(&search_raw)
+            .bind(&tipo)
             .fetch_one(&self.pool)
             .await?;
 
         let order_by = sort.resolve(Self::PRODUCTOS_SORTABLE, "nombre ASC");
         let limit = page.limit(20);
         let query = format!(
-            "SELECT {} FROM productos {WHERE_CLAUSE} ORDER BY {order_by} LIMIT $7 OFFSET $8",
+            "SELECT {} FROM productos {WHERE_CLAUSE} ORDER BY {order_by} LIMIT $8 OFFSET $9",
             Self::PRODUCTO_COLUMNS
         );
         let rows = sqlx::query_as::<_, Producto>(&query)
@@ -268,6 +279,7 @@ impl CatalogService {
             .bind(&unidad_medida)
             .bind(activo)
             .bind(&search_raw)
+            .bind(&tipo)
             .bind(limit)
             .bind(page.offset(20))
             .fetch_all(&self.pool)
@@ -296,6 +308,18 @@ impl CatalogService {
         if !ITBIS_TIPOS.contains(&itbis_tipo.as_str()) {
             anyhow::bail!("itbisTipo inválido: debe ser GRAVADO_18, GRAVADO_16 o EXENTO");
         }
+        let tipo = req.tipo.unwrap_or_else(|| "PRODUCTO".to_string());
+        if tipo != "PRODUCTO" && tipo != "SERVICIO" {
+            anyhow::bail!("tipo inválido: debe ser PRODUCTO o SERVICIO");
+        }
+        // Un Servicio nunca tiene precio fijo ni stock, sin importar lo que
+        // mande el cliente - el precio se captura por línea al cotizar o
+        // facturar (ver ventas_service::create_venta).
+        let (precio_venta, stock_actual, stock_minimo): (Option<Decimal>, Decimal, Decimal) = if tipo == "SERVICIO" {
+            (None, Decimal::ZERO, Decimal::ZERO)
+        } else {
+            (Some(req.precio_venta.unwrap_or_default()), req.stock_actual.unwrap_or_default(), req.stock_minimo.unwrap_or_default())
+        };
         let existing: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM productos WHERE tenant_id = $1 AND sku = $2")
             .bind(tenant_id)
             .bind(req.sku.trim())
@@ -305,8 +329,8 @@ impl CatalogService {
             anyhow::bail!("Ya existe un producto con SKU: {}", req.sku);
         }
         let query = format!(
-            "INSERT INTO productos (tenant_id, categoria_id, proveedor_id, sku, codigo_barras, nombre, descripcion, unidad_medida, itbis_tipo, costo, precio_venta, stock_actual, stock_minimo)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            "INSERT INTO productos (tenant_id, categoria_id, proveedor_id, sku, codigo_barras, nombre, descripcion, unidad_medida, itbis_tipo, costo, precio_venta, stock_actual, stock_minimo, tipo)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              RETURNING {}",
             Self::PRODUCTO_COLUMNS
         );
@@ -321,9 +345,10 @@ impl CatalogService {
             .bind(req.unidad_medida.unwrap_or_else(|| "43".to_string()))
             .bind(itbis_tipo)
             .bind(req.costo.unwrap_or_default())
-            .bind(req.precio_venta.unwrap_or_default())
-            .bind(req.stock_actual.unwrap_or_default())
-            .bind(req.stock_minimo.unwrap_or_default())
+            .bind(precio_venta)
+            .bind(stock_actual)
+            .bind(stock_minimo)
+            .bind(tipo)
             .fetch_one(&self.pool)
             .await?;
         Ok(producto)
@@ -335,10 +360,23 @@ impl CatalogService {
         if !ITBIS_TIPOS.contains(&itbis_tipo.as_str()) {
             anyhow::bail!("itbisTipo inválido: debe ser GRAVADO_18, GRAVADO_16 o EXENTO");
         }
+        let tipo = req.tipo.unwrap_or(existing.tipo);
+        if tipo != "PRODUCTO" && tipo != "SERVICIO" {
+            anyhow::bail!("tipo inválido: debe ser PRODUCTO o SERVICIO");
+        }
+        let (precio_venta, stock_actual, stock_minimo): (Option<Decimal>, Decimal, Decimal) = if tipo == "SERVICIO" {
+            (None, Decimal::ZERO, Decimal::ZERO)
+        } else {
+            (
+                Some(req.precio_venta.unwrap_or_else(|| existing.precio_venta.unwrap_or_default())),
+                req.stock_actual.unwrap_or(existing.stock_actual),
+                req.stock_minimo.unwrap_or(existing.stock_minimo),
+            )
+        };
         let query = format!(
             "UPDATE productos SET categoria_id = $1, proveedor_id = $2, sku = $3, codigo_barras = $4, nombre = $5, descripcion = $6,
-                 unidad_medida = $7, itbis_tipo = $8, costo = $9, precio_venta = $10, stock_actual = $11, stock_minimo = $12, activo = $13, updated_at = NOW()
-             WHERE id = $14 AND tenant_id = $15
+                 unidad_medida = $7, itbis_tipo = $8, costo = $9, precio_venta = $10, stock_actual = $11, stock_minimo = $12, activo = $13, tipo = $14, updated_at = NOW()
+             WHERE id = $15 AND tenant_id = $16
              RETURNING {}",
             Self::PRODUCTO_COLUMNS
         );
@@ -355,10 +393,11 @@ impl CatalogService {
             .bind(req.unidad_medida.unwrap_or(existing.unidad_medida))
             .bind(itbis_tipo)
             .bind(req.costo.unwrap_or(existing.costo))
-            .bind(req.precio_venta.unwrap_or(existing.precio_venta))
-            .bind(req.stock_actual.unwrap_or(existing.stock_actual))
-            .bind(req.stock_minimo.unwrap_or(existing.stock_minimo))
+            .bind(precio_venta)
+            .bind(stock_actual)
+            .bind(stock_minimo)
             .bind(req.activo.unwrap_or(existing.activo))
+            .bind(tipo)
             .bind(id)
             .bind(tenant_id)
             .fetch_one(&self.pool)

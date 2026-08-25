@@ -68,6 +68,11 @@ async fn main() -> anyhow::Result<()> {
         ALTER TABLE tenants ADD COLUMN IF NOT EXISTS license_activated_at TIMESTAMPTZ;
         ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
         ALTER TABLE tenants ADD COLUMN IF NOT EXISTS license_sig TEXT NOT NULL DEFAULT '';
+        ALTER TABLE tenants ADD COLUMN IF NOT EXISTS tipo_negocio TEXT NOT NULL DEFAULT 'COLMADO';
+        DO $$ BEGIN
+            ALTER TABLE tenants ADD CONSTRAINT chk_tenants_tipo_negocio
+                CHECK (tipo_negocio IN ('COLMADO', 'SERVICIOS'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
         CREATE TABLE IF NOT EXISTS usuarios (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -141,6 +146,21 @@ async fn main() -> anyhow::Result<()> {
         -- Miniatura del producto (ver image_service.rs) - se guarda solo la
         -- ruta servida estáticamente, nunca el binario en la fila.
         ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen_url TEXT;
+
+        -- Catálogo de Servicio: item sin stock ni precio fijo (el precio se
+        -- captura por línea al cotizar/facturar, ver ventas_service y
+        -- cotizacion_service). PRODUCTO sigue siendo el default - byte
+        -- idéntico para todo el catálogo existente.
+        ALTER TABLE productos ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'PRODUCTO';
+        DO $$ BEGIN
+            ALTER TABLE productos ADD CONSTRAINT chk_productos_tipo
+                CHECK (tipo IN ('PRODUCTO', 'SERVICIO'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+        ALTER TABLE productos ALTER COLUMN precio_venta DROP NOT NULL;
+        DO $$ BEGIN
+            ALTER TABLE productos ADD CONSTRAINT chk_productos_precio_venta_por_tipo
+                CHECK ((tipo = 'PRODUCTO' AND precio_venta IS NOT NULL) OR (tipo = 'SERVICIO' AND precio_venta IS NULL));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
         -- MODULO 3: Inventario (kardex) - plain movement log, adjusts productos.stock_actual
         CREATE TABLE IF NOT EXISTS movimientos_inventario (
@@ -565,19 +585,26 @@ async fn main() -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_cotizaciones_tenant ON cotizaciones(tenant_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_cotizacion_items_cotizacion ON cotizacion_items(cotizacion_id);
 
-        -- Conduces (guías de despacho): a diferencia del diseño anterior, un
-        -- conduce ya NO es un documento con precio propio que luego se
-        -- "convierte" en Venta. La Venta (factura) se crea PRIMERO, por la
-        -- cantidad total acordada; el conduce solo registra que una parte de
-        -- esa cantidad salió físicamente del negocio - sin precio, sin ITBIS,
-        -- solo cantidad. Ver ventas.entrega_diferida / venta_items.cantidad_entregada.
-        DROP TABLE IF EXISTS conduce_items;
-        DROP TABLE IF EXISTS conduces;
-
-        CREATE TABLE conduces (
+        -- Conduces (guías de despacho / "Órdenes de Servicio" para tenants
+        -- SERVICIOS): a diferencia del diseño anterior, un conduce ya NO es
+        -- un documento con precio propio que luego se "convierte" en Venta.
+        -- La Venta (factura) se crea PRIMERO, por la cantidad total
+        -- acordada; el conduce solo registra que una parte de esa cantidad
+        -- salió físicamente del negocio - sin precio, sin ITBIS, solo
+        -- cantidad. Ver ventas.entrega_diferida / venta_items.cantidad_entregada.
+        -- venta_id/venta_item_id son nullable: un conduce también puede
+        -- crearse standalone (sin Venta previa), en cuyo caso cliente_id
+        -- identifica al cliente y producto_id/sku/nombre/cantidad en
+        -- conduce_items se llenan directo en vez de copiarse del venta_item.
+        -- NOTA: hasta esta migración esta tabla se recreaba con DROP+CREATE
+        -- en cada corrida de `migrate` (perdiendo datos reales cada vez) -
+        -- se cambia aquí al mismo patrón idempotente CREATE IF NOT EXISTS +
+        -- ALTER ADD COLUMN IF NOT EXISTS usado en el resto del archivo.
+        CREATE TABLE IF NOT EXISTS conduces (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
-            venta_id UUID NOT NULL REFERENCES ventas(id),
+            venta_id UUID REFERENCES ventas(id),
+            cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL,
             usuario_id UUID REFERENCES usuarios(id),
             direccion_entrega TEXT,
             -- Campos del formato de conduce impreso (guía de despacho física):
@@ -590,11 +617,13 @@ async fn main() -> anyhow::Result<()> {
             recibido_por TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        ALTER TABLE conduces ALTER COLUMN venta_id DROP NOT NULL;
+        ALTER TABLE conduces ADD COLUMN IF NOT EXISTS cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL;
 
-        CREATE TABLE conduce_items (
+        CREATE TABLE IF NOT EXISTS conduce_items (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             conduce_id UUID NOT NULL REFERENCES conduces(id) ON DELETE CASCADE,
-            venta_item_id UUID NOT NULL REFERENCES venta_items(id),
+            venta_item_id UUID REFERENCES venta_items(id),
             producto_id UUID NOT NULL REFERENCES productos(id),
             sku TEXT NOT NULL,
             nombre TEXT NOT NULL,
@@ -602,10 +631,11 @@ async fn main() -> anyhow::Result<()> {
             unidad TEXT,
             observaciones TEXT
         );
+        ALTER TABLE conduce_items ALTER COLUMN venta_item_id DROP NOT NULL;
 
-        CREATE INDEX idx_conduces_tenant ON conduces(tenant_id, created_at DESC);
-        CREATE INDEX idx_conduces_venta ON conduces(venta_id);
-        CREATE INDEX idx_conduce_items_conduce ON conduce_items(conduce_id);
+        CREATE INDEX IF NOT EXISTS idx_conduces_tenant ON conduces(tenant_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_conduces_venta ON conduces(venta_id);
+        CREATE INDEX IF NOT EXISTS idx_conduce_items_conduce ON conduce_items(conduce_id);
 
         -- entrega_diferida: la mercancía NO sale toda al facturar - sale en
         -- lotes vía conduces. cantidad_entregada es cuánto de esa línea ha
@@ -624,10 +654,14 @@ async fn main() -> anyhow::Result<()> {
             ALTER TABLE ventas ADD CONSTRAINT chk_ventas_metodo_pago
                 CHECK (metodo_pago IN ('EFECTIVO', 'TARJETA', 'TRANSFERENCIA', 'FIADO'));
         EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-        DO $$ BEGIN
-            ALTER TABLE compras ADD CONSTRAINT chk_compras_metodo_pago
-                CHECK (metodo_pago IN ('EFECTIVO', 'TARJETA', 'TRANSFERENCIA'));
-        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+        -- FIADO en compras: a diferencia del CREDITO nunca-implementado de
+        -- arriba, esto sí tiene lógica propia (ver compras_service.rs y la
+        -- rama FIADO de contabilidad_service::sincronizar) - una compra fiada
+        -- no mueve caja, se acredita 2110 Cuentas por Pagar en su lugar.
+        ALTER TABLE compras DROP CONSTRAINT IF EXISTS chk_compras_metodo_pago;
+        ALTER TABLE compras ADD CONSTRAINT chk_compras_metodo_pago
+            CHECK (metodo_pago IN ('EFECTIVO', 'TARJETA', 'TRANSFERENCIA', 'FIADO'));
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS fecha_vencimiento DATE;
 
         -- MODULO 7b: Plan de cuentas, cabecera de asientos y periodos
         -- contables. Ver docs/12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md.
@@ -691,6 +725,7 @@ async fn main() -> anyhow::Result<()> {
             ('1200', 'Inventario', 'ACTIVO', 'DEUDORA'),
             ('1300', 'Anticipos a Empleados', 'ACTIVO', 'DEUDORA'),
             ('2100', 'ITBIS por Pagar', 'PASIVO', 'ACREEDORA'),
+            ('2110', 'Cuentas por Pagar', 'PASIVO', 'ACREEDORA'),
             ('2200', 'Retenciones y Descuentos', 'PASIVO', 'ACREEDORA'),
             ('4100', 'Ingresos por Ventas', 'INGRESO', 'ACREEDORA'),
             ('4200', 'Otros Ingresos', 'INGRESO', 'ACREEDORA'),
@@ -766,6 +801,277 @@ async fn main() -> anyhow::Result<()> {
         -- Nullable: filas históricas no lo tienen y sincronizar las salta.
         ALTER TABLE venta_items ADD COLUMN IF NOT EXISTS costo_unitario DECIMAL(12,2);
 
+        -- MODULO 15: Service Operations (Órdenes de Servicio / Work Orders).
+        -- Entidad nueva y separada de `conduces` - conduces vuelve a ser
+        -- solo la guía de despacho para todo tipo de tenant (ver revert en
+        -- el frontend); esta es la orden de trabajo real con técnico,
+        -- materiales, ciclo de vida y facturación. No hay columna `numero`:
+        -- igual que ventas/compras/cotizaciones, se identifica por `id` (la
+        -- UI puede mostrar un código corto derivado del id, como ya hacen
+        -- los conduces con su prefijo CND-/OS- al imprimir).
+
+        CREATE TABLE IF NOT EXISTS condiciones_orden (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            codigo TEXT NOT NULL,
+            nombre TEXT NOT NULL,
+            orden INT NOT NULL DEFAULT 0,
+            activo BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(tenant_id, codigo)
+        );
+        CREATE INDEX IF NOT EXISTS idx_condiciones_orden_tenant ON condiciones_orden(tenant_id);
+
+        -- Backfill para tenants existentes; los tenants nuevos se siembran
+        -- en auth_service::register (mismo patrón que cuentas_contables).
+        INSERT INTO condiciones_orden (tenant_id, codigo, nombre, orden)
+        SELECT t.rnc, c.codigo, c.nombre, c.orden FROM tenants t
+        CROSS JOIN (VALUES
+            ('MANTENIMIENTO', 'Mantenimiento', 10),
+            ('REPARACION', 'Reparación', 20),
+            ('GARANTIA', 'Garantía', 30),
+            ('INSTALACION', 'Instalación', 40),
+            ('INSPECCION', 'Inspección', 50),
+            ('EMERGENCIA', 'Emergencia', 60)
+        ) AS c(codigo, nombre, orden)
+        ON CONFLICT (tenant_id, codigo) DO NOTHING;
+
+        CREATE TABLE IF NOT EXISTS ordenes_servicio (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL,
+            cotizacion_id UUID REFERENCES cotizaciones(id),
+            venta_id UUID REFERENCES ventas(id),
+            condicion_id UUID REFERENCES condiciones_orden(id),
+            estado TEXT NOT NULL DEFAULT 'BORRADOR', -- BORRADOR | PROGRAMADA | EN_PROCESO | PAUSADA | COMPLETADA | CANCELADA
+            prioridad TEXT NOT NULL DEFAULT 'NORMAL', -- BAJA | NORMAL | ALTA | URGENTE
+            fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+            fecha_programada DATE,
+            hora_inicio TIME,
+            hora_fin TIME,
+            direccion TEXT,
+            descripcion TEXT,
+            subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
+            descuento DECIMAL(12,2) NOT NULL DEFAULT 0,
+            itbis_total DECIMAL(12,2) NOT NULL DEFAULT 0,
+            total DECIMAL(12,2) NOT NULL DEFAULT 0,
+            notas TEXT,
+            usuario_id UUID REFERENCES usuarios(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ordenes_servicio_tenant ON ordenes_servicio(tenant_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ordenes_servicio_cliente ON ordenes_servicio(cliente_id);
+        CREATE INDEX IF NOT EXISTS idx_ordenes_servicio_estado ON ordenes_servicio(tenant_id, estado);
+        DO $$ BEGIN
+            ALTER TABLE ordenes_servicio ADD CONSTRAINT chk_ordenes_servicio_estado
+                CHECK (estado IN ('BORRADOR', 'PROGRAMADA', 'EN_PROCESO', 'PAUSADA', 'COMPLETADA', 'CANCELADA'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+        DO $$ BEGIN
+            ALTER TABLE ordenes_servicio ADD CONSTRAINT chk_ordenes_servicio_prioridad
+                CHECK (prioridad IN ('BAJA', 'NORMAL', 'ALTA', 'URGENTE'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+        CREATE TABLE IF NOT EXISTS orden_servicio_items (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            orden_servicio_id UUID NOT NULL REFERENCES ordenes_servicio(id) ON DELETE CASCADE,
+            producto_id UUID NOT NULL REFERENCES productos(id),
+            sku TEXT NOT NULL,
+            nombre TEXT NOT NULL,
+            tipo TEXT NOT NULL, -- PRODUCTO | SERVICIO (copiado de productos.tipo al insertar)
+            cantidad DECIMAL(12,2) NOT NULL,
+            precio_unitario DECIMAL(12,2) NOT NULL,
+            descuento DECIMAL(12,2) NOT NULL DEFAULT 0,
+            itbis_tipo TEXT NOT NULL,
+            itbis_monto DECIMAL(12,2) NOT NULL,
+            subtotal DECIMAL(12,2) NOT NULL,
+            tecnico_id UUID REFERENCES empleados(id),
+            observaciones TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_orden_servicio_items_orden ON orden_servicio_items(orden_servicio_id);
+
+        CREATE TABLE IF NOT EXISTS orden_servicio_tecnicos (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            orden_servicio_id UUID NOT NULL REFERENCES ordenes_servicio(id) ON DELETE CASCADE,
+            empleado_id UUID NOT NULL REFERENCES empleados(id),
+            rol TEXT NOT NULL DEFAULT 'TECNICO_PRINCIPAL', -- TECNICO_PRINCIPAL | ASISTENTE
+            fecha_asignacion TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            fecha_inicio TIMESTAMPTZ,
+            fecha_fin TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_orden_servicio_tecnicos_orden ON orden_servicio_tecnicos(orden_servicio_id);
+        DO $$ BEGIN
+            ALTER TABLE orden_servicio_tecnicos ADD CONSTRAINT chk_orden_servicio_tecnicos_rol
+                CHECK (rol IN ('TECNICO_PRINCIPAL', 'ASISTENTE'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+        CREATE TABLE IF NOT EXISTS orden_servicio_materiales (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            orden_servicio_id UUID NOT NULL REFERENCES ordenes_servicio(id) ON DELETE CASCADE,
+            producto_id UUID NOT NULL REFERENCES productos(id),
+            cantidad_planificada DECIMAL(12,2) NOT NULL DEFAULT 0,
+            cantidad_utilizada DECIMAL(12,2) NOT NULL DEFAULT 0,
+            costo_unitario DECIMAL(12,2)
+        );
+        CREATE INDEX IF NOT EXISTS idx_orden_servicio_materiales_orden ON orden_servicio_materiales(orden_servicio_id);
+
+        CREATE TABLE IF NOT EXISTS orden_servicio_notas (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            orden_servicio_id UUID NOT NULL REFERENCES ordenes_servicio(id) ON DELETE CASCADE,
+            tipo TEXT NOT NULL DEFAULT 'INTERNA', -- INTERNA | TECNICO | CLIENTE | SISTEMA
+            contenido TEXT NOT NULL,
+            usuario_id UUID REFERENCES usuarios(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_orden_servicio_notas_orden ON orden_servicio_notas(orden_servicio_id, created_at DESC);
+        DO $$ BEGIN
+            ALTER TABLE orden_servicio_notas ADD CONSTRAINT chk_orden_servicio_notas_tipo
+                CHECK (tipo IN ('INTERNA', 'TECNICO', 'CLIENTE', 'SISTEMA'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+        -- Catálogo de permisos granular (aditivo): NO reemplaza el chequeo
+        -- por rol existente (role_guard/required_roles en main.rs) para
+        -- ninguna ruta ya existente - solo gobierna las rutas nuevas de
+        -- Órdenes de Servicio / Órdenes de Compra (ver permiso_guard/
+        -- required_permiso en main.rs). `roles` es un catálogo global
+        -- (igual que modulos_catalogo), no por tenant: hoy usuarios.rol ya
+        -- es un string compartido entre tenants (ADMIN/CAJERO/ALMACEN/
+        -- CONTADOR) - esto solo lo normaliza a una tabla, sin tocar `rol`.
+        CREATE TABLE IF NOT EXISTS roles (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            codigo TEXT NOT NULL UNIQUE,
+            nombre TEXT NOT NULL,
+            es_admin BOOLEAN NOT NULL DEFAULT false,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS permisos_catalogo (
+            codigo TEXT PRIMARY KEY,
+            nombre TEXT NOT NULL,
+            orden INT NOT NULL DEFAULT 0,
+            activo BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS role_permisos (
+            role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+            permiso_codigo TEXT NOT NULL REFERENCES permisos_catalogo(codigo) ON DELETE CASCADE,
+            PRIMARY KEY (role_id, permiso_codigo)
+        );
+
+        ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol_id UUID REFERENCES roles(id);
+
+        INSERT INTO roles (codigo, nombre, es_admin) VALUES
+            ('ADMIN', 'Administrador', true),
+            ('CAJERO', 'Cajero', false),
+            ('ALMACEN', 'Almacén', false),
+            ('CONTADOR', 'Contador', false)
+        ON CONFLICT (codigo) DO NOTHING;
+
+        UPDATE usuarios u SET rol_id = r.id FROM roles r WHERE u.rol_id IS NULL AND u.rol = r.codigo;
+
+        INSERT INTO permisos_catalogo (codigo, nombre, orden) VALUES
+            ('orden_servicio.ver', 'Ver órdenes de servicio', 10),
+            ('orden_servicio.crear', 'Crear órdenes de servicio', 20),
+            ('orden_servicio.editar', 'Editar órdenes de servicio', 30),
+            ('orden_servicio.asignar_tecnico', 'Asignar técnico', 40),
+            ('orden_servicio.iniciar', 'Iniciar trabajo', 50),
+            ('orden_servicio.pausar', 'Pausar trabajo', 60),
+            ('orden_servicio.completar', 'Completar trabajo', 70),
+            ('orden_servicio.cancelar', 'Cancelar orden', 80),
+            ('orden_servicio.consumir_material', 'Registrar consumo de materiales', 90),
+            ('orden_servicio.crear_factura', 'Crear factura desde orden', 100),
+            ('cotizacion.convertir_a_orden', 'Convertir cotización a orden de servicio', 110),
+            ('orden_compra.ver', 'Ver órdenes de compra', 120),
+            ('orden_compra.crear', 'Crear órdenes de compra', 130),
+            ('orden_compra.recibir', 'Recibir órdenes de compra', 140)
+        ON CONFLICT (codigo) DO NOTHING;
+
+        -- ADMIN recibe todos los permisos automáticamente (mismo escape
+        -- hatch que ya existe en role_guard); CAJERO/ALMACEN reciben el
+        -- subconjunto operativo razonable, editable después vía staff console.
+        INSERT INTO role_permisos (role_id, permiso_codigo)
+        SELECT r.id, p.codigo FROM roles r CROSS JOIN permisos_catalogo p WHERE r.codigo = 'ADMIN'
+        ON CONFLICT DO NOTHING;
+        INSERT INTO role_permisos (role_id, permiso_codigo)
+        SELECT r.id, p.codigo FROM roles r CROSS JOIN permisos_catalogo p
+        WHERE r.codigo = 'CAJERO' AND p.codigo IN (
+            'orden_servicio.ver', 'orden_servicio.crear', 'orden_servicio.editar',
+            'orden_servicio.asignar_tecnico', 'orden_servicio.iniciar', 'orden_servicio.pausar',
+            'orden_servicio.completar', 'orden_servicio.crear_factura', 'cotizacion.convertir_a_orden'
+        )
+        ON CONFLICT DO NOTHING;
+        INSERT INTO role_permisos (role_id, permiso_codigo)
+        SELECT r.id, p.codigo FROM roles r CROSS JOIN permisos_catalogo p
+        WHERE r.codigo = 'ALMACEN' AND p.codigo IN (
+            'orden_servicio.ver', 'orden_servicio.consumir_material',
+            'orden_compra.ver', 'orden_compra.crear', 'orden_compra.recibir'
+        )
+        ON CONFLICT DO NOTHING;
+
+        -- Órdenes de compra reales (intención pre-recepción): `compras` sigue
+        -- representando exclusivamente una compra YA recibida/pagada (sin
+        -- estado, ver compras_service::create_compra) - recibir una orden de
+        -- compra es lo que efectivamente crea la fila en `compras` vía el
+        -- servicio existente, esta tabla nunca toca inventario directamente.
+        CREATE TABLE IF NOT EXISTS ordenes_compra (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            proveedor_id UUID NOT NULL REFERENCES proveedores(id),
+            orden_servicio_id UUID REFERENCES ordenes_servicio(id),
+            estado TEXT NOT NULL DEFAULT 'BORRADOR', -- BORRADOR | ENVIADA | RECIBIDA_PARCIAL | RECIBIDA | CANCELADA
+            subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
+            itbis_total DECIMAL(12,2) NOT NULL DEFAULT 0,
+            total DECIMAL(12,2) NOT NULL DEFAULT 0,
+            fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+            fecha_esperada DATE,
+            notas TEXT,
+            usuario_id UUID REFERENCES usuarios(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ordenes_compra_tenant ON ordenes_compra(tenant_id, created_at DESC);
+        DO $$ BEGIN
+            ALTER TABLE ordenes_compra ADD CONSTRAINT chk_ordenes_compra_estado
+                CHECK (estado IN ('BORRADOR', 'ENVIADA', 'RECIBIDA_PARCIAL', 'RECIBIDA', 'CANCELADA'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+        CREATE TABLE IF NOT EXISTS orden_compra_items (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            orden_compra_id UUID NOT NULL REFERENCES ordenes_compra(id) ON DELETE CASCADE,
+            producto_id UUID NOT NULL REFERENCES productos(id),
+            sku TEXT NOT NULL,
+            nombre TEXT NOT NULL,
+            cantidad_solicitada DECIMAL(12,2) NOT NULL,
+            cantidad_recibida DECIMAL(12,2) NOT NULL DEFAULT 0,
+            costo_unitario DECIMAL(12,2) NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_orden_compra_items_orden ON orden_compra_items(orden_compra_id);
+
+        -- Adjuntos genéricos: no existía ninguna abstracción de storage
+        -- reusable (solo el patrón de disco de image_service.rs para fotos
+        -- de producto, y el patrón BYTEA-cifrado de certificados_dgii, este
+        -- último específico a un archivo pequeño/singular/sensible). Se
+        -- generaliza el patrón de disco: archivos bajo
+        -- {UPLOADS_DIR}/{tenant_id}/adjuntos/{entidad_tipo}/{entidad_id}/,
+        -- servidos por el mismo ServeDir de /uploads ya montado.
+        CREATE TABLE IF NOT EXISTS adjuntos (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            entidad_tipo TEXT NOT NULL, -- ORDEN_SERVICIO | COTIZACION | VENTA | CLIENTE | ORDEN_COMPRA
+            entidad_id UUID NOT NULL,
+            nombre_archivo TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            mime_type TEXT,
+            tamano BIGINT,
+            usuario_id UUID REFERENCES usuarios(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_adjuntos_entidad ON adjuntos(tenant_id, entidad_tipo, entidad_id);
+        DO $$ BEGIN
+            ALTER TABLE adjuntos ADD CONSTRAINT chk_adjuntos_entidad_tipo
+                CHECK (entidad_tipo IN ('ORDEN_SERVICIO', 'COTIZACION', 'VENTA', 'CLIENTE', 'ORDEN_COMPRA'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
         -- MODULO 14: Catálogo de módulos vendibles + asignación por tenant.
         -- El catálogo es editable desde el sitio de staff (agregar/renombrar
         -- un módulo no necesita migración) - pero conectar un módulo nuevo a
@@ -794,6 +1100,7 @@ async fn main() -> anyhow::Result<()> {
             ('POS_VENTAS', 'Punto de Venta', 'Terminal de ventas, cotizaciones, conduces y clientes a crédito (fiado).', 10),
             ('INVENTARIO', 'Inventario', 'Productos, categorías, kardex y ajustes de stock.', 20),
             ('COMPRAS_GASTOS', 'Compras y Gastos', 'Compras a proveedores y gastos operativos.', 30),
+            ('ORDENES_SERVICIO', 'Órdenes de Servicio', 'Órdenes de trabajo, técnicos, materiales y facturación de servicios.', 35),
             ('CONTABILIDAD', 'Contabilidad', 'Libro diario, libro mayor y períodos contables.', 40),
             ('CAJA_BANCOS', 'Caja y Bancos', 'Apertura/cierre de caja y cuentas bancarias.', 50),
             ('NOMINA', 'Nómina', 'Empleados, nómina y adelantos de sueldo.', 60),
@@ -802,6 +1109,19 @@ async fn main() -> anyhow::Result<()> {
             ('MOVIL', 'App Móvil', 'Acceso a la app móvil para POS y adelantos.', 90),
             ('IA_ASISTENTE', 'Asistente IA', 'Resumen del día y chat con IA.', 100)
         ON CONFLICT (codigo) DO NOTHING;
+
+        -- Backfill: cualquier tenant que nunca haya sido curado por staff
+        -- (cero filas en tenant_modulos) arranca viendo todo el catálogo,
+        -- igual que antes de que el guard dejara de saltarse el chequeo en
+        -- trial. Un tenant con AL MENOS una fila ya fue curado por staff -
+        -- el NOT EXISTS es por tenant, no por módulo, así que esto nunca
+        -- vuelve a agregar un módulo que staff apagó a propósito.
+        INSERT INTO tenant_modulos (tenant_id, modulo_codigo)
+        SELECT t.rnc, m.codigo
+        FROM tenants t
+        CROSS JOIN modulos_catalogo m
+        WHERE NOT EXISTS (SELECT 1 FROM tenant_modulos tm WHERE tm.tenant_id = t.rnc)
+        ON CONFLICT DO NOTHING;
         "#
     )
     .execute(&pool)

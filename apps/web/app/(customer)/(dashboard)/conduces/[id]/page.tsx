@@ -18,7 +18,9 @@ interface ConduceItem {
 
 interface ConduceDetalle {
   id: string;
-  venta_id: string;
+  // Ausente en un conduce/orden de servicio standalone - ver conduce_service.rs.
+  venta_id: string | null;
+  cliente_id: string | null;
   direccion_entrega: string | null;
   orden_compra: string | null;
   vehiculo_placa: string | null;
@@ -33,36 +35,45 @@ interface ConduceDetalle {
 export default function ConduceDetallePage() {
   const params = useParams<{ id: string }>();
   const [conduce, setConduce] = useState<ConduceDetalle | null>(null);
+  const [clienteNombre, setClienteNombre] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     apiFetch<ConduceDetalle>(`/api/conduces/${params.id}`).then(setConduce).catch((e) => setError(e.message));
   }, [params.id]);
 
-  if (error) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-xl">{error}</div>;
+  useEffect(() => {
+    if (!conduce?.cliente_id) return;
+    apiFetch<{ nombre: string }>(`/api/clientes/${conduce.cliente_id}`).then((c) => setClienteNombre(c.nombre)).catch(() => {});
+  }, [conduce?.cliente_id]);
+
+  if (error) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-2xl">{error}</div>;
   if (!conduce) return <p className="text-sm text-muted-foreground">Cargando...</p>;
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-5xl">
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold font-serif tracking-tight">Entrega</h1>
           <p className="text-sm text-muted-foreground mt-1">{new Date(conduce.created_at).toLocaleString("es-DO")}</p>
+          {clienteNombre && <p className="text-sm text-muted-foreground">Cliente: {clienteNombre}</p>}
           {conduce.direccion_entrega && <p className="text-sm text-muted-foreground">Dirección: {conduce.direccion_entrega}</p>}
         </div>
         <div className="flex items-center gap-3">
           <Link href={`/imprimir/conduce/${conduce.id}` as any} target="_blank">
             <Button size="sm" variant="secondary"><FileText className="h-3.5 w-3.5" />Imprimir</Button>
           </Link>
-          <Link href={`/ventas/${conduce.venta_id}` as any} className="text-primary hover:underline text-sm font-medium">
-            Ver venta
-          </Link>
+          {conduce.venta_id && (
+            <Link href={`/ventas/${conduce.venta_id}` as any} className="text-primary hover:underline text-sm font-medium">
+              Ver venta
+            </Link>
+          )}
         </div>
       </div>
 
       {(conduce.orden_compra || conduce.vehiculo_placa || conduce.conductor) && (
         <Card>
-          <CardContent className="pt-5 grid grid-cols-2 gap-3 text-sm">
+          <CardContent className="pt-5 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
             {conduce.orden_compra && <div><p className="text-xs text-muted-foreground">Orden de compra</p><p>{conduce.orden_compra}</p></div>}
             {conduce.vehiculo_placa && <div><p className="text-xs text-muted-foreground">Vehículo / Placa</p><p>{conduce.vehiculo_placa}</p></div>}
             {conduce.conductor && <div><p className="text-xs text-muted-foreground">Conductor</p><p>{conduce.conductor}</p></div>}
@@ -101,7 +112,7 @@ export default function ConduceDetallePage() {
         <Card>
           <CardContent className="pt-5 space-y-3 text-sm">
             {conduce.notas && <div><p className="text-xs text-muted-foreground">Notas de entrega</p><p>{conduce.notas}</p></div>}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {conduce.entregado_por && <div><p className="text-xs text-muted-foreground">Entregado por</p><p>{conduce.entregado_por}</p></div>}
               {conduce.recibido_por && <div><p className="text-xs text-muted-foreground">Recibido por</p><p>{conduce.recibido_por}</p></div>}
             </div>

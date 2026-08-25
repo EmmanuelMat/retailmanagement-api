@@ -93,6 +93,44 @@ async fn bank_account_balance_reflects_deposits_and_withdrawals_exactly() {
 }
 
 #[tokio::test]
+async fn colmado_tenant_without_open_caja_is_rejected() {
+    let session = register_tenant().await;
+    let producto = create_producto(&session, dec!(50.00), dec!(10)).await;
+    let producto_id = producto["id"].as_str().unwrap();
+
+    // No abrir_caja aquí a propósito - regression guard del comportamiento
+    // por defecto (COLMADO) que ya existía antes de tipo_negocio.
+    let (status, body) = session
+        .post_expect("/v1/ventas", serde_json::json!({
+            "items": [{ "producto_id": producto_id, "cantidad": "1" }],
+            "metodo_pago": "EFECTIVO",
+        }))
+        .await;
+    assert!(status.is_client_error(), "sale with no open caja should be rejected for a COLMADO tenant, got {status}: {body}");
+}
+
+#[tokio::test]
+async fn servicios_tenant_sells_without_opening_caja() {
+    let session = register_tenant().await;
+    set_tipo_negocio(&session, "SERVICIOS").await;
+    let servicio = create_servicio(&session).await;
+    let producto_id = servicio["id"].as_str().unwrap();
+
+    // Sin abrir_caja - un tenant SERVICIOS no opera con caja registradora
+    // (ver ventas_service::create_venta).
+    let venta = session
+        .post(
+            "/v1/ventas",
+            serde_json::json!({
+                "items": [{ "producto_id": producto_id, "cantidad": "1", "precio_unitario": "1500.00" }],
+                "metodo_pago": "EFECTIVO",
+            }),
+        )
+        .await;
+    assert_decimal_eq(decimal_field(&venta, "total"), dec!(1770.00), "venta.total (1500 + 18% ITBIS)");
+}
+
+#[tokio::test]
 async fn bank_withdrawal_exceeding_balance_is_rejected_and_leaves_balance_unchanged() {
     let session = register_tenant().await;
     let banco = session

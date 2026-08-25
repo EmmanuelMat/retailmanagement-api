@@ -157,7 +157,7 @@ export default function DgiiConfigPage() {
 
       {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
 
-      <Card className="max-w-2xl">
+      <Card className="max-w-4xl">
         <CardContent className="pt-5 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">Certificado digital (P12)</h2>
@@ -204,11 +204,11 @@ export default function DgiiConfigPage() {
       </div>
 
       {showForm && (
-        <Card className="max-w-2xl">
+        <Card className="max-w-4xl">
           <CardContent className="pt-5">
-            <form onSubmit={handleCreateSecuencia} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
+            <form onSubmit={handleCreateSecuencia} className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1.5 md:col-span-2">
                   <Label htmlFor="tipo_ecf">Tipo e-CF *</Label>
                   <Select id="tipo_ecf" required value={nueva.tipo_ecf} onChange={(e) => setNueva((v) => ({ ...v, tipo_ecf: Number(e.target.value) }))}>
                     {TIPOS_ECF.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
@@ -219,7 +219,7 @@ export default function DgiiConfigPage() {
                   <Input id="prefijo" required value={nueva.prefijo} onChange={(e) => setNueva((v) => ({ ...v, prefijo: e.target.value }))} placeholder="E32" />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="desde">Desde *</Label>
                   <Input id="desde" type="number" required value={nueva.desde} onChange={(e) => setNueva((v) => ({ ...v, desde: e.target.value }))} placeholder="1" />
@@ -228,10 +228,10 @@ export default function DgiiConfigPage() {
                   <Label htmlFor="hasta">Hasta *</Label>
                   <Input id="hasta" type="number" required value={nueva.hasta} onChange={(e) => setNueva((v) => ({ ...v, hasta: e.target.value }))} placeholder="50000" />
                 </div>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="fecha_vencimiento">Fecha de vencimiento *</Label>
-                <Input id="fecha_vencimiento" type="date" required value={nueva.fecha_vencimiento} onChange={(e) => setNueva((v) => ({ ...v, fecha_vencimiento: e.target.value }))} />
+                <div className="space-y-1.5">
+                  <Label htmlFor="fecha_vencimiento">Fecha de vencimiento *</Label>
+                  <Input id="fecha_vencimiento" type="date" required value={nueva.fecha_vencimiento} onChange={(e) => setNueva((v) => ({ ...v, fecha_vencimiento: e.target.value }))} />
+                </div>
               </div>
               <div className="flex gap-3">
                 <Button type="submit" disabled={savingSecuencia}>{savingSecuencia ? "Creando..." : "Crear secuencia"}</Button>

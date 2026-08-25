@@ -29,6 +29,8 @@ import {
   PackageCheck,
   ChevronDown,
   ChevronRight,
+  Wrench,
+  ClipboardList,
 } from "lucide-react";
 import { isRouteAllowed, isDgiiRoute, isModuloAllowed, isModuloActivo } from "@/lib/roles";
 import { apiFetch } from "@/lib/api";
@@ -58,9 +60,16 @@ const NAV: NavGroup[] = [
     ],
   },
   {
+    title: "Servicios",
+    items: [
+      { label: "Órdenes de Servicio", href: "/ordenes-servicio", icon: Wrench },
+    ],
+  },
+  {
     title: "Compras",
     items: [
       { label: "Compras", href: "/compras", icon: ShoppingBag },
+      { label: "Órdenes de Compra", href: "/ordenes-compra", icon: ClipboardList },
       { label: "Proveedores", href: "/proveedores", icon: Truck },
     ],
   },
@@ -95,7 +104,7 @@ const NAV: NavGroup[] = [
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [tenant, setTenant] = useState<{ razon_social?: string; nombre_comercial?: string | null; logo_url?: string | null; factura_electronica_activa?: boolean } | null>(null);
+  const [tenant, setTenant] = useState<{ razon_social?: string; nombre_comercial?: string | null; logo_url?: string | null; factura_electronica_activa?: boolean; tipo_negocio?: "COLMADO" | "SERVICIOS" } | null>(null);
   const [usuario, setUsuario] = useState<{ nombre?: string; rol?: string } | null>(null);
   const [licencia, setLicencia] = useState<{ status: "trial" | "active" | "expired"; dias_restantes: number } | null>(null);
   const [modulosActivos, setModulosActivos] = useState<Set<string> | null>(null);
@@ -120,6 +129,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       return next;
     });
   }
+
+  // Acento de marca por tipo de negocio (ver globals.css `[data-negocio]`) -
+  // COLMADO usa el "Sello" de siempre sin overrides; solo SERVICIOS cambia
+  // el hue de --primary/--accent. Puesto en <html> (no solo en este layout)
+  // para que /imprimir y /staff nunca lo hereden sin querer.
+  useEffect(() => {
+    if (tenant?.tipo_negocio) {
+      document.documentElement.setAttribute("data-negocio", tenant.tipo_negocio);
+    }
+    return () => {
+      document.documentElement.removeAttribute("data-negocio");
+    };
+  }, [tenant?.tipo_negocio]);
 
   useEffect(() => {
     try {
@@ -201,7 +223,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace("/dashboard?denied=dgii");
       return;
     }
-    if (!isModuloAllowed(pathname, modulosActivos, licencia?.status)) {
+    if (!isModuloAllowed(pathname, modulosActivos)) {
       router.replace("/dashboard");
     }
   }, [pathname, usuario, tenant, modulosActivos, licencia, router]);
@@ -212,7 +234,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       (item) =>
         isRouteAllowed(item.href, usuario?.rol) &&
         !(tenant?.factura_electronica_activa === false && isDgiiRoute(item.href)) &&
-        isModuloAllowed(item.href, modulosActivos, licencia?.status)
+        isModuloAllowed(item.href, modulosActivos)
     ),
   })).filter((group) => group.items.length > 0);
 
@@ -337,7 +359,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <main className="p-6">{children}</main>
         </div>
       </div>
-      {isModuloActivo("IA_ASISTENTE", modulosActivos, licencia?.status) && <AiChatWidget />}
+      {isModuloActivo("IA_ASISTENTE", modulosActivos) && <AiChatWidget />}
     </div>
   );
 }

@@ -17,7 +17,11 @@ interface ConduceItem {
 
 interface ConduceDetalle {
   id: string;
-  venta_id: string;
+  // Ambos ausentes en un conduce standalone (sin Venta previa) - ver
+  // conduce_service.rs. cliente_id identifica al cliente en ese caso; en el
+  // flujo ligado a Venta se usa venta.cliente_id en su lugar.
+  venta_id: string | null;
+  cliente_id: string | null;
   direccion_entrega: string | null;
   orden_compra: string | null;
   vehiculo_placa: string | null;
@@ -40,7 +44,7 @@ export default function ImprimirConducePage() {
   const [conduce, setConduce] = useState<ConduceDetalle | null>(null);
   const [venta, setVenta] = useState<VentaResumen | null>(null);
   const empresa = useEmpresa();
-  const cliente = useCliente(venta?.cliente_id);
+  const cliente = useCliente(venta?.cliente_id ?? conduce?.cliente_id);
 
   useEffect(() => {
     apiFetch<ConduceDetalle>(`/api/conduces/${params.id}`).then(setConduce).catch(() => {});
@@ -54,7 +58,16 @@ export default function ImprimirConducePage() {
   if (!conduce) return <p className="p-6 text-sm text-gray-500">Cargando...</p>;
 
   const fecha = new Date(conduce.created_at).toLocaleDateString("es-DO");
-  const noConduce = `CND-${conduce.id.slice(0, 8).toUpperCase()}`;
+  const noDocumento = `CND-${conduce.id.slice(0, 8).toUpperCase()}`;
+
+  const camposDerecha = [
+    { label: "No. Conduce", value: noDocumento },
+    { label: "Fecha", value: fecha },
+    ...(conduce.venta_id
+      ? [{ label: "Factura Relacionada", value: venta?.e_ncf || (venta ? venta.id.slice(0, 8).toUpperCase() : "") }]
+      : []),
+    { label: "Orden de Compra", value: conduce.orden_compra || "N/A" },
+  ];
 
   return (
     <>
@@ -65,12 +78,7 @@ export default function ImprimirConducePage() {
           empresa={empresa}
           tipo="CONDUCE"
           titulo="CONDUCE"
-          camposDerecha={[
-            { label: "No. Conduce", value: noConduce },
-            { label: "Fecha", value: fecha },
-            { label: "Factura Relacionada", value: venta?.e_ncf || (venta ? venta.id.slice(0, 8).toUpperCase() : "") },
-            { label: "Orden de Compra", value: conduce.orden_compra || "N/A" },
-          ]}
+          camposDerecha={camposDerecha}
         />
 
         <BarraSeccion tipo="CONDUCE">ENTREGA A</BarraSeccion>

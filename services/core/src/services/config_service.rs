@@ -291,9 +291,11 @@ impl ConfigService {
             .map_err(|e| anyhow::anyhow!("Error al procesar contraseña: {}", e))?
             .to_string();
 
+        // rol_id: ver el mismo comentario en auth_service::register - solo
+        // alimenta el permiso_guard aditivo del módulo de Órdenes de Servicio.
         let row = sqlx::query_as::<_, Usuario>(
-            "INSERT INTO usuarios (tenant_id, nombre, email, password_hash, rol, descuento_maximo_sin_aprobacion)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO usuarios (tenant_id, nombre, email, password_hash, rol, rol_id, descuento_maximo_sin_aprobacion)
+             VALUES ($1, $2, $3, $4, $5, (SELECT id FROM roles WHERE codigo = $5), $6)
              RETURNING id, tenant_id, nombre, email, rol, descuento_maximo_sin_aprobacion, activo, created_at",
         )
         .bind(tenant_id)

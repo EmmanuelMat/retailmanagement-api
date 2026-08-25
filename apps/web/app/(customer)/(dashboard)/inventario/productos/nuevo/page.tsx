@@ -41,10 +41,11 @@ export default function NuevoProductoPage() {
               descripcion: values.descripcion || undefined,
               itbis_tipo: values.itbis_tipo,
               unidad_medida: values.unidad_medida,
-              costo: values.costo,
-              precio_venta: values.precio_venta,
-              stock_actual: values.stock_actual,
-              stock_minimo: values.stock_minimo,
+              tipo: values.tipo,
+              costo: values.tipo === "SERVICIO" ? undefined : values.costo,
+              precio_venta: values.tipo === "SERVICIO" ? undefined : values.precio_venta,
+              stock_actual: values.tipo === "SERVICIO" ? undefined : values.stock_actual,
+              stock_minimo: values.tipo === "SERVICIO" ? undefined : values.stock_minimo,
             }),
           });
         }}

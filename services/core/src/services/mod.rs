@@ -1,3 +1,4 @@
+pub mod adjunto_service;
 pub mod ai_service;
 pub mod audit_service;
 pub mod auth_service;
@@ -16,7 +17,10 @@ pub mod image_service;
 pub mod inventario_service;
 pub mod license_service;
 pub mod nomina_service;
+pub mod orden_compra_service;
+pub mod orden_servicio_service;
 pub mod partner_service;
+pub mod roles_service;
 pub mod rate_limiter;
 pub mod report_service;
 pub mod rnc_service;

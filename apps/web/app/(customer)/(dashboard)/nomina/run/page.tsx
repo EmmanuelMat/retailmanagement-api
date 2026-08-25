@@ -55,9 +55,9 @@ export default function RunNominaPage() {
         <p className="text-sm text-muted-foreground mt-1">Calcula TSS 5.91%, descuenta adelantos aprobados y registra el egreso en caja.</p>
       </div>
 
-      <Card className="max-w-xl">
+      <Card className="max-w-3xl">
         <CardContent className="pt-5">
-          <form onSubmit={handleRun} className="grid grid-cols-2 gap-4 items-end">
+          <form onSubmit={handleRun} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
             <div className="space-y-1.5">
               <Label htmlFor="periodo">Período</Label>
               <Input id="periodo" value={periodo} onChange={(e) => setPeriodo(e.target.value)} placeholder="2026-07 quincena 2" required />
@@ -66,7 +66,7 @@ export default function RunNominaPage() {
               <Label htmlFor="fechaPago">Fecha de pago</Label>
               <Input id="fechaPago" type="date" value={fechaPago} onChange={(e) => setFechaPago(e.target.value)} />
             </div>
-            <Button type="submit" disabled={saving} className="col-span-2 w-fit"><PlayCircle className="h-4 w-4" />Correr nómina</Button>
+            <Button type="submit" disabled={saving} className="w-fit"><PlayCircle className="h-4 w-4" />Correr nómina</Button>
           </form>
           {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm mt-4">{error}</div>}
         </CardContent>

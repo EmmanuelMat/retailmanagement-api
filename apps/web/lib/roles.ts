@@ -14,8 +14,10 @@ const ROUTE_ROLES: [string, Role[]][] = [
   ["/conduces", ["CAJERO"]],
   ["/caja", ["CAJERO"]],
   ["/clientes", ["CAJERO"]],
+  ["/ordenes-servicio", ["CAJERO"]],
   ["/inventario", ["ALMACEN"]],
   ["/compras", ["ALMACEN"]],
+  ["/ordenes-compra", ["ALMACEN"]],
   ["/proveedores", ["ALMACEN"]],
   ["/contabilidad", ["CONTADOR"]],
   ["/bancos", ["CONTADOR"]],
@@ -53,8 +55,10 @@ const ROUTE_MODULOS: [string, string][] = [
   ["/cotizaciones", "POS_VENTAS"],
   ["/conduces", "POS_VENTAS"],
   ["/clientes", "POS_VENTAS"],
+  ["/ordenes-servicio", "ORDENES_SERVICIO"],
   ["/inventario", "INVENTARIO"],
   ["/compras", "COMPRAS_GASTOS"],
+  ["/ordenes-compra", "COMPRAS_GASTOS"],
   ["/proveedores", "COMPRAS_GASTOS"],
   ["/gastos", "COMPRAS_GASTOS"],
   ["/contabilidad", "CONTABILIDAD"],
@@ -67,12 +71,11 @@ const ROUTE_MODULOS: [string, string][] = [
 
 /**
  * `modulosActivos === null` means "still loading" — never hide anything for
- * that, only once we actually know. Mirrors the backend: during `trial` the
- * tenant sees everything regardless of which modules are assigned, so this
- * always returns `true` unless `licenciaStatus === "active"`.
+ * that, only once we actually know. Mirrors the backend: staff's
+ * `tenant_modulos` configuration applies regardless of license status, so a
+ * `trial` tenant sees exactly what staff assigned, not the full system.
  */
-export function isModuloAllowed(pathname: string, modulosActivos: Set<string> | null, licenciaStatus?: string): boolean {
-  if (licenciaStatus !== "active") return true;
+export function isModuloAllowed(pathname: string, modulosActivos: Set<string> | null): boolean {
   if (!modulosActivos) return true;
   const match = ROUTE_MODULOS.find(([prefix]) => pathname.startsWith(prefix));
   return !match || modulosActivos.has(match[1]);
@@ -81,8 +84,7 @@ export function isModuloAllowed(pathname: string, modulosActivos: Set<string> | 
 /** Same rule as `isModuloAllowed`, for features that aren't tied to a route
  * (e.g. the AI widget/digest, gated by IA_ASISTENTE) — check a module code
  * directly instead of matching a pathname prefix. */
-export function isModuloActivo(codigo: string, modulosActivos: Set<string> | null, licenciaStatus?: string): boolean {
-  if (licenciaStatus !== "active") return true;
+export function isModuloActivo(codigo: string, modulosActivos: Set<string> | null): boolean {
   if (!modulosActivos) return true;
   return modulosActivos.has(codigo);
 }
