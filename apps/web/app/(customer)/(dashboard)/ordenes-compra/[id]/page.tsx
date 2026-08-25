@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Badge, Button, Card, CardContent, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
-import { ESTADO_VARIANT } from "../page";
+import { ESTADO_VARIANT } from "../estado-variant";
 
 interface OrdenCompraItem {
   id: string;

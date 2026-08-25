@@ -6,7 +6,7 @@ import Link from "next/link";
 import { FileText, Plus, Trash2 } from "lucide-react";
 import { Badge, Button, Card, CardContent, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
-import { ESTADO_VARIANT } from "../page";
+import { ESTADO_VARIANT } from "../estado-variant";
 
 interface OrdenItem {
   id: string;

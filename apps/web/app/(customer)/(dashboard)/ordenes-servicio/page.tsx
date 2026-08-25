@@ -11,6 +11,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { useServerTable } from "@/lib/use-server-table";
 import { useSearchFilterSync } from "@/lib/use-search-filter-sync";
+import { ESTADO_VARIANT } from "./estado-variant";
 
 interface OrdenServicio {
   id: string;
@@ -33,15 +34,6 @@ interface OrdenesFilters {
   clienteId?: string;
   search?: string;
 }
-
-export const ESTADO_VARIANT: Record<string, "default" | "success" | "warning" | "destructive" | "secondary"> = {
-  BORRADOR: "secondary",
-  PROGRAMADA: "default",
-  EN_PROCESO: "warning",
-  PAUSADA: "secondary",
-  COMPLETADA: "success",
-  CANCELADA: "destructive",
-};
 
 const ESTADO_LABEL: Record<string, string> = {
   BORRADOR: "Borrador",
