@@ -64,12 +64,14 @@ impl AuditService {
         ("entidad", "entidad"),
     ];
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn list(
         &self,
         tenant_id: &str,
         usuario_id: Option<Uuid>,
         accion: Option<String>,
         entidad: Option<String>,
+        entidad_id: Option<Uuid>,
         fecha_desde: Option<chrono::NaiveDate>,
         fecha_hasta: Option<chrono::NaiveDate>,
         page: &crate::pagination::PageParams,
@@ -85,7 +87,8 @@ impl AuditService {
                AND ($3::text IS NULL OR LOWER(accion) LIKE $3)
                AND ($4::text IS NULL OR entidad = $4)
                AND ($5::date IS NULL OR created_at::date >= $5)
-               AND ($6::date IS NULL OR created_at::date <= $6)";
+               AND ($6::date IS NULL OR created_at::date <= $6)
+               AND ($7::uuid IS NULL OR entidad_id = $7)";
 
         let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM auditoria {WHERE_CLAUSE}"))
             .bind(tenant_id)
@@ -94,6 +97,7 @@ impl AuditService {
             .bind(&entidad)
             .bind(fecha_desde)
             .bind(fecha_hasta)
+            .bind(entidad_id)
             .fetch_one(&self.pool)
             .await?;
 
@@ -101,7 +105,7 @@ impl AuditService {
         let limit = page.limit(10);
         let query = format!(
             "SELECT id, usuario_id, accion, entidad, entidad_id, detalle, created_at
-             FROM auditoria {WHERE_CLAUSE} ORDER BY {order_by} LIMIT $7 OFFSET $8"
+             FROM auditoria {WHERE_CLAUSE} ORDER BY {order_by} LIMIT $8 OFFSET $9"
         );
         let rows = sqlx::query_as::<_, AuditoriaEntry>(&query)
             .bind(tenant_id)
@@ -110,6 +114,7 @@ impl AuditService {
             .bind(&entidad)
             .bind(fecha_desde)
             .bind(fecha_hasta)
+            .bind(entidad_id)
             .bind(limit)
             .bind(page.offset(10))
             .fetch_all(&self.pool)

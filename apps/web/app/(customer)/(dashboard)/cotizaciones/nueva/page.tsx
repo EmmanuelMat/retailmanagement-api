@@ -11,7 +11,8 @@ interface Producto {
   sku: string;
   nombre: string;
   itbis_tipo: string;
-  precio_venta: string;
+  precio_venta: string | null;
+  tipo: "PRODUCTO" | "SERVICIO";
 }
 
 interface Cliente {
@@ -23,6 +24,9 @@ interface Linea {
   productoId: string;
   cantidad: string;
   descuento: string;
+  // Solo aplica (y se pide) cuando el producto elegido es tipo SERVICIO -
+  // ver Producto.precio_venta.
+  precioUnitario: string;
 }
 
 const ITBIS_RATE: Record<string, number> = { GRAVADO_18: 0.18, GRAVADO_16: 0.16, EXENTO: 0 };
@@ -33,7 +37,7 @@ export default function NuevaCotizacionPage() {
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [clienteId, setClienteId] = useState("");
   const [fechaVencimiento, setFechaVencimiento] = useState("");
-  const [lineas, setLineas] = useState<Linea[]>([{ productoId: "", cantidad: "", descuento: "" }]);
+  const [lineas, setLineas] = useState<Linea[]>([{ productoId: "", cantidad: "", descuento: "", precioUnitario: "" }]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -47,17 +51,22 @@ export default function NuevaCotizacionPage() {
   }
 
   function addLinea() {
-    setLineas((ls) => [...ls, { productoId: "", cantidad: "", descuento: "" }]);
+    setLineas((ls) => [...ls, { productoId: "", cantidad: "", descuento: "", precioUnitario: "" }]);
   }
 
   function removeLinea(i: number) {
     setLineas((ls) => ls.filter((_, idx) => idx !== i));
   }
 
+  function precioLinea(l: Linea, prod: Producto | undefined): number {
+    if (!prod) return 0;
+    return prod.tipo === "SERVICIO" ? Number(l.precioUnitario) || 0 : Number(prod.precio_venta) || 0;
+  }
+
   const total = lineas.reduce((sum, l) => {
     const prod = productos.find((p) => p.id === l.productoId);
     if (!prod) return sum;
-    const bruto = (Number(l.cantidad) || 0) * Number(prod.precio_venta);
+    const bruto = (Number(l.cantidad) || 0) * precioLinea(l, prod);
     const descuento = Math.min(Number(l.descuento) || 0, bruto);
     const sub = bruto - descuento;
     return sum + sub + sub * (ITBIS_RATE[prod.itbis_tipo] || 0);
@@ -70,6 +79,14 @@ export default function NuevaCotizacionPage() {
       setError("Agrega al menos un producto con cantidad.");
       return;
     }
+    const servicioSinPrecio = items.some((l) => {
+      const prod = productos.find((p) => p.id === l.productoId);
+      return prod?.tipo === "SERVICIO" && !(Number(l.precioUnitario) > 0);
+    });
+    if (servicioSinPrecio) {
+      setError("Escribe el precio de cada servicio agregado.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -78,11 +95,15 @@ export default function NuevaCotizacionPage() {
         body: JSON.stringify({
           cliente_id: clienteId || undefined,
           fecha_vencimiento: fechaVencimiento || undefined,
-          items: items.map((l) => ({
-            producto_id: l.productoId,
-            cantidad: l.cantidad,
-            descuento: l.descuento || undefined,
-          })),
+          items: items.map((l) => {
+            const prod = productos.find((p) => p.id === l.productoId);
+            return {
+              producto_id: l.productoId,
+              cantidad: l.cantidad,
+              descuento: l.descuento || undefined,
+              precio_unitario: prod?.tipo === "SERVICIO" ? l.precioUnitario : undefined,
+            };
+          }),
         }),
       });
       router.push(`/cotizaciones/${cotizacion.id}` as any);
@@ -94,7 +115,7 @@ export default function NuevaCotizacionPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-5xl">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Nueva cotización</h1>
         <p className="text-sm text-muted-foreground mt-1">No afecta stock ni caja — es solo una propuesta para el cliente.</p>
@@ -119,19 +140,30 @@ export default function NuevaCotizacionPage() {
 
             <div className="space-y-2">
               <Label>Productos</Label>
-              {lineas.map((l, i) => (
-                <div key={i} className="grid grid-cols-[1fr_90px_110px_32px] gap-2 items-end">
-                  <Select value={l.productoId} onChange={(e) => updateLinea(i, { productoId: e.target.value })}>
-                    <option value="">Producto…</option>
-                    {productos.map((p) => <option key={p.id} value={p.id}>{p.sku} · {p.nombre} ({formatDOP(p.precio_venta)})</option>)}
-                  </Select>
-                  <Input type="number" step="0.01" placeholder="Cant." value={l.cantidad} onChange={(e) => updateLinea(i, { cantidad: e.target.value })} />
-                  <Input type="number" step="0.01" placeholder="Descuento RD$" value={l.descuento} onChange={(e) => updateLinea(i, { descuento: e.target.value })} />
-                  <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)} disabled={lineas.length === 1}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
+              {lineas.map((l, i) => {
+                const prod = productos.find((p) => p.id === l.productoId);
+                const esServicio = prod?.tipo === "SERVICIO";
+                return (
+                  <div key={i} className={`grid gap-2 items-end ${esServicio ? "grid-cols-[1fr_90px_110px_110px_32px]" : "grid-cols-[1fr_90px_110px_32px]"}`}>
+                    <Select value={l.productoId} onChange={(e) => updateLinea(i, { productoId: e.target.value })}>
+                      <option value="">Producto…</option>
+                      {productos.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.sku} · {p.nombre} {p.tipo === "SERVICIO" ? "(servicio)" : `(${formatDOP(p.precio_venta || "0")})`}
+                        </option>
+                      ))}
+                    </Select>
+                    <Input type="number" step="0.01" placeholder="Cant." value={l.cantidad} onChange={(e) => updateLinea(i, { cantidad: e.target.value })} />
+                    {esServicio && (
+                      <Input type="number" step="0.01" placeholder="Precio c/u" value={l.precioUnitario} onChange={(e) => updateLinea(i, { precioUnitario: e.target.value })} />
+                    )}
+                    <Input type="number" step="0.01" placeholder="Descuento RD$" value={l.descuento} onChange={(e) => updateLinea(i, { descuento: e.target.value })} />
+                    <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)} disabled={lineas.length === 1}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                );
+              })}
               <Button type="button" variant="secondary" size="sm" onClick={addLinea}>
                 <Plus className="h-4 w-4" />Agregar línea
               </Button>

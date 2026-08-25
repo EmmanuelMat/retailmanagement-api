@@ -85,6 +85,37 @@
       --shadow-glow: 0 0 0 1px hsl(var(--primary) / 0.2), 0 8px 30px -8px hsl(var(--primary) / 0.5);
     }
   }
+
+  /* Acento de marca por tipo de negocio — ver Tenant.tipo_negocio.
+     COLMADO se queda con el "Sello" original (rojo institucional + oro);
+     SERVICIOS toma un acento teal + naranja-terracota, misma estructura de
+     tokens (radius/sombras/tipografía sin cambios), solo el hue de marca.
+     `data-negocio` lo pone dashboard/layout.tsx una vez que carga el tenant. */
+  [data-negocio="SERVICIOS"] {
+    --primary: 178 54% 28%;
+    --primary-hover: 178 55% 22%;
+    --accent: 24 68% 48%;
+    --accent-hover: 24 68% 40%;
+    --shadow-color: 178 40% 18%;
+  }
+
+  [data-negocio="SERVICIOS"][data-theme="dark"] {
+    --primary: 178 45% 55%;
+    --primary-hover: 178 48% 63%;
+    --accent: 24 70% 58%;
+    --accent-hover: 24 70% 66%;
+    --shadow-color: 0 0% 0%;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    [data-negocio="SERVICIOS"]:not([data-theme="light"]) {
+      --primary: 178 45% 55%;
+      --primary-hover: 178 48% 63%;
+      --accent: 24 70% 58%;
+      --accent-hover: 24 70% 66%;
+      --shadow-color: 0 0% 0%;
+    }
+  }
 }
 
 * {

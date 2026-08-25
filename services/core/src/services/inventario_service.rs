@@ -131,6 +131,15 @@ impl InventarioService {
         if req.cantidad == Decimal::ZERO {
             anyhow::bail!("La cantidad no puede ser cero");
         }
+        let tipo_producto: String = sqlx::query_scalar("SELECT tipo FROM productos WHERE id = $1 AND tenant_id = $2")
+            .bind(req.producto_id)
+            .bind(tenant_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+        if tipo_producto == "SERVICIO" {
+            anyhow::bail!("Un Servicio no tiene stock que ajustar");
+        }
         let mut tx = self.pool.begin().await?;
         let mov = Self::apply_movimiento_tx(
             &mut tx,

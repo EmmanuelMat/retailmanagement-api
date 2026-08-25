@@ -28,6 +28,7 @@ export interface ProductoFormValues {
   precio_venta: string;
   stock_actual: string;
   stock_minimo: string;
+  tipo: "PRODUCTO" | "SERVICIO";
 }
 
 const EMPTY: ProductoFormValues = {
@@ -42,6 +43,7 @@ const EMPTY: ProductoFormValues = {
   precio_venta: "0",
   stock_actual: "0",
   stock_minimo: "0",
+  tipo: "PRODUCTO",
 };
 
 export function ProductoForm({
@@ -109,9 +111,9 @@ export function ProductoForm({
   }
 
   return (
-    <Card className="max-w-2xl">
+    <Card className="max-w-5xl">
       <CardContent className="pt-5">
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-5">
           {productoId && (
             <div className="flex items-center gap-4">
               <div className="h-20 w-20 rounded-md border border-border bg-surface flex items-center justify-center overflow-hidden shrink-0">
@@ -130,7 +132,34 @@ export function ProductoForm({
               </div>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="tipo">Tipo *</Label>
+            <div className="flex gap-2 max-w-md">
+              <button
+                type="button"
+                onClick={() => set("tipo", "PRODUCTO")}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
+                  values.tipo === "PRODUCTO" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Producto
+              </button>
+              <button
+                type="button"
+                onClick={() => set("tipo", "SERVICIO")}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
+                  values.tipo === "SERVICIO" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Servicio
+              </button>
+            </div>
+            {values.tipo === "SERVICIO" && (
+              <p className="text-xs text-muted-foreground">Sin precio fijo ni stock — el precio se define al cotizar o facturar, según el trabajo.</p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="sku">SKU *</Label>
               <Input id="sku" required value={values.sku} onChange={(e) => set("sku", e.target.value)} placeholder="ARR-001" />
@@ -153,13 +182,12 @@ export function ProductoForm({
                 ))}
               </Select>
             </div>
-            <div className="col-span-2 space-y-1.5">
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1.5 md:col-span-2">
               <Label htmlFor="nombre">Nombre *</Label>
               <Input id="nombre" required value={values.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Arroz Premium" />
-            </div>
-            <div className="col-span-2 space-y-1.5">
-              <Label htmlFor="descripcion">Descripción</Label>
-              <Input id="descripcion" value={values.descripcion} onChange={(e) => set("descripcion", e.target.value)} />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="itbis">ITBIS *</Label>
@@ -169,27 +197,39 @@ export function ProductoForm({
                 <option value="EXENTO">Exento</option>
               </Select>
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1.5 md:col-span-2">
+              <Label htmlFor="descripcion">Descripción</Label>
+              <Input id="descripcion" value={values.descripcion} onChange={(e) => set("descripcion", e.target.value)} />
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="unidad">Unidad de medida (DGII)</Label>
               <Input id="unidad" value={values.unidad_medida} onChange={(e) => set("unidad_medida", e.target.value)} placeholder="43 = unidad" />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="costo">Costo</Label>
-              <Input id="costo" type="number" step="0.01" value={values.costo} onChange={(e) => set("costo", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="precio">Precio de venta *</Label>
-              <Input id="precio" type="number" step="0.01" required value={values.precio_venta} onChange={(e) => set("precio_venta", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="stock">Stock actual</Label>
-              <Input id="stock" type="number" step="0.01" value={values.stock_actual} onChange={(e) => set("stock_actual", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="stockMin">Stock mínimo (alerta)</Label>
-              <Input id="stockMin" type="number" step="0.01" value={values.stock_minimo} onChange={(e) => set("stock_minimo", e.target.value)} />
-            </div>
           </div>
+
+          {values.tipo === "PRODUCTO" && (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="costo">Costo</Label>
+                <Input id="costo" type="number" step="0.01" value={values.costo} onChange={(e) => set("costo", e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="precio">Precio de venta *</Label>
+                <Input id="precio" type="number" step="0.01" required value={values.precio_venta} onChange={(e) => set("precio_venta", e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="stock">Stock actual</Label>
+                <Input id="stock" type="number" step="0.01" value={values.stock_actual} onChange={(e) => set("stock_actual", e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="stockMin">Stock mínimo (alerta)</Label>
+                <Input id="stockMin" type="number" step="0.01" value={values.stock_minimo} onChange={(e) => set("stock_minimo", e.target.value)} />
+              </div>
+            </div>
+          )}
 
           {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
 

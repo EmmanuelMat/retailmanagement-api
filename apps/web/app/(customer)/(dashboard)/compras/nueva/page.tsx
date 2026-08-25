@@ -63,6 +63,7 @@ export default function NuevaCompraPage() {
   const [proveedorId, setProveedorId] = useState("");
   const [ncfProveedor, setNcfProveedor] = useState("");
   const [metodoPago, setMetodoPago] = useState("EFECTIVO");
+  const [fechaVencimiento, setFechaVencimiento] = useState("");
   const [tipoBienesServicios, setTipoBienesServicios] = useState("9");
   const [fechaPago, setFechaPago] = useState("");
   const [itbisRetenido, setItbisRetenido] = useState("");
@@ -73,7 +74,9 @@ export default function NuevaCompraPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
+    // tipo=PRODUCTO: un Servicio no se compra a proveedor (ver
+    // compras_service::create_compra) - no tiene sentido ofrecerlo aquí.
+    apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true&tipo=PRODUCTO").then((d) => setProductos(d.items)).catch(() => {});
     apiFetch<{ items: Proveedor[] }>("/api/proveedores?pageSize=1000&activo=true").then((d) => setProveedores(d.items)).catch(() => {});
   }, []);
 
@@ -101,6 +104,10 @@ export default function NuevaCompraPage() {
       setError("Agrega al menos un producto con cantidad y costo.");
       return;
     }
+    if (metodoPago === "FIADO" && !fechaVencimiento) {
+      setError("Una compra fiada necesita una fecha de vencimiento.");
+      return;
+    }
     const tieneRetencion = !!(itbisRetenido || tipoRetencionIsr || montoRetencionRenta);
     if (tieneRetencion && !fechaPago) {
       setError("Si reportas una retención (ITBIS o ISR), la fecha de pago es requerida.");
@@ -115,6 +122,7 @@ export default function NuevaCompraPage() {
           proveedor_id: proveedorId || undefined,
           ncf_proveedor: ncfProveedor || undefined,
           metodo_pago: metodoPago,
+          fecha_vencimiento: metodoPago === "FIADO" ? fechaVencimiento : undefined,
           tipo_bienes_servicios: Number(tipoBienesServicios),
           fecha_pago: fechaPago ? new Date(fechaPago).toISOString() : undefined,
           itbis_retenido: itbisRetenido || undefined,
@@ -137,7 +145,7 @@ export default function NuevaCompraPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-5xl">
       <div>
         <h1 className="text-2xl font-bold font-serif tracking-tight">Nueva compra</h1>
         <p className="text-sm text-muted-foreground mt-1">Aumenta stock y recalcula el costo promedio de cada producto.</p>
@@ -204,12 +212,25 @@ export default function NuevaCompraPage() {
                   <option value="EFECTIVO">Efectivo</option>
                   <option value="TARJETA">Tarjeta</option>
                   <option value="TRANSFERENCIA">Transferencia</option>
+                  <option value="FIADO">Fiado</option>
                 </Select>
               </div>
-              <div className="flex items-end justify-end">
+              {metodoPago === "FIADO" ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="fecha_vencimiento">Fecha de vencimiento</Label>
+                  <Input id="fecha_vencimiento" type="date" value={fechaVencimiento} onChange={(e) => setFechaVencimiento(e.target.value)} />
+                </div>
+              ) : (
+                <div className="flex items-end justify-end">
+                  <p className="text-lg font-bold">Total: {formatDOP(total)}</p>
+                </div>
+              )}
+            </div>
+            {metodoPago === "FIADO" && (
+              <div className="flex justify-end">
                 <p className="text-lg font-bold">Total: {formatDOP(total)}</p>
               </div>
-            </div>
+            )}
 
             <details className="rounded-md border border-border p-3">
               <summary className="text-sm font-medium cursor-pointer select-none">

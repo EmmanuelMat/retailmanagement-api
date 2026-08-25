@@ -10,4 +10,5 @@ export * from "./async-combobox";
 export * from "./query-search";
 export * from "./query-search-input";
 export * from "./coming-soon";
+export * from "./tabs";
 export * from "./utils";

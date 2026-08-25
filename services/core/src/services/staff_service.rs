@@ -23,8 +23,14 @@ pub struct TenantResumen {
     pub trial_started_at: DateTime<Utc>,
     pub trial_days: i32,
     pub license_activated_at: Option<DateTime<Utc>>,
+    pub tipo_negocio: String,
     pub activo: bool,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetTipoNegocioRequest {
+    pub tipo_negocio: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,7 +75,7 @@ impl StaffService {
     pub async fn list_tenants(&self) -> Result<Vec<TenantResumen>> {
         let rows = sqlx::query_as::<_, TenantResumen>(
             r#"SELECT rnc, razon_social, correo, telefono, license_status, trial_started_at, trial_days,
-                      license_activated_at, activo, created_at
+                      license_activated_at, tipo_negocio, activo, created_at
                FROM tenants ORDER BY created_at DESC"#,
         )
         .fetch_all(&self.pool)
@@ -80,12 +86,33 @@ impl StaffService {
     pub async fn get_tenant(&self, rnc: &str) -> Result<Option<TenantResumen>> {
         let row = sqlx::query_as::<_, TenantResumen>(
             r#"SELECT rnc, razon_social, correo, telefono, license_status, trial_started_at, trial_days,
-                      license_activated_at, activo, created_at
+                      license_activated_at, tipo_negocio, activo, created_at
                FROM tenants WHERE rnc = $1"#,
         )
         .bind(rnc)
         .fetch_optional(&self.pool)
         .await?;
+        Ok(row)
+    }
+
+    /// Único punto de escritura de `tipo_negocio` - a propósito no existe un
+    /// equivalente en config_service (el tenant no puede auto-asignarse
+    /// SERVICIOS desde "Mi negocio"), porque cambia reglas del core (caja
+    /// abierta) y terminología en toda la UI, no solo datos de perfil.
+    pub async fn set_tipo_negocio(&self, rnc: &str, tipo_negocio: &str) -> Result<TenantResumen> {
+        if tipo_negocio != "COLMADO" && tipo_negocio != "SERVICIOS" {
+            anyhow::bail!("tipo_negocio inválido: {} (debe ser COLMADO o SERVICIOS)", tipo_negocio);
+        }
+        let row = sqlx::query_as::<_, TenantResumen>(
+            r#"UPDATE tenants SET tipo_negocio = $1 WHERE rnc = $2
+               RETURNING rnc, razon_social, correo, telefono, license_status, trial_started_at, trial_days,
+                         license_activated_at, tipo_negocio, activo, created_at"#,
+        )
+        .bind(tipo_negocio)
+        .bind(rnc)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Tenant no encontrado: {}", rnc))?;
         Ok(row)
     }
 

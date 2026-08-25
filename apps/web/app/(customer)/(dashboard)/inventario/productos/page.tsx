@@ -43,11 +43,12 @@ interface Producto {
   unidad_medida: string;
   itbis_tipo: "GRAVADO_18" | "GRAVADO_16" | "EXENTO";
   costo: string;
-  precio_venta: string;
+  precio_venta: string | null;
   stock_actual: string;
   stock_minimo: string;
   activo: boolean;
   imagen_url: string | null;
+  tipo: "PRODUCTO" | "SERVICIO";
 }
 
 interface ProductosFilters {
@@ -241,7 +242,10 @@ function ProductosPageContent() {
                     </div>
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">{p.sku}</TableCell>
-                  <TableCell className="font-medium">{p.nombre}</TableCell>
+                  <TableCell className="font-medium">
+                    {p.nombre}
+                    {p.tipo === "SERVICIO" && <Badge variant="secondary" className="ml-2">Servicio</Badge>}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{categoriaNombre(p.categoria_id)}</TableCell>
                   <TableCell className="text-muted-foreground">{proveedorNombre(p.proveedor_id)}</TableCell>
                   <TableCell className="text-muted-foreground">{p.unidad_medida}</TableCell>
@@ -249,11 +253,15 @@ function ProductosPageContent() {
                     <Badge variant={ITBIS_VARIANT[p.itbis_tipo]}>{ITBIS_LABEL[p.itbis_tipo]}</Badge>
                   </TableCell>
                   <TableCell className="text-right">{formatDOP(p.costo)}</TableCell>
-                  <TableCell className="text-right font-medium">{formatDOP(p.precio_venta)}</TableCell>
+                  <TableCell className="text-right font-medium">{p.tipo === "SERVICIO" ? "—" : formatDOP(p.precio_venta || "0")}</TableCell>
                   <TableCell className="text-right">
-                    <span className={Number(p.stock_actual) <= Number(p.stock_minimo) ? "text-destructive font-medium" : ""}>
-                      {p.stock_actual}
-                    </span>
+                    {p.tipo === "SERVICIO" ? (
+                      "—"
+                    ) : (
+                      <span className={Number(p.stock_actual) <= Number(p.stock_minimo) ? "text-destructive font-medium" : ""}>
+                        {p.stock_actual}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">

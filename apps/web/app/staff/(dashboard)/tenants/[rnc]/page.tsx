@@ -15,6 +15,7 @@ interface TenantResumen {
   trial_started_at: string;
   trial_days: number;
   license_activated_at: string | null;
+  tipo_negocio: "COLMADO" | "SERVICIOS";
   activo: boolean;
   created_at: string;
 }
@@ -115,6 +116,7 @@ export default function TenantDetailPage() {
   const [activando, setActivando] = useState(false);
   const [reenviando, setReenviando] = useState(false);
   const [mensaje, setMensaje] = useState("");
+  const [guardandoTipo, setGuardandoTipo] = useState(false);
 
   async function load() {
     try {
@@ -142,6 +144,25 @@ export default function TenantDetailPage() {
       setError(e.message);
     } finally {
       setActivando(false);
+    }
+  }
+
+  async function cambiarTipoNegocio(tipo_negocio: "COLMADO" | "SERVICIOS") {
+    if (!tenant || tipo_negocio === tenant.tipo_negocio) return;
+    setGuardandoTipo(true);
+    setError("");
+    setMensaje("");
+    try {
+      const t = await apiFetch<TenantResumen>(`/api/tenants/${rnc}/tipo-negocio`, {
+        method: "PUT",
+        body: JSON.stringify({ tipo_negocio }),
+      });
+      setTenant(t);
+      setMensaje("Tipo de negocio actualizado.");
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setGuardandoTipo(false);
     }
   }
 
@@ -188,7 +209,18 @@ export default function TenantDetailPage() {
             </div>
             <p className="text-sm text-muted-foreground mt-1 font-mono">{tenant.rnc} {tenant.correo ? `· ${tenant.correo}` : ""}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="tipo_negocio" className="text-xs text-muted-foreground">Tipo de negocio</Label>
+            <Select
+              id="tipo_negocio"
+              className="h-9 w-40"
+              value={tenant.tipo_negocio}
+              disabled={guardandoTipo}
+              onChange={(e) => cambiarTipoNegocio(e.target.value as "COLMADO" | "SERVICIOS")}
+            >
+              <option value="COLMADO">Colmado</option>
+              <option value="SERVICIOS">Servicios</option>
+            </Select>
             <Button variant="secondary" onClick={reenviarInvitacion} disabled={reenviando || !tenant.correo}>
               <Mail className="h-4 w-4" />{reenviando ? "Enviando..." : "Reenviar invitación"}
             </Button>
@@ -199,6 +231,9 @@ export default function TenantDetailPage() {
             )}
           </div>
         </div>
+        <p className="text-xs text-muted-foreground mt-2">
+          Cambia la terminología de Conduces/Fiado y si este negocio requiere caja abierta para vender. Ver <span className="font-mono">apps/web/lib/roles.ts</span> y el core para el detalle de qué cambia.
+        </p>
       </div>
 
       {mensaje && <div className="rounded-md border border-success/20 bg-success/10 text-success p-3 text-sm">{mensaje}</div>}
@@ -269,27 +304,49 @@ function ModulosTab({ rnc }: { rnc: string }) {
 
   if (loading) return <p className="text-sm text-muted-foreground">Cargando...</p>;
 
+  const activos = modulos.filter((m) => m.activo).length;
+
   return (
-    <Card className="max-w-2xl">
-      <CardContent className="pt-5 space-y-1">
-        <p className="text-sm text-muted-foreground mb-4">
-          Qué módulos ve este negocio una vez su licencia esté activa. Durante la prueba ven todo el sistema, sin
-          importar lo marcado aquí — esto solo aplica al plan pagado.
+    <div className="max-w-4xl space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          Qué módulos ve este negocio ahora mismo, incluso en prueba — el cambio aplica de inmediato al guardar.
         </p>
+        <Badge variant="secondary" className="shrink-0 ml-4">{activos}/{modulos.length} activos</Badge>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {modulos.map((m) => (
-          <label key={m.codigo} className="flex items-start gap-3 py-2.5 border-b border-border last:border-0 cursor-pointer">
-            <input type="checkbox" checked={m.activo} onChange={() => toggle(m.codigo)} className="h-4 w-4 mt-0.5 rounded border-border" />
-            <div className="min-w-0">
-              <p className="text-sm font-medium">{m.nombre}</p>
-              {m.descripcion && <p className="text-xs text-muted-foreground mt-0.5">{m.descripcion}</p>}
+          <div
+            key={m.codigo}
+            className={`rounded-lg border p-4 transition-colors ${m.activo ? "border-primary/40 bg-primary/5" : "border-border"}`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{m.nombre}</p>
+                {m.descripcion && <p className="text-xs text-muted-foreground mt-1">{m.descripcion}</p>}
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={m.activo}
+                aria-label={m.nombre}
+                onClick={() => toggle(m.codigo)}
+                className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${m.activo ? "bg-primary" : "bg-muted"}`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${m.activo ? "translate-x-5" : "translate-x-0"}`}
+                />
+              </button>
             </div>
-          </label>
+          </div>
         ))}
-        {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm mt-3">{error}</div>}
-        {saved && <div className="rounded-md border border-success/20 bg-success/10 text-success p-3 text-sm mt-3">Módulos actualizados.</div>}
-        <Button className="mt-4" onClick={guardar} disabled={saving}>{saving ? "Guardando..." : "Guardar módulos"}</Button>
-      </CardContent>
-    </Card>
+      </div>
+
+      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
+      {saved && <div className="rounded-md border border-success/20 bg-success/10 text-success p-3 text-sm">Módulos actualizados.</div>}
+      <Button onClick={guardar} disabled={saving}>{saving ? "Guardando..." : "Guardar módulos"}</Button>
+    </div>
   );
 }
 

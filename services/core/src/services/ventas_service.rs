@@ -99,6 +99,11 @@ pub struct CreateVentaItemRequest {
     /// Descuento en RD$ para esta línea (no porcentaje) - el frontend calcula
     /// el monto antes de enviar. Se resta del subtotal de la línea antes del ITBIS.
     pub descuento: Option<Decimal>,
+    /// Requerido cuando el producto es tipo SERVICIO (sin precio fijo en el
+    /// catálogo - ver catalog_service::Producto). Ignorado para un producto
+    /// normal: el precio siempre viene de `productos.precio_venta`, nunca del
+    /// cliente, para no permitir manipular el precio de un ítem con precio fijo.
+    pub precio_unitario: Option<Decimal>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,39 +157,58 @@ impl VentasService {
         // La caja representa el turno activo - una venta sin sesión abierta
         // no tiene contra qué reconciliarse en `caja_service::resumen`/`cerrar`.
         // Aplica a todo rol y método de pago (incluye FIADO: no mueve caja,
-        // pero igual pertenece a un turno).
-        let hay_caja_abierta: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM caja_sesiones WHERE tenant_id = $1 AND estado = 'ABIERTA' LIMIT 1",
-        )
-        .bind(tenant_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if hay_caja_abierta.is_none() {
-            anyhow::bail!("CAJA_NO_ABIERTA: Debes abrir la caja antes de registrar ventas");
+        // pero igual pertenece a un turno) - salvo un tenant SERVICIOS, que no
+        // opera con caja registradora (ver Tenant::tipo_negocio).
+        let tipo_negocio: String = sqlx::query_scalar("SELECT tipo_negocio FROM tenants WHERE rnc = $1")
+            .bind(tenant_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if tipo_negocio != "SERVICIOS" {
+            let hay_caja_abierta: Option<i32> = sqlx::query_scalar(
+                "SELECT 1 FROM caja_sesiones WHERE tenant_id = $1 AND estado = 'ABIERTA' LIMIT 1",
+            )
+            .bind(tenant_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if hay_caja_abierta.is_none() {
+                anyhow::bail!("CAJA_NO_ABIERTA: Debes abrir la caja antes de registrar ventas");
+            }
         }
 
         let mut subtotal_total = Decimal::ZERO;
         let mut itbis_total = Decimal::ZERO;
         let mut descuento_total = Decimal::ZERO;
-        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal, Decimal)> = Vec::new();
+        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal, Decimal, String)> = Vec::new();
 
         for item in &req.items {
             if item.cantidad <= Decimal::ZERO {
                 anyhow::bail!("La cantidad debe ser mayor a cero");
             }
-            let row: Option<(String, String, Decimal, String, Decimal, Decimal)> = sqlx::query_as(
-                "SELECT sku, nombre, precio_venta, itbis_tipo, stock_actual, costo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true FOR UPDATE",
+            let row: Option<(String, String, Option<Decimal>, String, Decimal, Decimal, String)> = sqlx::query_as(
+                "SELECT sku, nombre, precio_venta, itbis_tipo, stock_actual, costo, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true FOR UPDATE",
             )
             .bind(item.producto_id)
             .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let (sku, nombre, precio_venta, itbis_tipo, stock_actual, costo) =
+            let (sku, nombre, precio_venta_catalogo, itbis_tipo, stock_actual, costo, tipo) =
                 row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
 
-            if stock_actual < item.cantidad {
-                anyhow::bail!("Stock insuficiente para {}: disponible {}, solicitado {}", nombre, stock_actual, item.cantidad);
-            }
+            // Un Servicio no tiene precio fijo en el catálogo (puede variar
+            // por volumen/alcance) - el precio se captura por línea en el
+            // momento de la venta, y no tiene stock que chequear/descontar.
+            let precio_venta = if tipo == "SERVICIO" {
+                let precio = item.precio_unitario.ok_or_else(|| anyhow::anyhow!("{} es un servicio: falta precio_unitario para esta línea", nombre))?;
+                if precio <= Decimal::ZERO {
+                    anyhow::bail!("precio_unitario inválido para {}", nombre);
+                }
+                precio
+            } else {
+                if stock_actual < item.cantidad {
+                    anyhow::bail!("Stock insuficiente para {}: disponible {}, solicitado {}", nombre, stock_actual, item.cantidad);
+                }
+                precio_venta_catalogo.unwrap_or_default()
+            };
 
             let descuento = item.descuento.unwrap_or_default();
             let line_bruto = precio_venta * item.cantidad;
@@ -201,7 +225,8 @@ impl VentasService {
             // stock se descuenta después, en lotes, vía conduces (ver
             // conduce_service::create_conduce). El chequeo de disponibilidad
             // de arriba sí se mantiene: no se factura más de lo que hay.
-            if !entrega_diferida {
+            // Un Servicio nunca mueve stock, sin importar entrega_diferida.
+            if tipo != "SERVICIO" && !entrega_diferida {
                 sqlx::query("UPDATE productos SET stock_actual = stock_actual - $1, updated_at = NOW() WHERE id = $2")
                     .bind(item.cantidad)
                     .bind(item.producto_id)
@@ -209,7 +234,7 @@ impl VentasService {
                     .await?;
             }
 
-            lineas.push((item.producto_id, sku, nombre, item.cantidad, precio_venta, descuento, itbis_tipo, line_itbis, line_subtotal, costo));
+            lineas.push((item.producto_id, sku, nombre, item.cantidad, precio_venta, descuento, itbis_tipo, line_itbis, line_subtotal, costo, tipo));
         }
 
         // ADMIN siempre puede descontar lo que sea. Cualquier otro rol (en la
@@ -274,11 +299,15 @@ impl VentasService {
         .await?;
 
         // Cuánto de cada línea sale de inmediato: todo, salvo que la entrega
-        // sea diferida (ahí arranca en 0 y sube con cada conduce).
-        let cantidad_entregada_inicial = |cantidad: Decimal| if entrega_diferida { Decimal::ZERO } else { cantidad };
+        // sea diferida (ahí arranca en 0 y sube con cada conduce). Un
+        // Servicio no tiene inventario que "entregar" - siempre cuenta como
+        // completo, incluso en una venta entrega_diferida.
+        let cantidad_entregada_inicial = |cantidad: Decimal, tipo: &str| {
+            if tipo == "SERVICIO" || !entrega_diferida { cantidad } else { Decimal::ZERO }
+        };
 
         let mut items = Vec::new();
-        for (producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal, costo) in lineas {
+        for (producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal, costo, tipo) in lineas {
             let vi = sqlx::query_as::<_, VentaItem>(
                 r#"INSERT INTO venta_items (venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -294,13 +323,13 @@ impl VentasService {
             .bind(&itbis_tipo)
             .bind(itbis_monto)
             .bind(line_subtotal)
-            .bind(cantidad_entregada_inicial(cantidad))
+            .bind(cantidad_entregada_inicial(cantidad, &tipo))
             .bind(costo)
             .fetch_one(&mut *tx)
             .await?;
             items.push(vi);
 
-            if !entrega_diferida {
+            if tipo != "SERVICIO" && !entrega_diferida {
                 crate::services::inventario_service::InventarioService::insert_movimiento_tx(
                     &mut tx,
                     tenant_id,
@@ -493,8 +522,17 @@ impl VentasService {
         // con entrega_diferida solo lo que realmente salió (vía conduces)
         // está descontado del stock. Para una venta normal cantidad_entregada
         // == cantidad, así que esto es idéntico al comportamiento anterior.
+        // Un ítem SERVICIO siempre queda con cantidad_entregada == cantidad
+        // (ver create_venta) pero nunca movió stock - no hay nada que revertir.
         for item in &items {
             if item.cantidad_entregada <= Decimal::ZERO {
+                continue;
+            }
+            let tipo: String = sqlx::query_scalar("SELECT tipo FROM productos WHERE id = $1")
+                .bind(item.producto_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            if tipo == "SERVICIO" {
                 continue;
             }
             crate::services::inventario_service::InventarioService::apply_movimiento_tx(

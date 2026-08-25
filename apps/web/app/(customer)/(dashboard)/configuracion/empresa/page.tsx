@@ -131,17 +131,23 @@ export default function EmpresaPage() {
       {loading ? (
         <p className="text-sm text-muted-foreground">Cargando...</p>
       ) : (
-        <Card className="max-w-2xl">
+        <Card className="max-w-4xl">
           <CardContent className="pt-5">
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="rnc">RNC</Label>
-                <Input id="rnc" value={values.rnc} disabled />
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="rnc">RNC</Label>
+                  <Input id="rnc" value={values.rnc} disabled />
+                </div>
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label htmlFor="razon_social">Razón social *</Label>
+                  <Input id="razon_social" required value={values.razon_social} onChange={(e) => set("razon_social", e.target.value)} />
+                </div>
               </div>
 
               <div className="space-y-1.5 rounded-md border border-border p-3.5">
                 <Label>¿Tu negocio factura electrónicamente con la DGII?</Label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 gap-2 max-w-sm">
                   <button
                     type="button"
                     onClick={() => {
@@ -168,7 +174,7 @@ export default function EmpresaPage() {
                   </button>
                 </div>
                 {values.factura_electronica_activa && (
-                  <div className="pt-2 space-y-1.5">
+                  <div className="pt-2 space-y-1.5 max-w-sm">
                     <Label htmlFor="ambiente">Ambiente DGII *</Label>
                     <Select id="ambiente" required value={values.ambiente_dgii} onChange={(e) => set("ambiente_dgii", e.target.value)}>
                       <option value="TesteCF">Pruebas (TesteCF)</option>
@@ -179,29 +185,29 @@ export default function EmpresaPage() {
                 )}
               </div>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="razon_social">Razón social *</Label>
-                <Input id="razon_social" required value={values.razon_social} onChange={(e) => set("razon_social", e.target.value)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="nombre_comercial">Nombre comercial</Label>
-                <Input id="nombre_comercial" value={values.nombre_comercial || ""} onChange={(e) => set("nombre_comercial", e.target.value)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="direccion">Dirección *</Label>
-                <Input id="direccion" required value={values.direccion} onChange={(e) => set("direccion", e.target.value)} />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label htmlFor="nombre_comercial">Nombre comercial</Label>
+                  <Input id="nombre_comercial" value={values.nombre_comercial || ""} onChange={(e) => set("nombre_comercial", e.target.value)} />
+                </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="telefono">Teléfono</Label>
                   <Input id="telefono" value={values.telefono || ""} onChange={(e) => set("telefono", e.target.value)} placeholder="809-000-0000" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label htmlFor="direccion">Dirección *</Label>
+                  <Input id="direccion" required value={values.direccion} onChange={(e) => set("direccion", e.target.value)} />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="correo">Correo</Label>
                   <Input id="correo" type="email" value={values.correo || ""} onChange={(e) => set("correo", e.target.value)} />
                 </div>
               </div>
-              <div className="space-y-1.5">
+
+              <div className="space-y-1.5 max-w-md">
                 <Label htmlFor="logo_url">URL del logo</Label>
                 <Input id="logo_url" value={values.logo_url || ""} onChange={(e) => set("logo_url", e.target.value)} placeholder="https://..." />
               </div>
@@ -215,7 +221,7 @@ export default function EmpresaPage() {
         </Card>
       )}
 
-      <Card className="max-w-2xl">
+      <Card className="max-w-4xl">
         <CardContent className="pt-5 space-y-3">
           <div>
             <p className="text-sm font-semibold">Respaldo de datos</p>

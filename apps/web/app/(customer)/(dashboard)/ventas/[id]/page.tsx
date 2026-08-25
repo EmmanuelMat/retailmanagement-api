@@ -78,6 +78,14 @@ export default function VentaDetallePage() {
   const [notasEntrega, setNotasEntrega] = useState("");
   const [registrandoEntrega, setRegistrandoEntrega] = useState(false);
   const [entregaError, setEntregaError] = useState("");
+  const [esServicios, setEsServicios] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("tenant");
+      if (raw) setEsServicios(JSON.parse(raw).tipo_negocio === "SERVICIOS");
+    } catch {}
+  }, []);
 
   const [usuario, setUsuario] = useState<{ es_admin?: boolean; permisos?: string[] } | null>(null);
   const [showConduceRetro, setShowConduceRetro] = useState(false);
@@ -224,11 +232,11 @@ export default function VentaDetallePage() {
     }
   }
 
-  if (error) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-xl">{error}</div>;
+  if (error) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-2xl">{error}</div>;
   if (!venta) return <p className="text-sm text-muted-foreground">Cargando...</p>;
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-6xl">
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold font-serif tracking-tight">Venta</h1>
@@ -403,25 +411,28 @@ export default function VentaDetallePage() {
             </Table>
 
             {venta.items.some((it) => Number(it.cantidad) - Number(it.cantidad_entregada) > 0) && (
-              <form onSubmit={handleRegistrarEntrega} className="space-y-3 max-w-md">
+              <form onSubmit={handleRegistrarEntrega} className="space-y-3 max-w-3xl">
                 <div className="space-y-1.5">
                   <Label htmlFor="direccionEntrega">Dirección de entrega</Label>
                   <Input id="direccionEntrega" value={direccionEntrega} onChange={(e) => setDireccionEntrega(e.target.value)} placeholder="Calle, número, sector..." />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="ordenCompra">Orden de compra</Label>
-                    <Input id="ordenCompra" value={ordenCompra} onChange={(e) => setOrdenCompra(e.target.value)} placeholder="Opcional" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="vehiculoPlaca">Vehículo / Placa</Label>
-                    <Input id="vehiculoPlaca" value={vehiculoPlaca} onChange={(e) => setVehiculoPlaca(e.target.value)} placeholder="Camión, ABC-1234" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="conductor">Conductor</Label>
-                    <Input id="conductor" value={conductor} onChange={(e) => setConductor(e.target.value)} placeholder="Nombre y cédula" />
-                  </div>
-                  <div />
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {!esServicios && (
+                    <>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="ordenCompra">Orden de compra</Label>
+                        <Input id="ordenCompra" value={ordenCompra} onChange={(e) => setOrdenCompra(e.target.value)} placeholder="Opcional" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="vehiculoPlaca">Vehículo / Placa</Label>
+                        <Input id="vehiculoPlaca" value={vehiculoPlaca} onChange={(e) => setVehiculoPlaca(e.target.value)} placeholder="Camión, ABC-1234" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="conductor">Conductor</Label>
+                        <Input id="conductor" value={conductor} onChange={(e) => setConductor(e.target.value)} placeholder="Nombre y cédula" />
+                      </div>
+                    </>
+                  )}
                   <div className="space-y-1.5">
                     <Label htmlFor="entregadoPor">Entregado por</Label>
                     <Input id="entregadoPor" value={entregadoPor} onChange={(e) => setEntregadoPor(e.target.value)} placeholder="Nombre y cédula" />

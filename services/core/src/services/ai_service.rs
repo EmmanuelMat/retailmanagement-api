@@ -93,7 +93,7 @@ impl AiService {
     async fn recolectar_hechos(&self, tenant_id: &str) -> anyhow::Result<(Vec<ProductoBajoStock>, Decimal, bool)> {
         let productos_bajo_minimo = sqlx::query_as::<_, ProductoBajoStock>(
             r#"SELECT nombre, stock_actual, stock_minimo FROM productos
-               WHERE tenant_id = $1 AND activo = true AND stock_actual <= stock_minimo
+               WHERE tenant_id = $1 AND activo = true AND tipo = 'PRODUCTO' AND stock_actual <= stock_minimo
                ORDER BY (stock_actual - stock_minimo) ASC LIMIT 5"#,
         )
         .bind(tenant_id)
@@ -476,7 +476,7 @@ impl AiService {
     async fn tool_inventario_valor(&self, tenant_id: &str) -> anyhow::Result<String> {
         let row: (Option<Decimal>, i64) = sqlx::query_as(
             "SELECT SUM(stock_actual * costo), COUNT(*) FILTER (WHERE stock_actual <= stock_minimo)
-             FROM productos WHERE tenant_id = $1 AND activo = true",
+             FROM productos WHERE tenant_id = $1 AND activo = true AND tipo = 'PRODUCTO'",
         )
         .bind(tenant_id)
         .fetch_one(&self.pool).await?;

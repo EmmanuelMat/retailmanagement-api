@@ -3,7 +3,7 @@
 //! promedio ponderado del producto, y registra un egreso de caja. Gastos es
 //! un registro simple sin efecto en inventario (alquiler, servicios, etc).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -20,6 +20,10 @@ pub struct Compra {
     pub itbis_total: Decimal,
     pub total: Decimal,
     pub metodo_pago: String,
+    /// Requerido en la app (no en DB) cuando metodo_pago = FIADO - ver
+    /// create_compra. Alimenta la rama Cuentas por Pagar de
+    /// contabilidad_service::sincronizar.
+    pub fecha_vencimiento: Option<NaiveDate>,
     pub created_at: DateTime<Utc>,
     // Campos DGII 606 (Norma 07-2018) - ver report_service::generate_606.
     pub estado: String,          // COMPLETADA | ANULADA
@@ -74,11 +78,12 @@ pub struct CreateCompraItemRequest {
     pub itbis_tipo: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct CreateCompraRequest {
     pub proveedor_id: Option<Uuid>,
     pub ncf_proveedor: Option<String>,
     pub metodo_pago: Option<String>,
+    pub fecha_vencimiento: Option<NaiveDate>,
     pub items: Vec<CreateCompraItemRequest>,
     // Campos DGII 606 (Norma 07-2018). Todos opcionales: si el suplidor no
     // tiene NCF (o el NCF no exige estas casillas) simplemente se omiten.
@@ -147,6 +152,9 @@ impl ComprasService {
             anyhow::bail!("La compra necesita al menos un producto");
         }
         let metodo_pago = req.metodo_pago.unwrap_or_else(|| "EFECTIVO".to_string());
+        if metodo_pago == "FIADO" && req.fecha_vencimiento.is_none() {
+            anyhow::bail!("Una compra fiada necesita una fecha de vencimiento");
+        }
 
         if let Some(t) = req.tipo_bienes_servicios {
             if !(1..=11).contains(&t) {
@@ -184,14 +192,17 @@ impl ComprasService {
             if item.cantidad <= Decimal::ZERO {
                 anyhow::bail!("La cantidad debe ser mayor a cero");
             }
-            let row: Option<(String, String, Decimal, Decimal)> = sqlx::query_as(
-                "SELECT sku, nombre, costo, stock_actual FROM productos WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+            let row: Option<(String, String, Decimal, Decimal, String)> = sqlx::query_as(
+                "SELECT sku, nombre, costo, stock_actual, tipo FROM productos WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
             )
             .bind(item.producto_id)
             .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let (sku, nombre, costo_actual, stock_actual) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+            let (sku, nombre, costo_actual, stock_actual, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+            if tipo == "SERVICIO" {
+                anyhow::bail!("No se pueden comprar servicios — usa Gastos para este concepto");
+            }
 
             let line_subtotal = item.costo_unitario * item.cantidad;
             let itbis_tipo = item.itbis_tipo.clone().unwrap_or_else(|| "EXENTO".to_string());
@@ -227,13 +238,13 @@ impl ComprasService {
 
         let compra = sqlx::query_as::<_, Compra>(&format!(
             r#"INSERT INTO compras (
-                   tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago,
+                   tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, fecha_vencimiento,
                    tipo_documento, ncf_modificado, tipo_bienes_servicios, fecha_pago,
                    monto_facturado_servicios, monto_facturado_bienes, itbis_retenido,
                    itbis_proporcionalidad, itbis_costo, tipo_retencion_isr, monto_retencion_renta,
                    isc, otros_impuestos, propina_legal
                )
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
                RETURNING {}"#,
             Self::COMPRA_COLUMNS
         ))
@@ -245,6 +256,7 @@ impl ComprasService {
         .bind(itbis_total)
         .bind(total)
         .bind(&metodo_pago)
+        .bind(req.fecha_vencimiento)
         .bind(&tipo_documento)
         .bind(&req.ncf_modificado)
         .bind(req.tipo_bienes_servicios)
@@ -296,17 +308,22 @@ impl ComprasService {
             .await?;
         }
 
-        sqlx::query(
-            r#"INSERT INTO caja_movimientos (tenant_id, tipo, concepto, monto, metodo_pago, referencia_tipo, referencia_id, usuario_id)
-               VALUES ($1, 'EGRESO', 'Compra a proveedor', $2, $3, 'COMPRA', $4, $5)"#,
-        )
-        .bind(tenant_id)
-        .bind(total)
-        .bind(&metodo_pago)
-        .bind(compra.id)
-        .bind(usuario_id)
-        .execute(&mut *tx)
-        .await?;
+        // Una compra FIADO no mueve caja - se acredita 2110 Cuentas por
+        // Pagar en su lugar (ver contabilidad_service::sincronizar), igual
+        // que ventas_service salta el ingreso de caja para una venta FIADO.
+        if metodo_pago != "FIADO" {
+            sqlx::query(
+                r#"INSERT INTO caja_movimientos (tenant_id, tipo, concepto, monto, metodo_pago, referencia_tipo, referencia_id, usuario_id)
+                   VALUES ($1, 'EGRESO', 'Compra a proveedor', $2, $3, 'COMPRA', $4, $5)"#,
+            )
+            .bind(tenant_id)
+            .bind(total)
+            .bind(&metodo_pago)
+            .bind(compra.id)
+            .bind(usuario_id)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
         Ok(CompraCompleta { compra, items })
@@ -363,7 +380,7 @@ impl ComprasService {
         Ok((rows, total))
     }
 
-    const COMPRA_COLUMNS: &'static str = "id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, created_at,
+    const COMPRA_COLUMNS: &'static str = "id, tenant_id, proveedor_id, usuario_id, ncf_proveedor, subtotal, itbis_total, total, metodo_pago, fecha_vencimiento, created_at,
                estado, tipo_documento, ncf_modificado, tipo_bienes_servicios, fecha_pago,
                monto_facturado_servicios, monto_facturado_bienes, itbis_retenido,
                itbis_proporcionalidad, itbis_costo, tipo_retencion_isr, monto_retencion_renta,

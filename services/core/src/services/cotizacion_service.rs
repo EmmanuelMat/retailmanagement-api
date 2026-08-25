@@ -64,6 +64,9 @@ pub struct CreateCotizacionItemRequest {
     pub producto_id: Uuid,
     pub cantidad: Decimal,
     pub descuento: Option<Decimal>,
+    /// Requerido cuando el producto es tipo SERVICIO - ver el mismo campo en
+    /// ventas_service::CreateVentaItemRequest.
+    pub precio_unitario: Option<Decimal>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,14 +107,24 @@ impl CotizacionService {
             if item.cantidad <= Decimal::ZERO {
                 anyhow::bail!("La cantidad debe ser mayor a cero");
             }
-            let row: Option<(String, String, Decimal, String)> = sqlx::query_as(
-                "SELECT sku, nombre, precio_venta, itbis_tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
+            let row: Option<(String, String, Option<Decimal>, String, String)> = sqlx::query_as(
+                "SELECT sku, nombre, precio_venta, itbis_tipo, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
             )
             .bind(item.producto_id)
             .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let (sku, nombre, precio_venta, itbis_tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+            let (sku, nombre, precio_venta_catalogo, itbis_tipo, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+
+            let precio_venta = if tipo == "SERVICIO" {
+                let precio = item.precio_unitario.ok_or_else(|| anyhow::anyhow!("{} es un servicio: falta precio_unitario para esta línea", nombre))?;
+                if precio <= Decimal::ZERO {
+                    anyhow::bail!("precio_unitario inválido para {}", nombre);
+                }
+                precio
+            } else {
+                precio_venta_catalogo.unwrap_or_default()
+            };
 
             let descuento = item.descuento.unwrap_or_default();
             let line_bruto = precio_venta * item.cantidad;
@@ -272,6 +285,20 @@ impl CotizacionService {
     pub async fn marcar_convertida(&self, tenant_id: &str, id: Uuid, venta_id: Uuid) -> anyhow::Result<()> {
         sqlx::query("UPDATE cotizaciones SET estado = 'CONVERTIDA', venta_id = $1 WHERE id = $2 AND tenant_id = $3")
             .bind(venta_id)
+            .bind(id)
+            .bind(tenant_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Igual que `marcar_convertida`, pero para el camino Cotización -> Orden
+    /// de Servicio (sin Venta todavía - eso llega después, al facturar la
+    /// orden). No se agrega una columna `orden_servicio_id` aquí a propósito:
+    /// `ordenes_servicio.cotizacion_id` ya es la referencia, en un solo
+    /// sentido, igual que `conduces.venta_id` no necesita su espejo en `ventas`.
+    pub async fn marcar_convertida_a_orden(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("UPDATE cotizaciones SET estado = 'CONVERTIDA' WHERE id = $1 AND tenant_id = $2")
             .bind(id)
             .bind(tenant_id)
             .execute(&self.pool)

@@ -146,6 +146,26 @@ pub fn assert_decimal_eq(actual: Decimal, expected: Decimal, context: &str) {
     assert_eq!(actual, expected, "{context}: expected {expected}, got {actual}");
 }
 
+/// Flips a tenant's `tipo_negocio` via the staff-only endpoint (the only
+/// write path - see `staff_service::set_tipo_negocio`). Requires
+/// `VENDOR_ADMIN_SECRET` in the environment, same as the running server (see
+/// `scripts/e2e/env.sh` - both are sourced into the same shell before
+/// `cargo test` runs).
+pub async fn set_tipo_negocio(session: &TenantSession, tipo_negocio: &str) {
+    let secret = std::env::var("VENDOR_ADMIN_SECRET").expect("VENDOR_ADMIN_SECRET debe estar en el entorno del test (ver scripts/e2e/env.sh)");
+    let resp = session
+        .client
+        .put(format!("{}/v1/staff/tenants/{}/tipo-negocio", base_url(), session.rnc))
+        .header("X-Vendor-Secret", secret)
+        .json(&json!({ "tipo_negocio": tipo_negocio }))
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("PUT tipo-negocio failed: {e}"));
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    assert!(status.is_success(), "PUT tipo-negocio returned {status}: {text}");
+}
+
 pub async fn abrir_caja(session: &TenantSession, monto_inicial: Decimal) -> Value {
     session.post("/v1/caja/abrir", json!({ "monto_inicial": monto_inicial })).await
 }
@@ -172,6 +192,24 @@ pub async fn create_producto(session: &TenantSession, precio_venta: Decimal, sto
                 "itbis_tipo": "GRAVADO_18",
                 "precio_venta": precio_venta,
                 "stock_actual": stock_actual,
+            }),
+        )
+        .await
+}
+
+/// Producto tipo SERVICIO: sin precio_venta ni stock (ver
+/// catalog_service::CatalogService::create_producto) - el precio se manda
+/// por línea al usarlo en una venta/cotización/conduce.
+pub async fn create_servicio(session: &TenantSession) -> Value {
+    let sku = format!("SRV-{}", uuid::Uuid::new_v4());
+    session
+        .post(
+            "/v1/productos",
+            json!({
+                "sku": sku,
+                "nombre": "Servicio de prueba e2e",
+                "itbis_tipo": "GRAVADO_18",
+                "tipo": "SERVICIO",
             }),
         )
         .await

@@ -15,10 +15,11 @@ interface ProductoDto {
   unidad_medida: string;
   itbis_tipo: string;
   costo: string;
-  precio_venta: string;
+  precio_venta: string | null;
   stock_actual: string;
   stock_minimo: string;
   imagen_url: string | null;
+  tipo: "PRODUCTO" | "SERVICIO";
 }
 
 export default function EditarProductoPage() {
@@ -40,9 +41,10 @@ export default function EditarProductoPage() {
           itbis_tipo: p.itbis_tipo,
           unidad_medida: p.unidad_medida,
           costo: p.costo,
-          precio_venta: p.precio_venta,
+          precio_venta: p.precio_venta ?? "0",
           stock_actual: p.stock_actual,
           stock_minimo: p.stock_minimo,
+          tipo: p.tipo,
         });
       })
       .catch((e) => setError(e.message));
@@ -72,10 +74,11 @@ export default function EditarProductoPage() {
                 descripcion: values.descripcion || undefined,
                 itbis_tipo: values.itbis_tipo,
                 unidad_medida: values.unidad_medida,
-                costo: values.costo,
-                precio_venta: values.precio_venta,
-                stock_actual: values.stock_actual,
-                stock_minimo: values.stock_minimo,
+                tipo: values.tipo,
+                costo: values.tipo === "SERVICIO" ? undefined : values.costo,
+                precio_venta: values.tipo === "SERVICIO" ? undefined : values.precio_venta,
+                stock_actual: values.tipo === "SERVICIO" ? undefined : values.stock_actual,
+                stock_minimo: values.tipo === "SERVICIO" ? undefined : values.stock_minimo,
               }),
             });
           }}

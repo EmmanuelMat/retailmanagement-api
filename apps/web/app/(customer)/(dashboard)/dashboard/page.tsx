@@ -47,7 +47,6 @@ function DashboardPageContent() {
   const [digest, setDigest] = useState<AiDigest | null>(null);
   const [digestLoading, setDigestLoading] = useState(true);
   const [modulosActivos, setModulosActivos] = useState<Set<string> | null>(null);
-  const [licenciaStatus, setLicenciaStatus] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     apiFetch<DashboardResumen>("/api/reports/dashboard").then(setResumen).catch(() => {});
@@ -57,13 +56,12 @@ function DashboardPageContent() {
       const u = localStorage.getItem("usuario");
       if (u) setUsuario(JSON.parse(u));
     } catch {}
-    apiFetch<{ status: string }>("/api/license/status").then((l) => setLicenciaStatus(l.status)).catch(() => {});
     apiFetch<{ codigo: string; activo: boolean }[]>("/api/tenants/me/modulos")
       .then((modulos) => setModulosActivos(new Set(modulos.filter((m) => m.activo).map((m) => m.codigo))))
       .catch(() => {});
   }, []);
 
-  const iaActiva = isModuloActivo("IA_ASISTENTE", modulosActivos, licenciaStatus);
+  const iaActiva = isModuloActivo("IA_ASISTENTE", modulosActivos);
 
   useEffect(() => {
     if (!iaActiva) {

@@ -52,10 +52,11 @@ export function BarraAcciones({ volverHref }: { volverHref: string }) {
   );
 }
 
-const COLORES: Record<"FACTURA" | "COTIZACION" | "CONDUCE", string> = {
+const COLORES: Record<"FACTURA" | "COTIZACION" | "CONDUCE" | "ORDEN_SERVICIO", string> = {
   FACTURA: "#1e3a5f",
   COTIZACION: "#2f5fa8",
   CONDUCE: "#4a4a4a",
+  ORDEN_SERVICIO: "#8a5a1f",
 };
 
 /** Encabezado compartido: logo + datos del emisor a la izquierda, franja de
@@ -70,7 +71,7 @@ export function EncabezadoDocumento({
   camposDerecha,
 }: {
   empresa: Empresa | null;
-  tipo: "FACTURA" | "COTIZACION" | "CONDUCE";
+  tipo: "FACTURA" | "COTIZACION" | "CONDUCE" | "ORDEN_SERVICIO";
   titulo: string;
   camposDerecha: { label: string; value: string }[];
 }) {
@@ -109,7 +110,7 @@ export function EncabezadoDocumento({
   );
 }
 
-export function BarraSeccion({ tipo, children }: { tipo: "FACTURA" | "COTIZACION" | "CONDUCE"; children: React.ReactNode }) {
+export function BarraSeccion({ tipo, children }: { tipo: "FACTURA" | "COTIZACION" | "CONDUCE" | "ORDEN_SERVICIO"; children: React.ReactNode }) {
   return (
     <div className="text-white text-[12px] font-bold px-3 py-1.5 mt-3" style={{ backgroundColor: COLORES[tipo] }}>
       {children}

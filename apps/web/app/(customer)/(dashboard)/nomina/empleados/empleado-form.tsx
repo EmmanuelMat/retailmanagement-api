@@ -46,26 +46,29 @@ export function EmpleadoForm({
   }
 
   return (
-    <Card className="max-w-xl">
+    <Card className="max-w-4xl">
       <CardContent className="pt-5">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="nombre">Nombre completo *</Label>
-            <Input id="nombre" required value={values.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="María Pérez" />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1.5 md:col-span-2">
+              <Label htmlFor="nombre">Nombre completo *</Label>
+              <Input id="nombre" required value={values.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="María Pérez" />
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="cedula">Cédula</Label>
               <Input id="cedula" value={values.cedula} onChange={(e) => set("cedula", e.target.value)} placeholder="001-1234567-8" />
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="puesto">Puesto</Label>
               <Input id="puesto" value={values.puesto} onChange={(e) => set("puesto", e.target.value)} placeholder="Cajera" />
             </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="salario">Salario mensual *</Label>
-            <Input id="salario" type="number" step="0.01" required value={values.salario_mensual} onChange={(e) => set("salario_mensual", e.target.value)} placeholder="20000.00" />
+            <div className="space-y-1.5">
+              <Label htmlFor="salario">Salario mensual *</Label>
+              <Input id="salario" type="number" step="0.01" required value={values.salario_mensual} onChange={(e) => set("salario_mensual", e.target.value)} placeholder="20000.00" />
+            </div>
           </div>
 
           {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}

@@ -78,11 +78,11 @@ export default function ImpresoraPage() {
       {loading ? (
         <p className="text-sm text-muted-foreground">Cargando...</p>
       ) : (
-        <Card className="max-w-xl">
+        <Card className="max-w-4xl">
           <CardContent className="pt-5">
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="space-y-1.5 md:col-span-2">
                   <Label htmlFor="ip">Dirección IP</Label>
                   <Input id="ip" value={values.ip || ""} onChange={(e) => set("ip", e.target.value)} placeholder="192.168.1.50" />
                 </div>
@@ -90,18 +90,18 @@ export default function ImpresoraPage() {
                   <Label htmlFor="puerto">Puerto</Label>
                   <Input id="puerto" type="number" value={values.puerto} onChange={(e) => set("puerto", e.target.value)} />
                 </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="copias">Copias por venta</Label>
+                  <Input id="copias" type="number" min={1} max={5} value={values.copias} onChange={(e) => set("copias", e.target.value)} />
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="ancho_mm">Ancho de papel</Label>
                   <Select id="ancho_mm" value={values.ancho_mm} onChange={(e) => set("ancho_mm", Number(e.target.value))}>
                     <option value={58}>58mm</option>
                     <option value={80}>80mm</option>
                   </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="copias">Copias por venta</Label>
-                  <Input id="copias" type="number" min={1} max={5} value={values.copias} onChange={(e) => set("copias", e.target.value)} />
                 </div>
               </div>
 

@@ -53,6 +53,15 @@ export default function CotizacionDetallePage() {
   const [aprobacionMensaje, setAprobacionMensaje] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
+  const [esServicios, setEsServicios] = useState(false);
+  const [convirtiendoOrden, setConvirtiendoOrden] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("tenant");
+      if (raw) setEsServicios(JSON.parse(raw).tipo_negocio === "SERVICIOS");
+    } catch {}
+  }, []);
 
   function load() {
     apiFetch<CotizacionDetalle>(`/api/cotizaciones/${params.id}`).then(setCotizacion).catch((e) => setError(e.message));
@@ -69,6 +78,19 @@ export default function CotizacionDetallePage() {
       setError(e.message);
     } finally {
       setRechazando(false);
+    }
+  }
+
+  async function handleConvertirAOrden() {
+    setConvirtiendoOrden(true);
+    setError("");
+    try {
+      const orden = await apiFetch<{ id: string }>(`/api/cotizaciones/${params.id}/convertir-a-orden`, { method: "POST", body: JSON.stringify({}) });
+      router.push(`/ordenes-servicio/${orden.id}` as any);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setConvirtiendoOrden(false);
     }
   }
 
@@ -96,13 +118,13 @@ export default function CotizacionDetallePage() {
     }
   }
 
-  if (error) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-xl">{error}</div>;
+  if (error) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-2xl">{error}</div>;
   if (!cotizacion) return <p className="text-sm text-muted-foreground">Cargando...</p>;
 
   const puedeConvertir = cotizacion.estado === "PENDIENTE" || cotizacion.estado === "ACEPTADA";
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-6xl">
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold font-serif tracking-tight">Cotización</h1>
@@ -174,12 +196,15 @@ export default function CotizacionDetallePage() {
                 <option value="EFECTIVO">Efectivo</option>
                 <option value="TARJETA">Tarjeta</option>
                 <option value="TRANSFERENCIA">Transferencia</option>
-                <option value="FIADO">Fiado</option>
+                <option value="FIADO">{esServicios ? "A crédito" : "Fiado"}</option>
               </Select>
             </div>
             {convertirError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{convertirError}</div>}
             <Button className="w-full" onClick={() => handleConvertir()} disabled={convirtiendo}>
               {convirtiendo ? "Procesando..." : "Convertir a venta"}
+            </Button>
+            <Button className="w-full" variant="secondary" onClick={handleConvertirAOrden} disabled={convirtiendoOrden}>
+              {convirtiendoOrden ? "Procesando..." : "Convertir a orden de servicio"}
             </Button>
           </CardContent>
         </Card>

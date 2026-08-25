@@ -164,11 +164,11 @@ function UsuariosPageContent() {
       </div>
 
       {showForm && (
-        <Card className="max-w-xl">
+        <Card className="max-w-4xl">
           <CardContent className="pt-5">
-            <form onSubmit={handleCreate} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
+            <form onSubmit={handleCreate} className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1.5 md:col-span-2">
                   <Label htmlFor="nombre">Nombre *</Label>
                   <Input id="nombre" required value={nuevo.nombre} onChange={(e) => setNuevo((v) => ({ ...v, nombre: e.target.value }))} />
                 </div>
@@ -179,15 +179,17 @@ function UsuariosPageContent() {
                   </Select>
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="email">Correo *</Label>
-                <Input id="email" type="email" required value={nuevo.email} onChange={(e) => setNuevo((v) => ({ ...v, email: e.target.value }))} />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label htmlFor="email">Correo *</Label>
+                  <Input id="email" type="email" required value={nuevo.email} onChange={(e) => setNuevo((v) => ({ ...v, email: e.target.value }))} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="password">Contraseña *</Label>
+                  <Input id="password" type="password" required minLength={8} value={nuevo.password} onChange={(e) => setNuevo((v) => ({ ...v, password: e.target.value }))} />
+                </div>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="password">Contraseña *</Label>
-                <Input id="password" type="password" required minLength={8} value={nuevo.password} onChange={(e) => setNuevo((v) => ({ ...v, password: e.target.value }))} />
-              </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 max-w-sm">
                 <Label htmlFor="descuento">Límite de descuento sin aprobación (RD$)</Label>
                 <Input
                   id="descuento"
