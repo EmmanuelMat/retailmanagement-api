@@ -53,7 +53,9 @@ pub struct Usuario {
     pub email: String,
     #[serde(skip_serializing)]
     pub password_hash: String,
-    pub rol: String, // ADMIN, CAJERO, ALMACEN, CONTADOR
+    pub rol: String, // ADMIN, CAJERO, ALMACEN, CONTADOR - etiqueta legible, ver rol_id para autorización real
+    pub rol_id: Option<Uuid>,
+    pub must_change_password: bool,
     pub activo: bool,
     pub created_at: chrono::DateTime<Utc>,
 }
@@ -96,20 +98,15 @@ pub struct UsuarioPublic {
     pub nombre: String,
     pub email: String,
     pub rol: String,
+    pub rol_id: Option<Uuid>,
+    /// Bypass total (equivalente al rol ADMIN de hoy) - ver `roles.es_admin`.
+    pub es_admin: bool,
+    /// Códigos de `permisos_catalogo` que tiene el rol de este usuario. No
+    /// viaja en el JWT (ver Claims) - se recalcula en cada login/consulta,
+    /// así que revocar un permiso aplica de inmediato, no en el próximo login.
+    pub permisos: Vec<String>,
+    pub must_change_password: bool,
     pub activo: bool,
-}
-
-impl From<Usuario> for UsuarioPublic {
-    fn from(u: Usuario) -> Self {
-        Self {
-            id: u.id,
-            tenant_id: u.tenant_id,
-            nombre: u.nombre,
-            email: u.email,
-            rol: u.rol,
-            activo: u.activo,
-        }
-    }
 }
 
 pub struct AuthService {
@@ -164,6 +161,41 @@ impl AuthService {
         Ok(data.claims)
     }
 
+    /// Duplica la consulta de `RolesService::permisos_de_usuario` con
+    /// `self.pool` directo en vez de inyectar RolesService aquí - evita
+    /// reestructurar el constructor de AuthService por dos SELECT.
+    async fn permisos_para(&self, usuario_id: Uuid) -> anyhow::Result<(bool, Vec<String>)> {
+        let es_admin: Option<bool> = sqlx::query_scalar(
+            "SELECT r.es_admin FROM usuarios u JOIN roles r ON r.id = u.rol_id WHERE u.id = $1",
+        )
+        .bind(usuario_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let permisos: Vec<String> = sqlx::query_scalar(
+            "SELECT rp.permiso_codigo FROM usuarios u JOIN role_permisos rp ON rp.role_id = u.rol_id WHERE u.id = $1",
+        )
+        .bind(usuario_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok((es_admin.unwrap_or(false), permisos))
+    }
+
+    pub async fn usuario_public(&self, u: &Usuario) -> anyhow::Result<UsuarioPublic> {
+        let (es_admin, permisos) = self.permisos_para(u.id).await?;
+        Ok(UsuarioPublic {
+            id: u.id,
+            tenant_id: u.tenant_id.clone(),
+            nombre: u.nombre.clone(),
+            email: u.email.clone(),
+            rol: u.rol.clone(),
+            rol_id: u.rol_id,
+            es_admin,
+            permisos,
+            must_change_password: u.must_change_password,
+            activo: u.activo,
+        })
+    }
+
     // Registro negocio + admin inicial - Todo en transaccion + eventos
     pub async fn register(&self, req: RegisterRequest) -> anyhow::Result<AuthResponse> {
         // Validar RNC: 9-11 digitos, solo numeros
@@ -214,12 +246,8 @@ impl AuthService {
         .execute(&mut *tx)
         .await?;
 
-        // 2. Crear usuario admin
-        // rol_id se resuelve contra el catálogo global `roles` (además del
-        // string `rol` de siempre) - alimenta únicamente el permiso_guard
-        // nuevo (Órdenes de Servicio/Compra); ADMIN también pasa ese guard
-        // por el escape hatch de siempre, así que esto es solo para que
-        // `role_permisos` tenga de qué partir si algún día se afina.
+        // 2. Crear usuario admin - rol_id resuelto por subquery contra el rol
+        // ADMIN sembrado por la migración (ver roles_service.rs/migrate.rs).
         sqlx::query(
             r#"INSERT INTO usuarios (id, tenant_id, nombre, email, password_hash, rol, rol_id, activo, created_at)
                VALUES ($1, $2, $3, $4, $5, 'ADMIN', (SELECT id FROM roles WHERE codigo = 'ADMIN'), true, $6)"#
@@ -343,10 +371,11 @@ impl AuthService {
         let tenant = self.get_tenant(&rnc_clean).await?;
         let usuario = self.get_usuario_by_id(user_id).await?;
         let token = self.generate_jwt(&usuario)?;
+        let usuario_public = self.usuario_public(&usuario).await?;
 
         Ok(AuthResponse {
             token,
-            usuario: usuario.into(),
+            usuario: usuario_public,
             tenant,
         })
     }
@@ -355,7 +384,7 @@ impl AuthService {
         // Buscar usuario por email (y opcional RNC)
         let usuario_row = if let Some(rnc) = &req.rnc {
             sqlx::query_as::<_, UsuarioRow>(
-                "SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at FROM usuarios WHERE email = $1 AND tenant_id = $2 AND activo = true"
+                "SELECT id, tenant_id, nombre, email, password_hash, rol, rol_id, must_change_password, activo, created_at FROM usuarios WHERE email = $1 AND tenant_id = $2 AND activo = true"
             )
             .bind(req.email.to_lowercase())
             .bind(rnc.replace("-", ""))
@@ -363,7 +392,7 @@ impl AuthService {
             .await?
         } else {
             sqlx::query_as::<_, UsuarioRow>(
-                "SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at FROM usuarios WHERE email = $1 AND activo = true LIMIT 1"
+                "SELECT id, tenant_id, nombre, email, password_hash, rol, rol_id, must_change_password, activo, created_at FROM usuarios WHERE email = $1 AND activo = true LIMIT 1"
             )
             .bind(req.email.to_lowercase())
             .fetch_optional(&self.pool)
@@ -383,6 +412,8 @@ impl AuthService {
             email: row.email,
             password_hash: row.password_hash,
             rol: row.rol,
+            rol_id: row.rol_id,
+            must_change_password: row.must_change_password,
             activo: row.activo,
             created_at: row.created_at,
         };
@@ -404,9 +435,11 @@ impl AuthService {
         .await
         .ok(); // ignore event error for login
 
+        let usuario_public = self.usuario_public(&usuario).await?;
+
         Ok(AuthResponse {
             token,
-            usuario: usuario.into(),
+            usuario: usuario_public,
             tenant,
         })
     }
@@ -418,7 +451,7 @@ impl AuthService {
     /// si falló por email, contraseña o rol incorrecto - todos lucen iguales.
     pub async fn verify_admin_credentials(&self, tenant_id: &str, email: &str, password: &str) -> anyhow::Result<Uuid> {
         let row = sqlx::query_as::<_, UsuarioRow>(
-            "SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at
+            "SELECT id, tenant_id, nombre, email, password_hash, rol, rol_id, must_change_password, activo, created_at
              FROM usuarios WHERE email = $1 AND tenant_id = $2 AND activo = true",
         )
         .bind(email.to_lowercase())
@@ -446,7 +479,7 @@ impl AuthService {
     pub async fn iniciar_reset_password(&self, rnc: Option<&str>, email: &str) -> anyhow::Result<Option<(Uuid, String, String)>> {
         let usuario_row = if let Some(rnc) = rnc {
             sqlx::query_as::<_, UsuarioRow>(
-                "SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at
+                "SELECT id, tenant_id, nombre, email, password_hash, rol, rol_id, must_change_password, activo, created_at
                  FROM usuarios WHERE email = $1 AND tenant_id = $2 AND activo = true",
             )
             .bind(email.to_lowercase())
@@ -455,7 +488,7 @@ impl AuthService {
             .await?
         } else {
             sqlx::query_as::<_, UsuarioRow>(
-                "SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at
+                "SELECT id, tenant_id, nombre, email, password_hash, rol, rol_id, must_change_password, activo, created_at
                  FROM usuarios WHERE email = $1 AND activo = true LIMIT 1",
             )
             .bind(email.to_lowercase())
@@ -538,7 +571,7 @@ impl AuthService {
     }
 
     pub async fn get_usuario_by_id(&self, id: Uuid) -> anyhow::Result<Usuario> {
-        let row = sqlx::query_as::<_, UsuarioRow>("SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at FROM usuarios WHERE id = $1")
+        let row = sqlx::query_as::<_, UsuarioRow>("SELECT id, tenant_id, nombre, email, password_hash, rol, rol_id, must_change_password, activo, created_at FROM usuarios WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?
@@ -551,25 +584,89 @@ impl AuthService {
             email: row.email,
             password_hash: row.password_hash,
             rol: row.rol,
+            rol_id: row.rol_id,
+            must_change_password: row.must_change_password,
             activo: row.activo,
             created_at: row.created_at,
         })
     }
 
     pub async fn list_usuarios(&self, tenant_id: &str) -> anyhow::Result<Vec<UsuarioPublic>> {
-        let rows = sqlx::query_as::<_, UsuarioRow>("SELECT id, tenant_id, nombre, email, password_hash, rol, activo, created_at FROM usuarios WHERE tenant_id = $1 ORDER BY created_at DESC")
+        let rows = sqlx::query_as::<_, UsuarioRow>("SELECT id, tenant_id, nombre, email, password_hash, rol, rol_id, must_change_password, activo, created_at FROM usuarios WHERE tenant_id = $1 ORDER BY created_at DESC")
             .bind(tenant_id)
             .fetch_all(&self.pool)
             .await?;
 
-        Ok(rows.into_iter().map(|r| UsuarioPublic {
-            id: r.id,
-            tenant_id: r.tenant_id,
-            nombre: r.nombre,
-            email: r.email,
-            rol: r.rol,
-            activo: r.activo,
-        }).collect())
+        let mut resultado = Vec::with_capacity(rows.len());
+        for r in rows {
+            let (es_admin, permisos) = self.permisos_para(r.id).await?;
+            resultado.push(UsuarioPublic {
+                id: r.id,
+                tenant_id: r.tenant_id,
+                nombre: r.nombre,
+                email: r.email,
+                rol: r.rol,
+                rol_id: r.rol_id,
+                es_admin,
+                permisos,
+                must_change_password: r.must_change_password,
+                activo: r.activo,
+            });
+        }
+        Ok(resultado)
+    }
+
+    /// Fija una contraseña nueva y limpia el flag - usado cuando el propio
+    /// usuario cumple el `must_change_password` forzado por staff (ver
+    /// `admin_reset_password`). Devuelve un JWT nuevo (el viejo seguía
+    /// siendo válido pero apuntaba a un usuario todavía flagged) para que el
+    /// frontend pueda seguir sin pedir un segundo login.
+    pub async fn set_new_password(&self, usuario_id: Uuid, new_password: &str) -> anyhow::Result<AuthResponse> {
+        let hash = Self::hash_password(new_password)?;
+        sqlx::query("UPDATE usuarios SET password_hash = $1, must_change_password = false WHERE id = $2")
+            .bind(&hash)
+            .bind(usuario_id)
+            .execute(&self.pool)
+            .await?;
+
+        let usuario = self.get_usuario_by_id(usuario_id).await?;
+        let tenant = self.get_tenant(&usuario.tenant_id).await?;
+        let token = self.generate_jwt(&usuario)?;
+        let usuario_public = self.usuario_public(&usuario).await?;
+        Ok(AuthResponse { token, usuario: usuario_public, tenant })
+    }
+
+    /// Reset de contraseña iniciado por STAFF (sin correo) - genera una
+    /// temporal al azar, la guarda hasheada, marca `must_change_password`, y
+    /// devuelve el texto plano UNA sola vez para que el staff la transmita
+    /// por el canal que sea (teléfono, WhatsApp, en persona). Nunca se
+    /// vuelve a mostrar ni se guarda en texto plano en ningún lado.
+    pub async fn admin_reset_password(&self, tenant_id: &str, usuario_id: Uuid) -> anyhow::Result<String> {
+        const ALFABETO: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+        // Bloque explícito: `ThreadRng` no es `Send`, así que debe quedar
+        // fuera de alcance ANTES del próximo `.await` (la query de abajo) -
+        // de lo contrario el future de este método deja de ser Send y axum
+        // rechaza el handler entero con un error de trait bastante opaco.
+        let temporal: String = {
+            let mut rng = rand::thread_rng();
+            (0..10)
+                .map(|_| ALFABETO[(rng.next_u32() as usize) % ALFABETO.len()] as char)
+                .collect()
+        };
+
+        let hash = Self::hash_password(&temporal)?;
+        let actualizado = sqlx::query(
+            "UPDATE usuarios SET password_hash = $1, must_change_password = true WHERE id = $2 AND tenant_id = $3",
+        )
+        .bind(&hash)
+        .bind(usuario_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+        if actualizado.rows_affected() == 0 {
+            anyhow::bail!("Usuario no encontrado en este negocio");
+        }
+        Ok(temporal)
     }
 }
 
@@ -599,6 +696,8 @@ struct UsuarioRow {
     email: String,
     password_hash: String,
     rol: String,
+    rol_id: Option<Uuid>,
+    must_change_password: bool,
     activo: bool,
     created_at: chrono::DateTime<Utc>,
 }

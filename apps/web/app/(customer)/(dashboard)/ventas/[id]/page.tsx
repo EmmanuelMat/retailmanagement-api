@@ -87,6 +87,18 @@ export default function VentaDetallePage() {
     } catch {}
   }, []);
 
+  const [usuario, setUsuario] = useState<{ es_admin?: boolean; permisos?: string[] } | null>(null);
+  const [showConduceRetro, setShowConduceRetro] = useState(false);
+  const [direccionRetro, setDireccionRetro] = useState("");
+  const [ordenCompraRetro, setOrdenCompraRetro] = useState("");
+  const [vehiculoRetro, setVehiculoRetro] = useState("");
+  const [conductorRetro, setConductorRetro] = useState("");
+  const [entregadoPorRetro, setEntregadoPorRetro] = useState("");
+  const [recibidoPorRetro, setRecibidoPorRetro] = useState("");
+  const [notasRetro, setNotasRetro] = useState("");
+  const [creandoRetro, setCreandoRetro] = useState(false);
+  const [retroError, setRetroError] = useState("");
+
   function cargarVenta() {
     apiFetch<VentaDetalle>(`/api/ventas/${params.id}`).then(setVenta).catch((e) => setError(e.message));
   }
@@ -98,7 +110,47 @@ export default function VentaDetallePage() {
   useEffect(() => {
     cargarVenta();
     cargarConduces();
+    try {
+      const u = localStorage.getItem("usuario");
+      if (u) setUsuario(JSON.parse(u));
+    } catch {}
   }, [params.id]);
+
+  const puedeConduceRetroactivo = !!usuario?.es_admin || !!usuario?.permisos?.includes("conduces.crear_retroactivo");
+
+  async function handleCrearConduceRetroactivo(e: React.FormEvent) {
+    e.preventDefault();
+    if (!venta) return;
+    setCreandoRetro(true);
+    setRetroError("");
+    try {
+      await apiFetch(`/api/ventas/${venta.id}/conduce-retroactivo`, {
+        method: "POST",
+        body: JSON.stringify({
+          direccion_entrega: direccionRetro || undefined,
+          orden_compra: ordenCompraRetro || undefined,
+          vehiculo_placa: vehiculoRetro || undefined,
+          conductor: conductorRetro || undefined,
+          entregado_por: entregadoPorRetro || undefined,
+          recibido_por: recibidoPorRetro || undefined,
+          notas: notasRetro || undefined,
+        }),
+      });
+      setShowConduceRetro(false);
+      setDireccionRetro("");
+      setOrdenCompraRetro("");
+      setVehiculoRetro("");
+      setConductorRetro("");
+      setEntregadoPorRetro("");
+      setRecibidoPorRetro("");
+      setNotasRetro("");
+      cargarConduces();
+    } catch (e: any) {
+      setRetroError(e.message);
+    } finally {
+      setCreandoRetro(false);
+    }
+  }
 
   async function handleRegistrarEntrega(e: React.FormEvent) {
     e.preventDefault();
@@ -421,6 +473,88 @@ export default function VentaDetallePage() {
                   </TableBody>
                 </Table>
               </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {!venta.entrega_diferida && venta.estado !== "ANULADA" && puedeConduceRetroactivo && (
+        <Card>
+          <CardContent className="pt-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Truck className="h-4 w-4 text-primary" />
+                <h2 className="font-bold text-sm">Conduce</h2>
+              </div>
+              {!showConduceRetro && (
+                <Button size="sm" variant="secondary" onClick={() => setShowConduceRetro(true)}>Generar conduce</Button>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground -mt-2">
+              Esta venta no fue marcada de entrega diferida — la mercancía ya salió completa al facturarse. Esto solo
+              genera el documento de entrega que faltó, sin afectar el inventario.
+            </p>
+
+            {conduces.length > 0 && (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Dirección</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {conduces.map((c) => (
+                    <TableRow key={c.id}>
+                      <TableCell className="text-xs text-muted-foreground">
+                        <Link href={`/conduces/${c.id}` as any} className="hover:text-primary">{new Date(c.created_at).toLocaleString("es-DO")}</Link>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{c.direccion_entrega || "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+
+            {showConduceRetro && (
+              <form onSubmit={handleCrearConduceRetroactivo} className="space-y-3 max-w-md">
+                <div className="space-y-1.5">
+                  <Label htmlFor="direccionRetro">Dirección de entrega</Label>
+                  <Input id="direccionRetro" value={direccionRetro} onChange={(e) => setDireccionRetro(e.target.value)} placeholder="Calle, número, sector..." />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="ordenCompraRetro">Orden de compra</Label>
+                    <Input id="ordenCompraRetro" value={ordenCompraRetro} onChange={(e) => setOrdenCompraRetro(e.target.value)} placeholder="Opcional" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="vehiculoRetro">Vehículo / Placa</Label>
+                    <Input id="vehiculoRetro" value={vehiculoRetro} onChange={(e) => setVehiculoRetro(e.target.value)} placeholder="Camión, ABC-1234" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="conductorRetro">Conductor</Label>
+                    <Input id="conductorRetro" value={conductorRetro} onChange={(e) => setConductorRetro(e.target.value)} placeholder="Nombre y cédula" />
+                  </div>
+                  <div />
+                  <div className="space-y-1.5">
+                    <Label htmlFor="entregadoPorRetro">Entregado por</Label>
+                    <Input id="entregadoPorRetro" value={entregadoPorRetro} onChange={(e) => setEntregadoPorRetro(e.target.value)} placeholder="Nombre y cédula" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="recibidoPorRetro">Recibido por</Label>
+                    <Input id="recibidoPorRetro" value={recibidoPorRetro} onChange={(e) => setRecibidoPorRetro(e.target.value)} placeholder="Nombre y cédula" />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="notasRetro">Notas</Label>
+                  <Input id="notasRetro" value={notasRetro} onChange={(e) => setNotasRetro(e.target.value)} placeholder="Opcional" />
+                </div>
+                {retroError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{retroError}</div>}
+                <div className="flex gap-2">
+                  <Button type="submit" disabled={creandoRetro}>{creandoRetro ? "Generando..." : "Generar conduce"}</Button>
+                  <Button type="button" variant="secondary" onClick={() => setShowConduceRetro(false)}>Cancelar</Button>
+                </div>
+              </form>
             )}
           </CardContent>
         </Card>

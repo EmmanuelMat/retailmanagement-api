@@ -1,0 +1,8 @@
+target
+tests
+backups
+uploads
+.env
+.env.*
+!.env.example
+*.log

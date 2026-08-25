@@ -258,31 +258,27 @@ async fn una_orden_de_servicio_no_es_visible_para_otro_tenant() {
     assert_eq!(resp.status(), 404, "otro tenant no debería poder leer esta orden");
 }
 
-/// El nuevo permiso_guard es aditivo y corre DESPUÉS de `role_guard`/
-/// `required_roles` (main.rs) - para probarlo de verdad (no simplemente
-/// redescubrir que `role_guard` ya bloquea un rol entero) hace falta un rol
-/// que SÍ pase `required_roles` para esta ruta (CAJERO, igual que
-/// cotizaciones/conduces) pero que el seed de `migrate.rs` NO le haya dado
-/// el permiso granular específico: CAJERO recibió `orden_servicio.iniciar`
-/// pero no `orden_servicio.consumir_material` (ese quedó solo para ALMACEN).
+/// Las rutas de Órdenes de Servicio pasan por el mismo `permission_guard`
+/// que el resto de la app (ver `required_permiso` en main.rs), gateadas por
+/// un único permiso de grano grueso `ordenes_servicio.gestionar` - no hay
+/// sub-permisos por acción de lifecycle (iniciar/pausar/consumir material),
+/// igual que `ventas.gestionar` cubre toda la operación de un cajero.
+/// CAJERO tiene ese permiso (ver seed en migrate.rs); CONTADOR no - confirma
+/// que el guard realmente bloquea, no solo que un rol entero pasa por
+/// `required_roles_legacy` sin más chequeo.
 #[tokio::test]
-async fn rol_con_acceso_a_la_ruta_pero_sin_el_permiso_granular_es_rechazado() {
+async fn rol_sin_el_permiso_ordenes_servicio_gestionar_es_rechazado() {
     let session = register_tenant().await;
     let servicio = create_servicio(&session).await;
-    let material = create_producto(&session, dec!(40), dec!(30)).await;
     let orden = session
         .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "500" }] }))
         .await;
     let orden_id = orden["id"].as_str().unwrap();
-    let mat = session
-        .post(&format!("/v1/ordenes-servicio/{orden_id}/materiales"), json!({ "producto_id": material["id"], "cantidad_planificada": "1" }))
-        .await;
-    let material_id = mat["id"].as_str().unwrap();
 
     let nuevo_usuario = session
         .post(
             "/v1/config/usuarios",
-            json!({ "nombre": "Cajero Sin Permiso", "email": format!("cajero-{}@e2e-test.local", session.rnc), "password": "TestPassword123!", "rol": "CAJERO" }),
+            json!({ "nombre": "Contador Sin Permiso", "email": format!("contador-{}@e2e-test.local", session.rnc), "password": "TestPassword123!", "rol": "CONTADOR" }),
         )
         .await;
 
@@ -295,28 +291,17 @@ async fn rol_con_acceso_a_la_ruta_pero_sin_el_permiso_granular_es_rechazado() {
         .expect("login failed");
     assert!(login.status().is_success());
     let login_body: serde_json::Value = login.json().await.expect("login response not JSON");
-    let cajero_token = login_body["token"].as_str().expect("no token").to_string();
+    let contador_token = login_body["token"].as_str().expect("no token").to_string();
 
-    // CAJERO sí puede iniciar la orden (role_guard lo permite y sí tiene el
-    // permiso granular) - confirma que no estamos bloqueados por role_guard.
+    // CONTADOR no tiene ordenes_servicio.gestionar - el permission_guard
+    // debe rechazarlo con 403 (y, al ser un permiso nuevo sin equivalente
+    // legacy, sin caer al fallback de required_roles_legacy).
     let resp = session
         .client
         .post(format!("{}/v1/ordenes-servicio/{orden_id}/iniciar", base_url()))
-        .bearer_auth(&cajero_token)
+        .bearer_auth(&contador_token)
         .send()
         .await
         .expect("request failed");
-    assert!(resp.status().is_success(), "CAJERO sí debería poder iniciar la orden");
-
-    // Pero consumir material es un permiso que este rol no tiene - el
-    // permiso_guard (no role_guard) debe rechazarlo con 403.
-    let resp = session
-        .client
-        .post(format!("{}/v1/ordenes-servicio/{orden_id}/materiales/{material_id}/consumir", base_url()))
-        .bearer_auth(&cajero_token)
-        .json(&json!({ "cantidad": "1" }))
-        .send()
-        .await
-        .expect("request failed");
-    assert_eq!(resp.status(), 403, "CAJERO no tiene orden_servicio.consumir_material - el permiso_guard debe rechazarlo");
+    assert_eq!(resp.status(), 403, "CONTADOR no tiene ordenes_servicio.gestionar - el permission_guard debe rechazarlo");
 }

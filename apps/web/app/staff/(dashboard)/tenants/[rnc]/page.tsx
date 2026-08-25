@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Building2, LayoutGrid, Mail, ShieldCheck, Upload, Plus } from "lucide-react";
+import { ArrowLeft, Building2, LayoutGrid, Mail, ShieldCheck, Upload, Plus, Users, KeyRound } from "lucide-react";
 import { Badge, Button, Card, CardContent, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@repo/ui";
 import { apiFetch } from "@/lib/staff-api";
 
@@ -57,6 +57,23 @@ interface SecuenciaNcf {
   estado: string;
 }
 
+interface UsuarioTenant {
+  id: string;
+  nombre: string;
+  email: string;
+  rol: string;
+  rol_id: string | null;
+  activo: boolean;
+  created_at: string;
+}
+
+interface RolResumen {
+  id: string;
+  codigo: string;
+  nombre: string;
+  es_admin: boolean;
+}
+
 const TIPOS_ECF = [
   { value: 31, label: "31 · Crédito Fiscal" },
   { value: 32, label: "32 · Consumo" },
@@ -85,6 +102,7 @@ const TABS = [
   { key: "modulos", label: "Módulos", icon: LayoutGrid },
   { key: "negocio", label: "Mi Negocio", icon: Building2 },
   { key: "dgii", label: "DGII", icon: ShieldCheck },
+  { key: "usuarios", label: "Usuarios", icon: Users },
 ] as const;
 
 export default function TenantDetailPage() {
@@ -242,6 +260,7 @@ export default function TenantDetailPage() {
       {tab === "modulos" && <ModulosTab rnc={rnc} />}
       {tab === "negocio" && <NegocioTab rnc={rnc} />}
       {tab === "dgii" && <DgiiTab rnc={rnc} />}
+      {tab === "usuarios" && <UsuariosTab rnc={rnc} />}
     </div>
   );
 }
@@ -635,6 +654,210 @@ function DgiiTab({ rnc }: { rnc: string }) {
                     <TableCell className="text-muted-foreground">{s.fecha_vencimiento}</TableCell>
                     <TableCell>
                       <Badge variant={s.estado === "ACTIVA" ? "success" : s.estado === "VENCIDA" || s.estado === "AGOTADA" ? "destructive" : "secondary"}>{s.estado}</Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function UsuariosTab({ rnc }: { rnc: string }) {
+  const [usuarios, setUsuarios] = useState<UsuarioTenant[]>([]);
+  const [roles, setRoles] = useState<RolResumen[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const [showForm, setShowForm] = useState(false);
+  const [nuevo, setNuevo] = useState({ nombre: "", email: "", password: "", rol_id: "" });
+  const [saving, setSaving] = useState(false);
+
+  // Última contraseña temporal generada - se muestra UNA vez, nunca se
+  // vuelve a guardar en ningún lado (ni en este estado luego de cerrarla).
+  const [temporal, setTemporal] = useState<{ usuarioId: string; nombre: string; password: string } | null>(null);
+  const [reseteando, setReseteando] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const [u, r] = await Promise.all([
+        apiFetch<{ usuarios: UsuarioTenant[]; total: number }>(`/api/tenants/${rnc}/usuarios`),
+        apiFetch<RolResumen[]>("/api/roles"),
+      ]);
+      setUsuarios(u.usuarios);
+      setRoles(r);
+      if (!nuevo.rol_id && r.length > 0) setNuevo((v) => ({ ...v, rol_id: r.find((x) => x.codigo === "CAJERO")?.id || r[0].id }));
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rnc]);
+
+  async function crear(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await apiFetch(`/api/tenants/${rnc}/usuarios`, {
+        method: "POST",
+        body: JSON.stringify({ nombre: nuevo.nombre, email: nuevo.email, password: nuevo.password, rol: "CAJERO", rol_id: nuevo.rol_id }),
+      });
+      setNuevo((v) => ({ ...v, nombre: "", email: "", password: "" }));
+      setShowForm(false);
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function cambiarRol(u: UsuarioTenant, rol_id: string) {
+    setError("");
+    try {
+      await apiFetch(`/api/tenants/${rnc}/usuarios/${u.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ nombre: u.nombre, rol: u.rol, rol_id, activo: u.activo }),
+      });
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  async function toggleActivo(u: UsuarioTenant) {
+    setError("");
+    try {
+      if (u.activo) {
+        await apiFetch(`/api/tenants/${rnc}/usuarios/${u.id}`, { method: "DELETE" });
+      } else {
+        await apiFetch(`/api/tenants/${rnc}/usuarios/${u.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ nombre: u.nombre, rol: u.rol, rol_id: u.rol_id, activo: true }),
+        });
+      }
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  async function resetearPassword(u: UsuarioTenant) {
+    setReseteando(u.id);
+    setError("");
+    try {
+      const data = await apiFetch<{ password_temporal: string }>(`/api/tenants/${rnc}/usuarios/${u.id}/resetear-password`, { method: "POST" });
+      setTemporal({ usuarioId: u.id, nombre: u.nombre, password: data.password_temporal });
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setReseteando(null);
+    }
+  }
+
+  if (loading) return <p className="text-sm text-muted-foreground">Cargando...</p>;
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
+
+      {temporal && (
+        <div className="rounded-md border border-warning/30 bg-warning/10 p-4 text-sm space-y-2">
+          <p className="font-medium">
+            Contraseña temporal para {temporal.nombre}: <span className="font-mono text-base">{temporal.password}</span>
+          </p>
+          <p className="text-muted-foreground">
+            Transmítesela por teléfono, WhatsApp o en persona — no se envía por correo y no se volverá a mostrar. El
+            usuario deberá cambiarla al iniciar sesión.
+          </p>
+          <Button size="sm" variant="secondary" onClick={() => setTemporal(null)}>Entendido</Button>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Usuarios internos de este negocio (Cajero, Almacén, Contador, Admin).</p>
+        <Button size="sm" onClick={() => setShowForm((s) => !s)}><Plus className="h-4 w-4" />Nuevo usuario</Button>
+      </div>
+
+      {showForm && (
+        <Card>
+          <CardContent className="pt-5">
+            <form onSubmit={crear} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="u_nombre">Nombre *</Label>
+                <Input id="u_nombre" required value={nuevo.nombre} onChange={(e) => setNuevo((v) => ({ ...v, nombre: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="u_email">Correo *</Label>
+                  <Input id="u_email" type="email" required value={nuevo.email} onChange={(e) => setNuevo((v) => ({ ...v, email: e.target.value }))} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="u_rol">Rol *</Label>
+                  <Select id="u_rol" required value={nuevo.rol_id} onChange={(e) => setNuevo((v) => ({ ...v, rol_id: e.target.value }))}>
+                    {roles.map((r) => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="u_password">Contraseña inicial *</Label>
+                <Input id="u_password" type="password" required minLength={8} value={nuevo.password} onChange={(e) => setNuevo((v) => ({ ...v, password: e.target.value }))} />
+              </div>
+              <div className="flex gap-3">
+                <Button type="submit" disabled={saving}>{saving ? "Creando..." : "Crear usuario"}</Button>
+                <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>Cancelar</Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card>
+        <CardContent className="p-0">
+          {usuarios.length === 0 ? (
+            <p className="p-8 text-center text-sm text-muted-foreground">No hay usuarios registrados.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Nombre</TableHead>
+                  <TableHead>Correo</TableHead>
+                  <TableHead>Rol</TableHead>
+                  <TableHead>Estado</TableHead>
+                  <TableHead className="text-right">Acciones</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {usuarios.map((u) => (
+                  <TableRow key={u.id}>
+                    <TableCell className="font-medium">{u.nombre}</TableCell>
+                    <TableCell className="text-muted-foreground">{u.email}</TableCell>
+                    <TableCell>
+                      <Select value={u.rol_id || ""} onChange={(e) => cambiarRol(u, e.target.value)} className="h-8 text-xs">
+                        {roles.map((r) => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+                      </Select>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={u.activo ? "success" : "secondary"}>{u.activo ? "Activo" : "Inactivo"}</Badge>
+                    </TableCell>
+                    <TableCell className="text-right space-x-2">
+                      <Button size="sm" variant="secondary" onClick={() => resetearPassword(u)} disabled={reseteando === u.id}>
+                        <KeyRound className="h-3.5 w-3.5" />{reseteando === u.id ? "..." : "Resetear contraseña"}
+                      </Button>
+                      <Button size="sm" variant={u.activo ? "destructive" : "secondary"} onClick={() => toggleActivo(u)}>
+                        {u.activo ? "Desactivar" : "Reactivar"}
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}

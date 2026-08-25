@@ -113,7 +113,7 @@ export default function LoginPage() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="email">Correo electrónico</Label>
-                <Input id="email" name="email" type="email" required placeholder="emmanuel@colmado.com" />
+                <Input id="email" name="email" type="email" required placeholder="juan@colmadoelsol.do" />
               </div>
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">

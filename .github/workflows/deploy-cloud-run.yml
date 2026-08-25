@@ -1,0 +1,98 @@
+name: deploy-cloud-run
+
+# Builds services/core, runs migrations, and deploys to Cloud Run.
+#
+# Auth is Workload Identity Federation, not a stored GCP JSON key - GitHub
+# issues a short-lived OIDC token per run, GCP trusts it only for this exact
+# repo (see the trust condition set up in services/core/deploy/gcp-setup.md),
+# and nothing google-credential-shaped is ever stored as a GitHub secret.
+#
+# App secrets (JWT_SECRET, DATABASE_URL, etc.) live in Google Secret Manager,
+# not in GitHub - Cloud Run injects them directly at the container level via
+# --set-secrets, so they never pass through a workflow log.
+#
+# One-time GCP setup (WIF pool, service account, Artifact Registry repo,
+# Secret Manager secrets, uploads bucket) is NOT part of this workflow - see
+# services/core/deploy/gcp-setup.md. That setup requires your own GCP
+# credentials to run and only needs to happen once.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/core/**"
+      - ".github/workflows/deploy-cloud-run.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # required for Workload Identity Federation
+
+env:
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/fiscal-core
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        working-directory: services/core
+        run: |
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      # Only the migration step needs DATABASE_URL directly - the
+      # long-running service gets it via --set-secrets below instead, so it
+      # never sits in a workflow log or env var here beyond this one step.
+      - id: db
+        name: Read DATABASE_URL from Secret Manager
+        uses: google-github-actions/get-secretmanager-secrets@v2
+        with:
+          secrets: |-
+            database_url:${{ vars.GCP_PROJECT_ID }}/DATABASE_URL
+
+      - name: Run database migrations
+        run: |
+          docker run --rm \
+            -e DATABASE_URL="${{ steps.db.outputs.database_url }}" \
+            "$IMAGE:${{ github.sha }}" /app/migrate
+
+      - name: Deploy to Cloud Run
+        run: |
+          SECRETS="DATABASE_URL=DATABASE_URL:latest,JWT_SECRET=JWT_SECRET:latest,VENDOR_ADMIN_SECRET=VENDOR_ADMIN_SECRET:latest,LICENSE_SECRET=LICENSE_SECRET:latest,CERT_ENCRYPTION_KEY=CERT_ENCRYPTION_KEY:latest"
+
+          # RESEND_API_KEY is optional (see .env.example - the app already
+          # degrades gracefully without it, self-service password-reset
+          # emails just won't send). Only wire it in if the secret actually
+          # exists, instead of hard-requiring it and failing the whole
+          # deploy when it doesn't.
+          if gcloud secrets describe RESEND_API_KEY >/dev/null 2>&1; then
+            SECRETS="$SECRETS,RESEND_API_KEY=RESEND_API_KEY:latest"
+          fi
+
+          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --service-account "${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT_EMAIL }}" \
+            --add-volume name=uploads,type=cloud-storage,bucket=${{ vars.UPLOADS_BUCKET }} \
+            --add-volume-mount volume=uploads,mount-path=/mnt/uploads \
+            --set-env-vars "CORE_HTTP_PORT=8080,UPLOADS_DIR=/mnt/uploads,DGII_ENV=${{ vars.DGII_ENV }},FRONTEND_URL=${{ vars.FRONTEND_URL }},RESEND_FROM_EMAIL=onboarding@resend.dev,RUST_LOG=fiscal_core=info" \
+            --set-secrets "$SECRETS"

@@ -33,6 +33,11 @@ pub struct Conduce {
     pub notas: Option<String>,
     pub entregado_por: Option<String>,
     pub recibido_por: Option<String>,
+    /// true si se generó vía `create_conduce_retroactivo` (venta que no fue
+    /// marcada `entrega_diferida` al facturarse - ver ese método, no mueve
+    /// stock ni `cantidad_entregada`, solo documenta la entrega que ya
+    /// ocurrió). false para el flujo normal de entrega diferida.
+    pub retroactivo: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -88,6 +93,23 @@ pub struct CreateConduceRequest {
     pub entregado_por: Option<String>,
     pub recibido_por: Option<String>,
     pub items: Vec<CreateConduceItemRequest>,
+}
+
+/// Sin `items`/`venta_item_id` a diferencia de `CreateConduceRequest`: un
+/// conduce retroactivo siempre cubre TODA la cantidad ya vendida (no hay
+/// entrega parcial que registrar - el permiso `conduces.crear_retroactivo`
+/// es para generar el documento que faltó, no para inventar una entrega
+/// distinta a la que ya salió del negocio).
+#[derive(Debug, Deserialize)]
+pub struct CreateConduceRetroactivoRequest {
+    pub venta_id: Uuid,
+    pub direccion_entrega: Option<String>,
+    pub orden_compra: Option<String>,
+    pub vehiculo_placa: Option<String>,
+    pub conductor: Option<String>,
+    pub notas: Option<String>,
+    pub entregado_por: Option<String>,
+    pub recibido_por: Option<String>,
 }
 
 pub struct ConduceCompleta {
@@ -216,7 +238,7 @@ impl ConduceService {
         let conduce = sqlx::query_as::<_, Conduce>(
             r#"INSERT INTO conduces (tenant_id, venta_id, cliente_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-               RETURNING id, tenant_id, venta_id, cliente_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por, created_at"#,
+               RETURNING id, tenant_id, venta_id, cliente_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por, retroactivo, created_at"#,
         )
         .bind(tenant_id)
         .bind(req.venta_id)
@@ -264,6 +286,83 @@ impl ConduceService {
                 .execute(&mut *tx)
                 .await?;
             }
+        }
+
+        tx.commit().await?;
+        Ok(ConduceCompleta { conduce, items })
+    }
+
+    /// Genera el conduce que faltó para una venta NORMAL (no
+    /// `entrega_diferida`) ya facturada - la mercancía ya salió completa al
+    /// momento de la venta, así que a diferencia de `create_conduce` esto
+    /// NO toca `productos.stock_actual`, no inserta movimiento de
+    /// inventario, ni actualiza `venta_items.cantidad_entregada` (ya está en
+    /// `cantidad` completa desde que se facturó). Solo documenta, con las
+    /// cantidades totales vendidas, una entrega que ya ocurrió. Gateado por
+    /// el permiso `conduces.crear_retroactivo` (ver main.rs), no por rol -
+    /// pensado para cuando el cajero olvidó marcar la casilla en el POS.
+    pub async fn create_conduce_retroactivo(&self, tenant_id: &str, usuario_id: Uuid, req: CreateConduceRetroactivoRequest) -> anyhow::Result<ConduceCompleta> {
+        let mut tx = self.pool.begin().await?;
+
+        let venta_estado: Option<(String, bool)> = sqlx::query_as(
+            "SELECT estado, entrega_diferida FROM ventas WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(req.venta_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (venta_estado, entrega_diferida) = venta_estado.ok_or_else(|| anyhow::anyhow!("Venta no encontrada"))?;
+        if venta_estado == "ANULADA" {
+            anyhow::bail!("Esta venta está anulada");
+        }
+        if entrega_diferida {
+            anyhow::bail!("Esta venta es de entrega diferida - usa el flujo normal de entregas (conduces), no el conduce retroactivo");
+        }
+
+        let venta_items: Vec<(Uuid, Uuid, String, String, Decimal)> = sqlx::query_as(
+            "SELECT id, producto_id, sku, nombre, cantidad FROM venta_items WHERE venta_id = $1",
+        )
+        .bind(req.venta_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if venta_items.is_empty() {
+            anyhow::bail!("Esta venta no tiene productos");
+        }
+
+        let conduce = sqlx::query_as::<_, Conduce>(
+            r#"INSERT INTO conduces (tenant_id, venta_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por, retroactivo)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+               RETURNING id, tenant_id, venta_id, cliente_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por, retroactivo, created_at"#,
+        )
+        .bind(tenant_id)
+        .bind(req.venta_id)
+        .bind(usuario_id)
+        .bind(&req.direccion_entrega)
+        .bind(&req.orden_compra)
+        .bind(&req.vehiculo_placa)
+        .bind(&req.conductor)
+        .bind(&req.notas)
+        .bind(&req.entregado_por)
+        .bind(&req.recibido_por)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let mut items = Vec::new();
+        for (venta_item_id, producto_id, sku, nombre, cantidad) in venta_items {
+            let ci = sqlx::query_as::<_, ConduceItem>(
+                r#"INSERT INTO conduce_items (conduce_id, venta_item_id, producto_id, sku, nombre, cantidad, unidad, observaciones)
+                   VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL)
+                   RETURNING id, conduce_id, venta_item_id, producto_id, sku, nombre, cantidad, unidad, observaciones"#,
+            )
+            .bind(conduce.id)
+            .bind(venta_item_id)
+            .bind(producto_id)
+            .bind(&sku)
+            .bind(&nombre)
+            .bind(cantidad)
+            .fetch_one(&mut *tx)
+            .await?;
+            items.push(ci);
         }
 
         tx.commit().await?;
@@ -334,7 +433,7 @@ impl ConduceService {
 
     pub async fn get_conduce(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<ConduceCompleta> {
         let conduce = sqlx::query_as::<_, Conduce>(
-            r#"SELECT id, tenant_id, venta_id, cliente_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por, created_at
+            r#"SELECT id, tenant_id, venta_id, cliente_id, usuario_id, direccion_entrega, orden_compra, vehiculo_placa, conductor, notas, entregado_por, recibido_por, retroactivo, created_at
                FROM conduces WHERE id = $1 AND tenant_id = $2"#,
         )
         .bind(id)

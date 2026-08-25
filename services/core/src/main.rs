@@ -78,13 +78,13 @@ struct HttpState {
     ecf_service: Arc<EcfService>,
     license_service: Arc<LicenseService>,
     staff_service: Arc<StaffService>,
+    roles_service: Arc<RolesService>,
     backup_service: Arc<BackupService>,
     audit_service: Arc<AuditService>,
     image_service: Arc<ImageService>,
     orden_servicio_service: Arc<OrdenServicioService>,
     orden_compra_service: Arc<OrdenCompraService>,
     adjunto_service: Arc<AdjuntoService>,
-    roles_service: Arc<RolesService>,
     vendor_admin_secret: String,
     rate_limiter: Arc<RateLimiter>,
     email_service: Arc<EmailService>,
@@ -104,22 +104,83 @@ fn claims_from_headers(auth: &AuthService, headers: &HeaderMap) -> Result<Claims
 }
 
 /// Applied to every route except `/`, `/health`, `/v1/auth/register`, `/v1/auth/login`.
-/// ADMIN always passes; other roles are checked against `required_roles`.
-async fn role_guard<B>(
+/// Autorización real vía `permisos_catalogo`/`roles`/`role_permisos` (ver
+/// roles_service.rs) - `usuarios.rol` (el string fijo de antes) ya no se
+/// consulta aquí salvo como fallback de migración si el permiso falla (ver
+/// `required_roles_legacy`), para que ningún tenant quede bloqueado el día
+/// que esto se despliega por un `rol_id` sin backfill.
+async fn permission_guard<B>(
     State(state): State<HttpState>,
     req: Request<B>,
     next: Next<B>,
 ) -> Result<Response, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, req.headers())?;
-    if claims.rol != "ADMIN" {
-        if let Some(allowed) = required_roles(req.uri().path(), req.method()) {
-            if !allowed.contains(&claims.rol.as_str()) {
+    if let Some(permiso) = required_permiso(req.uri().path(), req.method()) {
+        let usuario_id = Uuid::parse_str(&claims.sub)
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "Token inválido".to_string()))?;
+        let concedido = state
+            .roles_service
+            .usuario_tiene_permiso(usuario_id, permiso)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if !concedido {
+            // El fallback legacy solo existe para no romper acceso que YA
+            // existía bajo el sistema de roles viejo (ver doc de
+            // required_roles_legacy) - un permiso nuevo, sin equivalente
+            // legacy, gateando una ruta nueva (p.ej. conduces.crear_retroactivo,
+            // u órdenes de servicio/compra, que no existían bajo ningún rol
+            // legacy) NO debe caer al fallback: como ningún prefijo legacy
+            // coincide, `required_roles_legacy` devolvería `None` y el
+            // `map_or(true, ..)` dejaría pasar a cualquier rol autenticado,
+            // justo lo opuesto de la intención.
+            let es_permiso_nuevo_sin_legacy = matches!(
+                permiso,
+                "conduces.crear_retroactivo" | "ordenes_servicio.gestionar" | "ordenes_compra.gestionar"
+            );
+            let legacy_ok = !es_permiso_nuevo_sin_legacy
+                && (claims.rol == "ADMIN"
+                    || required_roles_legacy(req.uri().path(), req.method())
+                        .map_or(true, |allowed| allowed.contains(&claims.rol.as_str())));
+            if !legacy_ok {
                 return Err((
                     StatusCode::FORBIDDEN,
-                    format!("Tu rol ({}) no tiene acceso a este recurso", claims.rol),
+                    format!("Tu rol ({}) no tiene el permiso '{}'", claims.rol, permiso),
                 ));
             }
         }
+    }
+    Ok(next.run(req).await)
+}
+
+/// Outermost guard del router protegido (ver su registro más abajo - tower
+/// corre el último `.route_layer` agregado primero). Si el staff forzó un
+/// reset de contraseña (ver `AuthService::admin_reset_password`), el
+/// usuario no puede llegar a NINGUNA otra ruta hasta fijar una nueva -
+/// enforcement real en el backend, no solo un redirect cosmético del
+/// frontend, porque la temporal se transmite fuera de banda (teléfono,
+/// WhatsApp) y no por correo.
+async fn must_change_password_guard<B>(
+    State(state): State<HttpState>,
+    req: Request<B>,
+    next: Next<B>,
+) -> Result<Response, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, req.headers())?;
+    let path = req.uri().path();
+    if path == "/v1/auth/set-new-password" || path == "/v1/auth/me" {
+        return Ok(next.run(req).await);
+    }
+    let usuario_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "Token inválido".to_string()))?;
+    let usuario = state
+        .auth_service
+        .get_usuario_by_id(usuario_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if usuario.must_change_password {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Debes establecer una nueva contraseña antes de continuar".to_string(),
+        ));
     }
     Ok(next.run(req).await)
 }
@@ -230,85 +291,6 @@ fn required_modulo(path: &str) -> Option<&'static str> {
     }
 }
 
-/// Permiso granular requerido para una ruta del nuevo módulo de Órdenes de
-/// Servicio / Órdenes de Compra, o `None` para absolutamente cualquier otra
-/// ruta (incluida cada ruta que ya existía antes de este módulo). Este es el
-/// único lugar donde el catálogo `permisos_catalogo` decide algo - a
-/// diferencia de `required_roles`, no reemplaza ningún chequeo existente,
-/// solo agrega uno nuevo. Ver `permiso_guard` y el plan de este módulo.
-fn required_permiso(path: &str, method: &Method) -> Option<&'static str> {
-    if path.ends_with("/convertir-a-orden") {
-        return Some("cotizacion.convertir_a_orden");
-    }
-    if let Some(resto) = path.strip_prefix("/v1/ordenes-servicio") {
-        return Some(if resto.ends_with("/tecnicos") || resto.contains("/tecnicos/") {
-            "orden_servicio.asignar_tecnico"
-        } else if resto.ends_with("/consumir") {
-            "orden_servicio.consumir_material"
-        } else if resto.ends_with("/iniciar") {
-            "orden_servicio.iniciar"
-        } else if resto.ends_with("/pausar") {
-            "orden_servicio.pausar"
-        } else if resto.ends_with("/completar") {
-            "orden_servicio.completar"
-        } else if resto.ends_with("/cancelar") {
-            "orden_servicio.cancelar"
-        } else if resto.ends_with("/crear-factura") {
-            "orden_servicio.crear_factura"
-        } else if method == Method::GET {
-            "orden_servicio.ver"
-        } else if resto.is_empty() {
-            "orden_servicio.crear"
-        } else {
-            "orden_servicio.editar"
-        });
-    }
-    if let Some(resto) = path.strip_prefix("/v1/ordenes-compra") {
-        return Some(if resto.ends_with("/recibir") {
-            "orden_compra.recibir"
-        } else if method == Method::GET {
-            "orden_compra.ver"
-        } else {
-            "orden_compra.crear"
-        });
-    }
-    None
-}
-
-/// Corre después de `modulo_guard` en el mismo router `protected` - `None`
-/// (cualquier ruta fuera del módulo nuevo) siempre pasa sin tocar la base de
-/// datos, así que esto no puede afectar ninguna ruta existente ni siquiera
-/// por omisión. ADMIN siempre pasa, mismo escape hatch que `role_guard`.
-async fn permiso_guard<B>(
-    State(state): State<HttpState>,
-    req: Request<B>,
-    next: Next<B>,
-) -> Result<Response, (StatusCode, String)> {
-    let Some(permiso) = required_permiso(req.uri().path(), req.method()) else {
-        return Ok(next.run(req).await);
-    };
-    let claims = claims_from_headers(&state.auth_service, req.headers())?;
-    if claims.rol == "ADMIN" {
-        return Ok(next.run(req).await);
-    }
-    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
-    let rol_id: Option<Uuid> = sqlx::query_scalar("SELECT rol_id FROM usuarios WHERE id = $1")
-        .bind(usuario_id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .flatten();
-    let tiene = state
-        .roles_service
-        .tiene_permiso(rol_id, permiso)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    if !tiene {
-        return Err((StatusCode::FORBIDDEN, format!("Tu rol no tiene el permiso '{}' requerido para este recurso", permiso)));
-    }
-    Ok(next.run(req).await)
-}
-
 /// Gatea todas las rutas `/v1/staff/*` - nunca con el JWT de un tenant, solo
 /// con `X-Vendor-Secret` (el mismo secreto que ya usaba, en solitario,
 /// `http_activar_licencia`). Sin login individual de staff todavía - ver
@@ -325,9 +307,14 @@ async fn staff_guard<B>(
     Ok(next.run(req).await)
 }
 
+/// Superseded by `required_permiso` + the `permisos_catalogo`/`roles`
+/// tables - kept verbatim as `permission_guard`'s fallback for any usuario
+/// whose `rol_id` backfill didn't apply cleanly (deleted role, legacy row),
+/// so the permission-system cutover can't hard-lock a tenant out. Do not
+/// add new routes here; add them to `required_permiso` instead.
+///
 /// `None` = any authenticated role is fine. Checked most-specific-prefix first.
-/// Keep in sync with apps/web/lib/roles.ts (frontend nav/route mirror of this table).
-fn required_roles(path: &str, method: &Method) -> Option<&'static [&'static str]> {
+fn required_roles_legacy(path: &str, method: &Method) -> Option<&'static [&'static str]> {
     if path.starts_with("/v1/ecf/documentos") || path.starts_with("/v1/ecf/pendientes") {
         return Some(&["CONTADOR"]);
     }
@@ -364,7 +351,6 @@ fn required_roles(path: &str, method: &Method) -> Option<&'static [&'static str]
             || p.starts_with("/v1/bancos")
             || p.starts_with("/v1/gastos")
             || p.starts_with("/v1/reports/606")
-            || p.starts_with("/v1/reports/607")
             || p.starts_with("/v1/auditoria") =>
         {
             Some(&["CONTADOR"])
@@ -378,6 +364,54 @@ fn required_roles(path: &str, method: &Method) -> Option<&'static [&'static str]
             Some(&[]) // ADMIN-only
         }
         // /v1/auth/me, /v1/rnc/:rnc, /v1/reports/dashboard, /v1/license/status -> any authenticated role
+        _ => None,
+    }
+}
+
+/// `None` = any authenticated user is fine, regardless of permisos.
+/// Checked most-specific-prefix first. Keep in sync with
+/// apps/web/lib/roles.ts (frontend nav/route mirror of this table) and with
+/// `required_roles_legacy` above (every prefix there should have an
+/// equivalent permiso here - see the seed in migrate.rs for how each
+/// permiso maps back to the 4 legacy roles).
+fn required_permiso(path: &str, method: &Method) -> Option<&'static str> {
+    // Feature 1: conduce retroactivo - chequeado antes que el prefijo
+    // general de /v1/ventas porque necesita un permiso más fino que
+    // "ventas.gestionar".
+    if path.ends_with("/conduce-retroactivo") {
+        return Some("conduces.crear_retroactivo");
+    }
+    if path.starts_with("/v1/ecf/documentos") || path.starts_with("/v1/ecf/pendientes") {
+        return Some("ecf.documentos");
+    }
+    if path.starts_with("/v1/ecf/") || path.starts_with("/v1/test/") {
+        return Some("ecf.dev_tools"); // nadie lo tiene asignado salvo ADMIN vía es_admin
+    }
+    if path.starts_with("/v1/productos") || path.starts_with("/v1/categorias") {
+        return if method == Method::GET { Some("productos.ver") } else { Some("productos.editar") };
+    }
+    match path {
+        p if p.starts_with("/v1/ventas") => Some("ventas.gestionar"),
+        p if p.starts_with("/v1/notas-credito") => Some("notas_credito.gestionar"),
+        p if p.starts_with("/v1/caja") => Some("caja.gestionar"),
+        p if p.starts_with("/v1/clientes") => Some("clientes.gestionar"),
+        p if p.starts_with("/v1/cotizaciones") => Some("cotizaciones.gestionar"),
+        p if p.starts_with("/v1/conduces") => Some("conduces.gestionar"),
+        p if p.starts_with("/v1/inventario") => Some("inventario.gestionar"),
+        p if p.starts_with("/v1/ordenes-servicio") || p.starts_with("/v1/condiciones-orden") => Some("ordenes_servicio.gestionar"),
+        p if p.starts_with("/v1/ordenes-compra") => Some("ordenes_compra.gestionar"),
+        p if p.starts_with("/v1/compras") => Some("compras.gestionar"),
+        p if p.starts_with("/v1/proveedores") => Some("proveedores.gestionar"),
+        p if p.starts_with("/v1/contabilidad") => Some("contabilidad.gestionar"),
+        p if p.starts_with("/v1/bancos") => Some("bancos.gestionar"),
+        p if p.starts_with("/v1/gastos") => Some("gastos.gestionar"),
+        p if p.starts_with("/v1/reports/606") || p.starts_with("/v1/reports/it1") => Some("reportes.dgii"),
+        p if p.starts_with("/v1/auditoria") => Some("auditoria.ver"),
+        p if p.starts_with("/v1/empleados") || p.starts_with("/v1/nomina") => Some("nomina.gestionar"),
+        p if p.starts_with("/v1/config") => Some("config.gestionar"),
+        p if p.starts_with("/v1/tenants") => Some("tenants.ver"),
+        p if p.starts_with("/v1/backup") => Some("backup.descargar"),
+        // /v1/auth/me, /v1/rnc/:rnc, /v1/reports/dashboard, /v1/license/status -> any authenticated user
         _ => None,
     }
 }
@@ -431,6 +465,7 @@ async fn main() -> anyhow::Result<()> {
     let ecf_service = Arc::new(EcfService::new(pool.clone()));
     let license_service = Arc::new(LicenseService::new(pool.clone()));
     let staff_service = Arc::new(StaffService::new(pool.clone()));
+    let roles_service = Arc::new(RolesService::new(pool.clone()));
     let backup_service = Arc::new(BackupService::new(database_url.clone()));
     let audit_service = Arc::new(AuditService::new(pool.clone()));
     // Miniaturas de fotos de producto - solo la ruta se guarda en Postgres,
@@ -441,7 +476,6 @@ async fn main() -> anyhow::Result<()> {
     let orden_servicio_service = Arc::new(OrdenServicioService::new(pool.clone()));
     let orden_compra_service = Arc::new(OrdenCompraService::new(pool.clone()));
     let adjunto_service = Arc::new(AdjuntoService::new(pool.clone(), uploads_dir.clone()));
-    let roles_service = Arc::new(RolesService::new(pool.clone()));
     // 5 fallos -> bloqueado 15 min. Compartido entre login y forgot-password
     // (claves con prefijo distinto, ver http_login / http_forgot_password).
     let rate_limiter = Arc::new(RateLimiter::new(5, Duration::from_secs(15 * 60)));
@@ -492,13 +526,13 @@ async fn main() -> anyhow::Result<()> {
         ecf_service,
         license_service,
         staff_service,
+        roles_service,
         backup_service,
         audit_service,
         image_service,
         orden_servicio_service,
         orden_compra_service,
         adjunto_service,
-        roles_service,
         vendor_admin_secret,
         rate_limiter,
         email_service,
@@ -512,6 +546,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/tenants/:rnc", get(http_get_tenant))
         .route("/v1/tenants/:rnc/usuarios", get(http_list_usuarios))
         .route("/v1/auth/me", get(http_me))
+        .route("/v1/auth/set-new-password", post(http_set_new_password))
         // MODULO 2: Categorias y Productos
         .route("/v1/categorias", get(http_list_categorias).post(http_create_categoria))
         .route("/v1/categorias/:id", axum::routing::put(http_update_categoria).delete(http_delete_categoria))
@@ -532,6 +567,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/ventas/:id/emitir-ecf", post(http_emitir_ecf_venta))
         .route("/v1/ventas/:id/imprimir", post(http_imprimir_venta))
         .route("/v1/ventas/:id/nota-credito", post(http_crear_nota_credito))
+        .route("/v1/ventas/:id/conduce-retroactivo", post(http_crear_conduce_retroactivo))
         .route("/v1/notas-credito/:id", get(http_get_nota_credito))
         .route("/v1/cotizaciones", get(http_list_cotizaciones).post(http_create_cotizacion))
         .route("/v1/cotizaciones/:id", get(http_get_cotizacion))
@@ -544,6 +580,7 @@ async fn main() -> anyhow::Result<()> {
         // MODULO 6: Compras y Gastos
         .route("/v1/compras", get(http_list_compras).post(http_create_compra))
         .route("/v1/compras/:id", get(http_get_compra))
+        .route("/v1/compras/:id/anular", post(http_anular_compra))
         .route("/v1/gastos", get(http_list_gastos).post(http_create_gasto))
         // MODULO 15: Órdenes de Servicio (Work Orders) + Órdenes de Compra + Adjuntos
         .route("/v1/condiciones-orden", get(http_list_condiciones_orden))
@@ -597,9 +634,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/contabilidad/sincronizar", post(http_sincronizar_contabilidad))
         // MODULO 10: Reportes y Dashboard
         .route("/v1/reports/606", get(http_report_606))
-        .route("/v1/reports/607", get(http_report_607))
+        .route("/v1/reports/it1", get(http_report_it1))
         .route("/v1/reports/606/csv", get(http_report_606_csv))
-        .route("/v1/reports/607/csv", get(http_report_607_csv))
         .route("/v1/reports/dashboard", get(http_dashboard_resumen))
         .route("/v1/ai/digest", get(http_ai_digest))
         .route("/v1/ai/chat", post(http_ai_chat))
@@ -639,10 +675,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/ecf/acecf/build", post(http_build_acecf))
         .route("/v1/ecf/acecf/build-sign", post(http_build_sign_acecf))
         .route("/v1/test/sign-demo", get(http_test_sign_demo_get).post(http_test_sign_demo))
-        .route_layer(middleware::from_fn_with_state(http_state.clone(), role_guard))
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), permission_guard))
         .route_layer(middleware::from_fn_with_state(http_state.clone(), license_guard))
         .route_layer(middleware::from_fn_with_state(http_state.clone(), modulo_guard))
-        .route_layer(middleware::from_fn_with_state(http_state.clone(), permiso_guard));
+        // Outermost (tower layers run last-added-first) - un usuario flagged
+        // no debe pasar por ningún otro guard, solo puede llegar a
+        // set-new-password/me. Ver must_change_password_guard.
+        .route_layer(middleware::from_fn_with_state(http_state.clone(), must_change_password_guard));
 
     // Panel interno del equipo de ventas: nunca alcanzable con el JWT de un
     // tenant, solo con X-Vendor-Secret (ver `staff_guard`). Deliberadamente
@@ -658,6 +697,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/staff/tenants/:rnc/activar-licencia", post(http_staff_activar_licencia))
         .route("/v1/staff/tenants/:rnc/reenviar-invitacion", post(http_staff_reenviar_invitacion))
         .route("/v1/staff/modulos", get(http_staff_list_catalogo).post(http_staff_create_modulo_catalogo))
+        // Módulo 17: permisos/roles + gestión de usuarios de un tenant desde
+        // el sitio de staff (ver roles_service.rs, ConfigService::*_usuario).
+        .route("/v1/staff/tenants/:rnc/usuarios", get(http_staff_list_usuarios).post(http_staff_create_usuario))
+        .route("/v1/staff/tenants/:rnc/usuarios/:id", axum::routing::put(http_staff_update_usuario).delete(http_staff_deactivate_usuario))
+        .route("/v1/staff/tenants/:rnc/usuarios/:id/resetear-password", post(http_staff_resetear_password))
+        .route("/v1/staff/roles", get(http_staff_list_roles).post(http_staff_create_rol))
+        .route("/v1/staff/roles/:id/permisos", axum::routing::put(http_staff_set_permisos_rol))
+        .route("/v1/staff/permisos", get(http_staff_list_permisos))
         .route_layer(middleware::from_fn_with_state(http_state.clone(), staff_guard));
 
     let http_app = Router::new()
@@ -1280,6 +1327,35 @@ async fn http_list_usuarios(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct SetNewPasswordRequest {
+    new_password: String,
+}
+
+/// Único destino alcanzable por un usuario con `must_change_password = true`
+/// (junto con /v1/auth/me) - ver `must_change_password_guard`. Reemite un
+/// JWT nuevo para que el frontend pueda seguir sin pedir un segundo login.
+async fn http_set_new_password(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(req): Json<SetNewPasswordRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    if req.new_password.len() < 8 {
+        return Err((StatusCode::BAD_REQUEST, "La contraseña debe tener al menos 8 caracteres".to_string()));
+    }
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let resp = state.auth_service.set_new_password(usuario_id, &req.new_password).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "mensaje": "Contraseña actualizada.",
+        "token": resp.token,
+        "usuario": resp.usuario,
+        "tenant": resp.tenant
+    })))
+}
+
 async fn http_me(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -1559,6 +1635,99 @@ async fn http_staff_create_modulo_catalogo(
     Json(req): Json<services::staff_service::CreateModuloRequest>,
 ) -> Result<Json<services::staff_service::ModuloCatalogo>, (StatusCode, String)> {
     state.staff_service.create_modulo_catalogo(req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+// ------------------ Módulo 17: Permisos/Roles + usuarios de tenant (staff) ------------------
+// Reusa ConfigService (mismo CRUD que la propia pantalla de Configuración
+// del tenant en /v1/config/usuarios) en vez de reinventar el manejo de
+// usuarios - la única pieza nueva es el reset de contraseña sin correo.
+
+async fn http_staff_list_usuarios(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let page = crate::pagination::PageParams { page: None, page_size: Some(200) };
+    let sort = crate::pagination::SortParams { sort_by: None, sort_dir: None };
+    let (usuarios, total) = state.config_service.list_usuarios(&rnc, None, None, None, &page, &sort).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "usuarios": usuarios, "total": total })))
+}
+
+async fn http_staff_create_usuario(
+    State(state): State<HttpState>,
+    Path(rnc): Path<String>,
+    Json(req): Json<services::config_service::CreateUsuarioRequest>,
+) -> Result<Json<services::config_service::Usuario>, (StatusCode, String)> {
+    state.config_service.create_usuario(&rnc, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_staff_update_usuario(
+    State(state): State<HttpState>,
+    Path((rnc, id)): Path<(String, Uuid)>,
+    Json(req): Json<services::config_service::UpdateUsuarioRequest>,
+) -> Result<Json<services::config_service::Usuario>, (StatusCode, String)> {
+    state.config_service.update_usuario(&rnc, id, req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_staff_deactivate_usuario(
+    State(state): State<HttpState>,
+    Path((rnc, id)): Path<(String, Uuid)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state.config_service.deactivate_usuario(&rnc, id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Reset sin correo: genera una temporal al azar y la devuelve UNA vez en
+/// la respuesta - el staff la transmite por el canal que sea (teléfono,
+/// WhatsApp, en persona). Ver AuthService::admin_reset_password.
+async fn http_staff_resetear_password(
+    State(state): State<HttpState>,
+    Path((rnc, id)): Path<(String, Uuid)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let temporal = state.auth_service.admin_reset_password(&rnc, id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&rnc, None, "PASSWORD_RESETEADO_POR_STAFF", "usuario", Some(id), serde_json::json!({})).await;
+    Ok(Json(serde_json::json!({ "password_temporal": temporal })))
+}
+
+async fn http_staff_list_permisos(
+    State(state): State<HttpState>,
+) -> Result<Json<Vec<services::roles_service::PermisoCatalogo>>, (StatusCode, String)> {
+    state.roles_service.list_permisos_catalogo().await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_staff_list_roles(
+    State(state): State<HttpState>,
+) -> Result<Json<Vec<services::roles_service::RolConPermisos>>, (StatusCode, String)> {
+    state.roles_service.list_roles().await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_staff_create_rol(
+    State(state): State<HttpState>,
+    Json(req): Json<services::roles_service::CreateRolRequest>,
+) -> Result<Json<services::roles_service::RolConPermisos>, (StatusCode, String)> {
+    state.roles_service.create_rol(req).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+async fn http_staff_set_permisos_rol(
+    State(state): State<HttpState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::roles_service::SetPermisosRolRequest>,
+) -> Result<Json<services::roles_service::RolConPermisos>, (StatusCode, String)> {
+    state.roles_service.set_permisos_rol(id, &req.permisos).await
         .map(Json)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
@@ -2606,6 +2775,47 @@ async fn http_create_conduce(
     Ok(Json(ConduceCompletaResponse { conduce: completa.conduce, items: completa.items }))
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateConduceRetroactivoBody {
+    direccion_entrega: Option<String>,
+    orden_compra: Option<String>,
+    vehiculo_placa: Option<String>,
+    conductor: Option<String>,
+    notas: Option<String>,
+    entregado_por: Option<String>,
+    recibido_por: Option<String>,
+}
+
+/// Genera el conduce que faltó para una venta ya facturada normal (cajero
+/// olvidó marcar "entrega diferida"). Gateado por el permiso
+/// `conduces.crear_retroactivo` (ver required_permiso), no por rol.
+async fn http_crear_conduce_retroactivo(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(venta_id): Path<Uuid>,
+    Json(body): Json<CreateConduceRetroactivoBody>,
+) -> Result<Json<ConduceCompletaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+
+    let req = services::conduce_service::CreateConduceRetroactivoRequest {
+        venta_id,
+        direccion_entrega: body.direccion_entrega,
+        orden_compra: body.orden_compra,
+        vehiculo_placa: body.vehiculo_placa,
+        conductor: body.conductor,
+        notas: body.notas,
+        entregado_por: body.entregado_por,
+        recibido_por: body.recibido_por,
+    };
+    let completa = state.conduce_service.create_conduce_retroactivo(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "CONDUCE_RETROACTIVO_CREADO", "conduce", Some(completa.conduce.id),
+        serde_json::json!({ "venta_id": venta_id })).await;
+    Ok(Json(ConduceCompletaResponse { conduce: completa.conduce, items: completa.items }))
+}
+
 async fn http_get_conduce(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -3155,6 +3365,7 @@ async fn http_recibir_orden_compra(
             costo_unitario: *costo_unitario,
             itbis_tipo: None,
         }).collect(),
+        ..Default::default()
     };
 
     let completa = state.compras_service.create_compra(&claims.tenant_id, usuario_id, compra_req).await
@@ -3303,6 +3514,21 @@ async fn http_get_compra(
     let completa = state.compras_service.get_compra(&claims.tenant_id, id).await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     Ok(Json(CompraCompletaResponse { compra: completa.compra, items: completa.items }))
+}
+
+/// Anula una compra para que quede excluida del 606 (ver
+/// ComprasService::anular_compra). Si la compra ya fue reportada en un
+/// período anterior, la corrección correcta es una Nota de Crédito de
+/// compra (POST /v1/compras con tipo_documento=NOTA_CREDITO), no anular.
+async fn http_anular_compra(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<services::compras_service::Compra>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let compra = state.compras_service.anular_compra(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(compra))
 }
 
 #[derive(Debug, Deserialize)]
@@ -3875,13 +4101,16 @@ async fn http_report_606(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
-async fn http_report_607(
+/// A diferencia de 606 (TXT línea por línea), IT-1 es un resumen de
+/// totales - JSON, no texto plano. Ver ReportService::generate_it1.
+async fn http_report_it1(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(params): Query<ReportParams>,
-) -> Result<String, (StatusCode, String)> {
+) -> Result<Json<services::report_service::It1Resumen>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    state.report_service.generate_607(&claims.tenant_id, &params.period).await
+    state.report_service.generate_it1(&claims.tenant_id, &params.period).await
+        .map(Json)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
@@ -3909,17 +4138,6 @@ async fn http_report_606_csv(
     let csv = state.report_service.generate_606_csv(&claims.tenant_id, params.fecha_desde, params.fecha_hasta).await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     csv_response(csv, &format!("606_{}_{}.csv", params.fecha_desde, params.fecha_hasta))
-}
-
-async fn http_report_607_csv(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Query(params): Query<ReportCsvParams>,
-) -> Result<Response, (StatusCode, String)> {
-    let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let csv = state.report_service.generate_607_csv(&claims.tenant_id, params.fecha_desde, params.fecha_hasta).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    csv_response(csv, &format!("607_{}_{}.csv", params.fecha_desde, params.fecha_hasta))
 }
 
 async fn http_dashboard_resumen(

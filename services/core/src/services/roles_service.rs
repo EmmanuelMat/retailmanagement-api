@@ -1,29 +1,55 @@
-//! Catálogo de permisos granular (roles / permisos_catalogo / role_permisos)
-//! - Módulo 15d. Estrictamente ADITIVO: no reemplaza `role_guard`/
-//! `required_roles` (main.rs) para ninguna ruta existente - `rol` (el string
-//! en `usuarios`) sigue siendo la fuente de verdad para todo lo de siempre.
-//! Este servicio solo respalda el nuevo `permiso_guard`/`required_permiso`,
-//! que gobierna exclusivamente las rutas nuevas de Órdenes de Servicio /
-//! Órdenes de Compra. Ver Contexto en el plan de este módulo.
+//! Permisos y roles - Módulo 17: reemplaza `usuarios.rol` (4 valores fijos,
+//! chequeados por un match hardcodeado en main.rs) como fuente real de
+//! autorización. `usuarios.rol` se conserva como etiqueta de display y como
+//! fallback de migración - ver `permission_guard` en main.rs.
+//!
+//! Catálogo GLOBAL (sin tenant_id), igual que `modulos_catalogo`: todos los
+//! tenants comparten el mismo catálogo de roles, editable desde el sitio de
+//! staff. Conectar un permiso nuevo a una ruta real todavía requiere un
+//! cambio de código en `required_permiso` (main.rs), igual que cualquier
+//! ruta nueva con `required_modulo`.
 
-use serde::Serialize;
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
-
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct Role {
-    pub id: Uuid,
-    pub codigo: String,
-    pub nombre: String,
-    pub es_admin: bool,
-}
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct PermisoCatalogo {
     pub codigo: String,
     pub nombre: String,
+    pub descripcion: Option<String>,
     pub orden: i32,
     pub activo: bool,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct Rol {
+    pub id: Uuid,
+    pub codigo: String,
+    pub nombre: String,
+    pub es_admin: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RolConPermisos {
+    #[serde(flatten)]
+    pub rol: Rol,
+    pub permisos: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateRolRequest {
+    pub codigo: String,
+    pub nombre: String,
+    pub permisos: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetPermisosRolRequest {
+    pub permisos: Vec<String>,
 }
 
 pub struct RolesService {
@@ -35,64 +61,95 @@ impl RolesService {
         Self { pool }
     }
 
-    /// Usado por `permiso_guard`. `es_admin` siempre pasa (mismo escape
-    /// hatch que `role_guard` ya usa para el string "ADMIN"). Un usuario sin
-    /// `rol_id` todavía asignado (backfill pendiente o rol legado) no tiene
-    /// ningún permiso nuevo - solo afecta rutas nuevas, nunca las existentes.
-    pub async fn tiene_permiso(&self, rol_id: Option<Uuid>, permiso_codigo: &str) -> anyhow::Result<bool> {
-        let Some(rol_id) = rol_id else { return Ok(false) };
-        let es_admin: Option<bool> = sqlx::query_scalar("SELECT es_admin FROM roles WHERE id = $1")
-            .bind(rol_id)
-            .fetch_optional(&self.pool)
-            .await?;
-        if es_admin == Some(true) {
-            return Ok(true);
-        }
-        let tiene: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM role_permisos WHERE role_id = $1 AND permiso_codigo = $2",
-        )
-        .bind(rol_id)
-        .bind(permiso_codigo)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(tiene.is_some())
-    }
-
-    pub async fn list_roles(&self) -> anyhow::Result<Vec<Role>> {
-        let rows = sqlx::query_as::<_, Role>("SELECT id, codigo, nombre, es_admin FROM roles ORDER BY codigo").fetch_all(&self.pool).await?;
-        Ok(rows)
-    }
-
-    pub async fn list_permisos(&self) -> anyhow::Result<Vec<PermisoCatalogo>> {
+    pub async fn list_permisos_catalogo(&self) -> Result<Vec<PermisoCatalogo>> {
         let rows = sqlx::query_as::<_, PermisoCatalogo>(
-            "SELECT codigo, nombre, orden, activo FROM permisos_catalogo WHERE activo = true ORDER BY orden",
+            "SELECT codigo, nombre, descripcion, orden, activo FROM permisos_catalogo WHERE activo = true ORDER BY orden",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
     }
 
-    pub async fn permisos_de_rol(&self, role_id: Uuid) -> anyhow::Result<Vec<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT permiso_codigo FROM role_permisos WHERE role_id = $1")
-            .bind(role_id)
+    pub async fn list_roles(&self) -> Result<Vec<RolConPermisos>> {
+        let roles = sqlx::query_as::<_, Rol>("SELECT id, codigo, nombre, es_admin, created_at FROM roles ORDER BY codigo")
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(|(c,)| c).collect())
+        let mut resultado = Vec::with_capacity(roles.len());
+        for rol in roles {
+            let permisos: Vec<String> = sqlx::query_scalar("SELECT permiso_codigo FROM role_permisos WHERE role_id = $1")
+                .bind(rol.id)
+                .fetch_all(&self.pool)
+                .await?;
+            resultado.push(RolConPermisos { rol, permisos });
+        }
+        Ok(resultado)
     }
 
-    /// Reemplazo total (igual que `staff_service::set_modulos_tenant`): borra
-    /// y re-inserta el set completo, no un merge incremental.
-    pub async fn set_permisos_de_rol(&self, role_id: Uuid, codigos: &[String]) -> anyhow::Result<()> {
+    /// Roles creados desde el sitio de staff son siempre `es_admin = false`
+    /// - el bypass total queda reservado al rol ADMIN sembrado por la
+    /// migración, no algo que se pueda otorgar desde la UI de roles.
+    pub async fn create_rol(&self, req: CreateRolRequest) -> Result<RolConPermisos> {
+        let codigo = req.codigo.trim().to_uppercase().replace(' ', "_");
+        if codigo.is_empty() || req.nombre.trim().is_empty() {
+            anyhow::bail!("Código y nombre son requeridos");
+        }
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM role_permisos WHERE role_id = $1").bind(role_id).execute(&mut *tx).await?;
-        for codigo in codigos {
+        let rol = sqlx::query_as::<_, Rol>(
+            "INSERT INTO roles (codigo, nombre, es_admin) VALUES ($1, $2, false)
+             RETURNING id, codigo, nombre, es_admin, created_at",
+        )
+        .bind(&codigo)
+        .bind(req.nombre.trim())
+        .fetch_one(&mut *tx)
+        .await?;
+        for permiso in &req.permisos {
             sqlx::query("INSERT INTO role_permisos (role_id, permiso_codigo) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-                .bind(role_id)
-                .bind(codigo)
+                .bind(rol.id)
+                .bind(permiso)
                 .execute(&mut *tx)
                 .await?;
         }
         tx.commit().await?;
-        Ok(())
+        Ok(RolConPermisos { rol, permisos: req.permisos })
+    }
+
+    /// Reemplaza el set completo de permisos del rol por `permisos` - refleja
+    /// exactamente lo que el staff marcó, no un merge incremental (mismo
+    /// principio que `StaffService::set_modulos_tenant`).
+    pub async fn set_permisos_rol(&self, rol_id: Uuid, permisos: &[String]) -> Result<RolConPermisos> {
+        let mut tx = self.pool.begin().await?;
+        let rol = sqlx::query_as::<_, Rol>("SELECT id, codigo, nombre, es_admin, created_at FROM roles WHERE id = $1")
+            .bind(rol_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Rol no encontrado"))?;
+        sqlx::query("DELETE FROM role_permisos WHERE role_id = $1").bind(rol_id).execute(&mut *tx).await?;
+        for permiso in permisos {
+            sqlx::query("INSERT INTO role_permisos (role_id, permiso_codigo) VALUES ($1, $2)")
+                .bind(rol_id)
+                .bind(permiso)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(RolConPermisos { rol, permisos: permisos.to_vec() })
+    }
+
+    /// Hot path: llamado en cada request autenticado por `permission_guard`.
+    /// Un solo round trip, indexado por `usuarios.rol_id`.
+    pub async fn usuario_tiene_permiso(&self, usuario_id: Uuid, permiso: &str) -> Result<bool> {
+        let concedido: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS (
+                 SELECT 1 FROM usuarios u
+                 JOIN roles r ON r.id = u.rol_id
+                 LEFT JOIN role_permisos rp ON rp.role_id = r.id AND rp.permiso_codigo = $2
+                 WHERE u.id = $1 AND (r.es_admin OR rp.role_id IS NOT NULL)
+               )"#,
+        )
+        .bind(usuario_id)
+        .bind(permiso)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(concedido)
     }
 }

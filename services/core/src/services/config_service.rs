@@ -58,6 +58,7 @@ pub struct Usuario {
     pub nombre: String,
     pub email: String,
     pub rol: String,
+    pub rol_id: Option<Uuid>,
     pub descuento_maximo_sin_aprobacion: rust_decimal::Decimal,
     pub activo: bool,
     pub created_at: DateTime<Utc>,
@@ -69,6 +70,11 @@ pub struct CreateUsuarioRequest {
     pub email: String,
     pub password: String,
     pub rol: String,
+    /// Opcional: si no viene, se resuelve buscando `roles.codigo = rol` -
+    /// mantiene compatible al caller que todavía solo manda el string de rol
+    /// (la propia pantalla de Configuración del tenant). El sitio de staff
+    /// sí lo manda explícito, para poder asignar roles creados por ellos.
+    pub rol_id: Option<Uuid>,
     pub descuento_maximo_sin_aprobacion: Option<rust_decimal::Decimal>,
 }
 
@@ -76,6 +82,7 @@ pub struct CreateUsuarioRequest {
 pub struct UpdateUsuarioRequest {
     pub nombre: String,
     pub rol: String,
+    pub rol_id: Option<Uuid>,
     pub activo: bool,
     pub descuento_maximo_sin_aprobacion: Option<rust_decimal::Decimal>,
     /// Si viene presente, el ADMIN está restableciendo la contraseña de este
@@ -266,7 +273,7 @@ impl ConfigService {
         let order_by = sort.resolve(Self::USUARIOS_SORTABLE, "created_at ASC");
         let limit = page.limit(20);
         let query = format!(
-            r#"SELECT id, tenant_id, nombre, email, rol, descuento_maximo_sin_aprobacion, activo, created_at
+            r#"SELECT id, tenant_id, nombre, email, rol, rol_id, descuento_maximo_sin_aprobacion, activo, created_at
                FROM usuarios
                {WHERE_CLAUSE}
                ORDER BY {order_by}
@@ -291,27 +298,44 @@ impl ConfigService {
             .map_err(|e| anyhow::anyhow!("Error al procesar contraseña: {}", e))?
             .to_string();
 
-        // rol_id: ver el mismo comentario en auth_service::register - solo
-        // alimenta el permiso_guard aditivo del módulo de Órdenes de Servicio.
+        let rol_id = self.resolver_rol_id(req.rol_id, &req.rol).await?;
+
         let row = sqlx::query_as::<_, Usuario>(
             "INSERT INTO usuarios (tenant_id, nombre, email, password_hash, rol, rol_id, descuento_maximo_sin_aprobacion)
-             VALUES ($1, $2, $3, $4, $5, (SELECT id FROM roles WHERE codigo = $5), $6)
-             RETURNING id, tenant_id, nombre, email, rol, descuento_maximo_sin_aprobacion, activo, created_at",
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, tenant_id, nombre, email, rol, rol_id, descuento_maximo_sin_aprobacion, activo, created_at",
         )
         .bind(tenant_id)
         .bind(req.nombre)
         .bind(req.email)
         .bind(hash)
         .bind(req.rol)
+        .bind(rol_id)
         .bind(req.descuento_maximo_sin_aprobacion.unwrap_or_default())
         .fetch_one(&self.pool)
         .await?;
         Ok(row)
     }
 
+    /// Usado por create/update_usuario cuando el caller no manda `rol_id`
+    /// explícito (la pantalla de Configuración del tenant todavía solo
+    /// conoce el string de rol) - lo resuelve contra `roles.codigo` para que
+    /// el usuario quede correctamente autorizado igual, sin requerir que
+    /// esa pantalla se actualice primero.
+    async fn resolver_rol_id(&self, rol_id: Option<Uuid>, rol: &str) -> Result<Option<Uuid>> {
+        if rol_id.is_some() {
+            return Ok(rol_id);
+        }
+        let encontrado: Option<Uuid> = sqlx::query_scalar("SELECT id FROM roles WHERE codigo = $1")
+            .bind(rol)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(encontrado)
+    }
+
     pub async fn update_usuario(&self, tenant_id: &str, id: Uuid, req: UpdateUsuarioRequest) -> Result<Usuario> {
         let existing = sqlx::query_as::<_, Usuario>(
-            "SELECT id, tenant_id, nombre, email, rol, descuento_maximo_sin_aprobacion, activo, created_at
+            "SELECT id, tenant_id, nombre, email, rol, rol_id, descuento_maximo_sin_aprobacion, activo, created_at
              FROM usuarios WHERE id = $1 AND tenant_id = $2",
         )
         .bind(id)
@@ -327,16 +351,19 @@ impl ConfigService {
                 .map_err(|e| anyhow::anyhow!("Error al procesar contraseña: {}", e))
         }).transpose()?;
 
+        let rol_id = self.resolver_rol_id(req.rol_id, &req.rol).await?.or(existing.rol_id);
+
         let row = sqlx::query_as::<_, Usuario>(
-            "UPDATE usuarios SET nombre=$3, rol=$4, activo=$5, descuento_maximo_sin_aprobacion=$6,
-                password_hash = COALESCE($7, password_hash)
+            "UPDATE usuarios SET nombre=$3, rol=$4, rol_id=$5, activo=$6, descuento_maximo_sin_aprobacion=$7,
+                password_hash = COALESCE($8, password_hash)
              WHERE id=$1 AND tenant_id=$2
-             RETURNING id, tenant_id, nombre, email, rol, descuento_maximo_sin_aprobacion, activo, created_at",
+             RETURNING id, tenant_id, nombre, email, rol, rol_id, descuento_maximo_sin_aprobacion, activo, created_at",
         )
         .bind(id)
         .bind(tenant_id)
         .bind(req.nombre)
         .bind(req.rol)
+        .bind(rol_id)
         .bind(req.activo)
         .bind(req.descuento_maximo_sin_aprobacion.unwrap_or(existing.descuento_maximo_sin_aprobacion))
         .bind(nuevo_hash)
