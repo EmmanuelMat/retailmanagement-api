@@ -11,8 +11,11 @@ interface Producto {
   sku: string;
   nombre: string;
   itbis_tipo: "GRAVADO_18" | "GRAVADO_16" | "EXENTO";
-  precio_venta: string;
+  // null solo para tipo SERVICIO - sin precio fijo, se captura por línea al
+  // agregarlo al carrito (ver CarritoLinea.precioUnitario).
+  precio_venta: string | null;
   stock_actual: string;
+  tipo: "PRODUCTO" | "SERVICIO";
 }
 
 interface Cliente {
@@ -33,6 +36,9 @@ interface CarritoLinea {
   producto: Producto;
   cantidad: number;
   descuento: number;
+  // Para PRODUCTO copia producto.precio_venta y no se edita; para SERVICIO
+  // arranca en 0 y el cajero lo escribe (ver el input en la línea del carrito).
+  precioUnitario: number;
 }
 
 const ITBIS_RATE: Record<string, number> = { GRAVADO_18: 0.18, GRAVADO_16: 0.16, EXENTO: 0 };
@@ -91,18 +97,31 @@ export default function PosPage() {
   const [aprobacionError, setAprobacionError] = useState("");
 
   const [cajaAbierta, setCajaAbierta] = useState<boolean | null>(null);
+  // Un tenant SERVICIOS no opera con caja registradora - ver
+  // ventas_service::create_venta, que salta el chequeo de caja abierta para
+  // este tipo de negocio. No tiene sentido pedirle abrir una que no existe.
+  const [esServicios, setEsServicios] = useState(false);
+  // Solo aplica en móvil (lg:flex fuerza expandido en escritorio) - el
+  // carrito queda fijo arriba de la lista de productos, así que se puede
+  // colapsar a un resumen de una línea para no tapar la pantalla.
+  const [carritoExpandido, setCarritoExpandido] = useState(true);
 
   useEffect(() => {
     apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
     apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
-    apiFetch<{ sesion: unknown | null }>("/api/caja/resumen").then((d) => setCajaAbierta(!!d.sesion)).catch(() => {});
+    let tenantEsServicios = false;
     try {
       const raw = localStorage.getItem("tenant");
       if (raw) {
         const t = JSON.parse(raw);
         if (t.factura_electronica_activa === false) setFacturaElectronicaActiva(false);
+        tenantEsServicios = t.tipo_negocio === "SERVICIOS";
+        setEsServicios(tenantEsServicios);
       }
     } catch {}
+    if (!tenantEsServicios) {
+      apiFetch<{ sesion: unknown | null }>("/api/caja/resumen").then((d) => setCajaAbierta(!!d.sesion)).catch(() => {});
+    }
   }, []);
 
   const MAX_VISIBLE = 60;
@@ -122,8 +141,7 @@ export default function PosPage() {
   const totals = useMemo(() => {
     let subtotal = 0, itbis = 0;
     for (const l of carrito) {
-      const precio = Number(l.producto.precio_venta);
-      const bruto = precio * l.cantidad;
+      const bruto = l.precioUnitario * l.cantidad;
       const descuento = Math.min(l.descuento, bruto);
       const lineSub = bruto - descuento;
       subtotal += lineSub;
@@ -138,8 +156,13 @@ export default function PosPage() {
       if (existing) {
         return c.map((l) => (l.producto.id === producto.id ? { ...l, cantidad: l.cantidad + 1 } : l));
       }
-      return [...c, { producto, cantidad: 1, descuento: 0 }];
+      return [...c, { producto, cantidad: 1, descuento: 0, precioUnitario: Number(producto.precio_venta) || 0 }];
     });
+  }
+
+  function updatePrecioUnitario(productoId: string, value: string) {
+    const precio = Math.max(0, Number(value) || 0);
+    setCarrito((c) => c.map((l) => (l.producto.id === productoId ? { ...l, precioUnitario: precio } : l)));
   }
 
   function updateQty(productoId: string, delta: number) {
@@ -154,6 +177,11 @@ export default function PosPage() {
     const monto = Math.max(0, Number(value) || 0);
     setCarrito((c) => c.map((l) => (l.producto.id === productoId ? { ...l, descuento: monto } : l)));
   }
+
+  const serviciosSinPrecio = useMemo(
+    () => carrito.some((l) => l.producto.tipo === "SERVICIO" && l.precioUnitario <= 0),
+    [carrito]
+  );
 
   function removeLine(productoId: string) {
     setCarrito((c) => c.filter((l) => l.producto.id !== productoId));
@@ -229,6 +257,10 @@ export default function PosPage() {
       setError("Una venta fiada necesita un cliente seleccionado");
       return;
     }
+    if (serviciosSinPrecio) {
+      setError("Escribe el precio de cada servicio en el carrito antes de cobrar");
+      return;
+    }
     setCobrando(true);
     setError("");
     if (adminCreds) setAprobacionError("");
@@ -242,7 +274,8 @@ export default function PosPage() {
           items: carrito.map((l) => ({
             producto_id: l.producto.id,
             cantidad: String(l.cantidad),
-            descuento: String(Math.min(l.descuento, Number(l.producto.precio_venta) * l.cantidad)),
+            descuento: String(Math.min(l.descuento, l.precioUnitario * l.cantidad)),
+            precio_unitario: l.producto.tipo === "SERVICIO" ? String(l.precioUnitario) : undefined,
           })),
           entrega_diferida: entregaDiferida || undefined,
           aprobacion_admin: adminCreds,
@@ -332,20 +365,23 @@ export default function PosPage() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 h-[calc(100vh-104px)]">
-      <div className="flex flex-col min-h-0">
-        <div className="relative mb-4">
+    <div className="flex flex-col gap-6 h-[calc(100vh-104px)]">
+    <div className="flex flex-col lg:grid lg:grid-cols-[1fr_380px] gap-6 flex-1 min-h-0">
+      <div className="flex flex-col min-h-0 flex-1 order-2 lg:order-1">
+        <div className="relative mb-4 shrink-0">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto por nombre o SKU..." className="pl-9" />
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pb-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 flex-1 min-h-0 overflow-y-auto content-start pb-4">
           {filtered.map((p) => {
+            const esServicio = p.tipo === "SERVICIO";
             const stock = Number(p.stock_actual);
+            const disabled = !esServicio && stock <= 0;
             return (
               <button
                 key={p.id}
-                onClick={() => stock > 0 && addToCart(p)}
-                disabled={stock <= 0}
+                onClick={() => !disabled && addToCart(p)}
+                disabled={disabled}
                 className="text-left rounded-lg border border-border bg-background p-3 hover:border-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 data-testid="pos-product-card"
                 data-sku={p.sku}
@@ -353,10 +389,10 @@ export default function PosPage() {
                 <p className="text-xs text-muted-foreground font-mono">{p.sku}</p>
                 <p className="text-sm font-semibold mt-1 leading-tight">{p.nombre}</p>
                 <div className="flex items-center justify-between mt-2">
-                  <span className="text-sm font-bold">{formatDOP(p.precio_venta)}</span>
+                  <span className="text-sm font-bold">{esServicio ? "Precio al facturar" : formatDOP(p.precio_venta || "0")}</span>
                   <Badge variant={p.itbis_tipo === "EXENTO" ? "secondary" : "default"}>{ITBIS_LABEL[p.itbis_tipo]}</Badge>
                 </div>
-                <p className="text-[11px] text-muted-foreground mt-1">{stock > 0 ? `Stock: ${p.stock_actual}` : "Sin stock"}</p>
+                <p className="text-[11px] text-muted-foreground mt-1">{esServicio ? "Servicio" : stock > 0 ? `Stock: ${p.stock_actual}` : "Sin stock"}</p>
               </button>
             );
           })}
@@ -371,14 +407,26 @@ export default function PosPage() {
         )}
       </div>
 
-      <Card className="flex flex-col sticky top-0 h-[calc(100vh-104px)]">
+      <Card className="flex flex-col order-1 lg:order-2 shrink-0 lg:shrink min-h-0 lg:h-full max-h-[45vh] lg:max-h-none sticky top-16 z-10 overflow-hidden">
         <CardContent className="flex flex-col flex-1 min-h-0 pt-5">
-          <div className="flex items-center gap-2 mb-4">
-            <ShoppingCart className="h-4 w-4 text-primary" />
-            <h2 className="font-bold text-sm">Venta actual</h2>
-          </div>
+          <button
+            type="button"
+            className="flex items-center justify-between gap-2 mb-2 lg:mb-4 lg:pointer-events-none"
+            onClick={() => setCarritoExpandido((v) => !v)}
+          >
+            <span className="flex items-center gap-2">
+              <ShoppingCart className="h-4 w-4 text-primary" />
+              <h2 className="font-bold text-sm">Venta actual</h2>
+            </span>
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground lg:hidden">
+              {carrito.length > 0 && (
+                <span>{carrito.length} art. · {formatDOP(totals.total)}</span>
+              )}
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${carritoExpandido ? "rotate-180" : ""}`} />
+            </span>
+          </button>
 
-          <div className="flex-1 overflow-y-auto space-y-2 min-h-0">
+          <div className={`${carritoExpandido ? "flex" : "hidden"} lg:flex flex-1 flex-col overflow-y-auto space-y-2 min-h-0`}>
             {carrito.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-10">Agrega productos para empezar.</p>
             ) : (
@@ -387,7 +435,22 @@ export default function PosPage() {
                   <div className="flex items-center gap-2">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">{l.producto.nombre}</p>
-                      <p className="text-xs text-muted-foreground">{formatDOP(l.producto.precio_venta)} c/u</p>
+                      {l.producto.tipo === "SERVICIO" ? (
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <span className="text-[11px] text-muted-foreground shrink-0">RD$</span>
+                          <Input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={l.precioUnitario || ""}
+                            onChange={(e) => updatePrecioUnitario(l.producto.id, e.target.value)}
+                            placeholder="Precio c/u"
+                            className="h-6 text-xs"
+                          />
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">{formatDOP(String(l.precioUnitario))} c/u</p>
+                      )}
                     </div>
                     <div className="flex items-center gap-1">
                       <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => updateQty(l.producto.id, -1)}><Minus className="h-3 w-3" /></Button>
@@ -413,7 +476,15 @@ export default function PosPage() {
             )}
           </div>
 
-          <div className="border-t border-border pt-4 mt-4 space-y-3">
+        </CardContent>
+      </Card>
+
+      </div>
+
+      <Card className="shrink-0 max-h-[45vh] overflow-y-auto">
+        <CardContent className="pt-5">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
+          <div className="space-y-3">
             <div className="space-y-1.5">
               <button
                 type="button"
@@ -472,7 +543,7 @@ export default function PosPage() {
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="cliente">Cliente</Label>
                 <Select
@@ -495,7 +566,7 @@ export default function PosPage() {
                   <option value="EFECTIVO">Efectivo</option>
                   <option value="TARJETA">Tarjeta</option>
                   <option value="TRANSFERENCIA">Transferencia</option>
-                  <option value="FIADO">Fiado</option>
+                  <option value="FIADO">{esServicios ? "A crédito" : "Fiado"}</option>
                 </Select>
               </div>
             </div>
@@ -533,16 +604,18 @@ export default function PosPage() {
               </span>
             </label>
 
-            {cajaAbierta === false && (
+            {!esServicios && cajaAbierta === false && (
               <div className="rounded-md border border-warning/20 bg-warning/10 text-warning p-2 text-xs">
                 La caja está cerrada. <Link href="/caja" className="underline font-medium">Ábrela antes de vender</Link>.
               </div>
             )}
+          </div>
 
-            <div className="text-sm space-y-1 pt-1">
+          <div className="space-y-3">
+            <div className="text-sm space-y-1 rounded-md border border-border p-3">
               <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatDOP(totals.subtotal)}</span></div>
               <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(totals.itbis)}</span></div>
-              <div className="flex justify-between font-bold text-base pt-1"><span>Total</span><span className="tabular-nums" data-testid="pos-cart-total">{formatDOP(totals.total)}</span></div>
+              <div className="flex justify-between font-bold text-base pt-1 mt-1 border-t border-border"><span>Total</span><span className="tabular-nums" data-testid="pos-cart-total">{formatDOP(totals.total)}</span></div>
             </div>
 
             {totals.total >= 250000 && !clienteId && (
@@ -556,13 +629,14 @@ export default function PosPage() {
             <Button
               className="w-full"
               size="lg"
-              disabled={carrito.length === 0 || cobrando || cajaAbierta === false || (metodoPago === "FIADO" && !clienteId)}
+              disabled={carrito.length === 0 || cobrando || (!esServicios && cajaAbierta === false) || (metodoPago === "FIADO" && !clienteId) || serviciosSinPrecio}
               onClick={() => handleCobrar()}
               data-testid="pos-cobrar-submit"
             >
               {cobrando ? "Procesando..." : `Cobrar ${formatDOP(totals.total)}`}
             </Button>
           </div>
+        </div>
         </CardContent>
       </Card>
 
