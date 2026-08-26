@@ -102,6 +102,14 @@ export default function OrdenServicioDetallePage() {
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
   const [auditoria, setAuditoria] = useState<AuditoriaEntry[]>([]);
+  const [esServicios, setEsServicios] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("tenant");
+      if (raw) setEsServicios(JSON.parse(raw).tipo_negocio === "SERVICIOS");
+    } catch {}
+  }, []);
 
   function load() {
     apiFetch<OrdenDetalle>(`/api/ordenes-servicio/${params.id}`).then(setOrden).catch((e) => setError(e.message));
@@ -206,7 +214,13 @@ export default function OrdenServicioDetallePage() {
         />
         <CardContent className="pt-5">
           {tab === "resumen" && <ResumenTab orden={orden} />}
-          {tab === "items" && <ItemsTab orden={orden} productos={productos} onChanged={load} />}
+          {tab === "items" && (
+            <ItemsTab
+              orden={orden}
+              productos={esServicios ? productos.filter((p) => p.tipo === "SERVICIO") : productos}
+              onChanged={load}
+            />
+          )}
           {tab === "tecnicos" && <TecnicosTab orden={orden} empleados={empleados} nombreEmpleado={nombreEmpleado} onChanged={load} />}
           {tab === "materiales" && <MaterialesTab orden={orden} productos={productos} nombreProducto={nombreProducto} onChanged={load} />}
           {tab === "notas" && <NotasTab orden={orden} onChanged={load} />}

@@ -58,7 +58,16 @@ export default function NuevaOrdenServicioPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
+    // Un tenant SERVICIOS solo factura trabajo (servicios) en la orden - los
+    // materiales/repuestos usados se registran aparte, en la pestaña
+    // Materiales de la orden ya creada (consumo real de inventario), no acá.
+    let esServicios = false;
+    try {
+      const raw = localStorage.getItem("tenant");
+      if (raw) esServicios = JSON.parse(raw).tipo_negocio === "SERVICIOS";
+    } catch {}
+    const tipoQuery = esServicios ? "&tipo=SERVICIO" : "";
+    apiFetch<{ items: Producto[] }>(`/api/productos?pageSize=5000&activo=true${tipoQuery}`).then((d) => setProductos(d.items)).catch(() => {});
     apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
     apiFetch<Condicion[]>("/api/condiciones-orden").then(setCondiciones).catch(() => {});
   }, []);

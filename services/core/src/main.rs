@@ -222,15 +222,15 @@ async fn modulo_guard<B>(
     req: Request<B>,
     next: Next<B>,
 ) -> Result<Response, (StatusCode, String)> {
-    let Some(modulo) = required_modulo(req.uri().path()) else {
+    let Some(modulos) = required_modulo(req.uri().path()) else {
         return Ok(next.run(req).await);
     };
     let claims = claims_from_headers(&state.auth_service, req.headers())?;
     let tiene: Option<(String,)> = sqlx::query_as(
-        "SELECT modulo_codigo FROM tenant_modulos WHERE tenant_id = $1 AND modulo_codigo = $2",
+        "SELECT modulo_codigo FROM tenant_modulos WHERE tenant_id = $1 AND modulo_codigo = ANY($2)",
     )
     .bind(&claims.tenant_id)
-    .bind(modulo)
+    .bind(modulos)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -244,49 +244,54 @@ async fn modulo_guard<B>(
 }
 
 /// `None` = este módulo no aplica a la ruta (config de cuenta, dashboard
-/// general, etc.) - nunca bloqueada por módulo. Igual que `required_roles`,
-/// agregar una ruta a un grupo nuevo requiere tocar esta función; el
-/// catálogo (`modulos_catalogo`) en sí es editable desde el sitio de staff
-/// sin migración, pero conectarlo a rutas reales sigue siendo código.
-fn required_modulo(path: &str) -> Option<&'static str> {
+/// general, etc.) - nunca bloqueada por módulo. `Some(&[...])` = basta con
+/// que el tenant tenga CUALQUIERA de esos módulos activos (no todos) - usado
+/// por ventas/notas-crédito/clientes/cotizaciones, que sirven tanto al flujo
+/// de POS/retail como al de Cotización → Orden de Servicio → Facturación de
+/// un tenant SERVICIOS que nunca activó POS_VENTAS (sin caja registradora).
+/// Igual que `required_roles`, agregar una ruta a un grupo nuevo requiere
+/// tocar esta función; el catálogo (`modulos_catalogo`) en sí es editable
+/// desde el sitio de staff sin migración, pero conectarlo a rutas reales
+/// sigue siendo código.
+fn required_modulo(path: &str) -> Option<&'static [&'static str]> {
     if path == "/v1/reports/dashboard" {
         return None;
     }
     if path.starts_with("/v1/reports") {
-        return Some("REPORTES");
+        return Some(&["REPORTES"]);
     }
     if path.starts_with("/v1/config/certificado") || path.starts_with("/v1/config/secuencias-ncf") {
-        return Some("DGII_ECF");
+        return Some(&["DGII_ECF"]);
     }
     if path.starts_with("/v1/ecf/documentos") || path.starts_with("/v1/ecf/pendientes") {
-        return Some("DGII_ECF");
+        return Some(&["DGII_ECF"]);
     }
     if path.starts_with("/v1/ai/") {
-        return Some("IA_ASISTENTE");
+        return Some(&["IA_ASISTENTE"]);
     }
     match path {
         p if p.starts_with("/v1/ventas")
             || p.starts_with("/v1/notas-credito")
             || p.starts_with("/v1/clientes")
-            || p.starts_with("/v1/cotizaciones")
-            || p.starts_with("/v1/conduces") =>
+            || p.starts_with("/v1/cotizaciones") =>
         {
-            Some("POS_VENTAS")
+            Some(&["POS_VENTAS", "ORDENES_SERVICIO"])
         }
+        p if p.starts_with("/v1/conduces") => Some(&["POS_VENTAS"]),
         p if p.starts_with("/v1/productos") || p.starts_with("/v1/categorias") || p.starts_with("/v1/inventario") => {
-            Some("INVENTARIO")
+            Some(&["INVENTARIO"])
         }
         p if p.starts_with("/v1/compras") || p.starts_with("/v1/proveedores") || p.starts_with("/v1/gastos")
             || p.starts_with("/v1/ordenes-compra") =>
         {
-            Some("COMPRAS_GASTOS")
+            Some(&["COMPRAS_GASTOS"])
         }
         p if p.starts_with("/v1/ordenes-servicio") || p.starts_with("/v1/condiciones-orden") => {
-            Some("ORDENES_SERVICIO")
+            Some(&["ORDENES_SERVICIO"])
         }
-        p if p.starts_with("/v1/contabilidad") => Some("CONTABILIDAD"),
-        p if p.starts_with("/v1/caja") || p.starts_with("/v1/bancos") => Some("CAJA_BANCOS"),
-        p if p.starts_with("/v1/empleados") || p.starts_with("/v1/nomina") => Some("NOMINA"),
+        p if p.starts_with("/v1/contabilidad") => Some(&["CONTABILIDAD"]),
+        p if p.starts_with("/v1/caja") || p.starts_with("/v1/bancos") => Some(&["CAJA_BANCOS"]),
+        p if p.starts_with("/v1/empleados") || p.starts_with("/v1/nomina") => Some(&["NOMINA"]),
         _ => None,
     }
 }
