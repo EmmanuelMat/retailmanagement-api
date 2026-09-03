@@ -754,27 +754,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+// Was a full route-map banner (fine for local dev, since only the dev ever
+// hit it) - now that this runs on a public Cloud Run URL, that was handing
+// out a reconnaissance map (every endpoint name/method, including the DGII
+// signing/send routes) to anyone who visited it, unauthenticated. Every
+// route it listed is already documented in this file for anyone with
+// repo access; it never needed to be public.
 async fn root() -> &'static str {
-    r#"fiscal-core v0.3 - Rust core + Full ECF Builder v1.0 + Real DGII Send + RFCE + ARECF/ACECF
-
-HTTP :3001
-  POST /v1/auth/register, /v1/auth/login, GET /v1/auth/me - Auth y Multi-tenancy
-  GET/POST /v1/categorias, PUT/DELETE /v1/categorias/:id
-  GET/POST /v1/productos, GET/PUT/DELETE /v1/productos/:id
-
-  POST /v1/ecf/build - Build XML per Informe Tecnico v1.0
-  POST /v1/ecf/build-sign - Build + XAdES-BES sign
-  POST /v1/ecf/build-sign-send - Full: Build + Sign + Auth seed + Send DGII + Poll TrackID
-  POST /v1/ecf/rfce/build - RFCE resumen E32 <250k
-  POST /v1/ecf/rfce/build-sign-send - RFCE + send to fc.dgii.gov.do
-  POST /v1/ecf/arecf/build - Acuse Recibo, POST /v1/ecf/acecf/build - Aprobacion Comercial
-  POST /v1/ecf/authenticate - GET seed + sign seed + token
-  GET  /v1/ecf/status/:track_id?token=xxx
-  POST /v1/ecf/sign - Legacy sign
-  POST /v1/test/sign-demo - Demo self-signed cert
-
-Docs: /docs/01-ARCHITECTURE.md etc - Spanish POS: apps/web/app/page.tsx
-"#
+    "fiscal-core\n"
 }
 
 async fn health() -> Json<serde_json::Value> {
