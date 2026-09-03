@@ -23,7 +23,7 @@ async fn crear_orden_de_compra_calcula_subtotal_estimado() {
     let orden = session
         .post(
             "/v1/ordenes-compra",
-            json!({ "proveedor_id": proveedor["id"], "items": [{ "producto_id": producto["id"], "cantidad_solicitada": "10", "costo_unitario": "80" }] }),
+            json!({ "items": [{ "producto_id": producto["id"], "proveedor_id": proveedor["id"], "cantidad_solicitada": "10", "costo_unitario": "80" }] }),
         )
         .await;
 
@@ -40,7 +40,7 @@ async fn no_se_puede_ordenar_un_servicio_en_una_orden_de_compra() {
     let (status, body) = session
         .post_expect(
             "/v1/ordenes-compra",
-            json!({ "proveedor_id": proveedor["id"], "items": [{ "producto_id": servicio["id"], "cantidad_solicitada": "1", "costo_unitario": "100" }] }),
+            json!({ "items": [{ "producto_id": servicio["id"], "proveedor_id": proveedor["id"], "cantidad_solicitada": "1", "costo_unitario": "100" }] }),
         )
         .await;
     assert_eq!(status, 400, "{body}");
@@ -56,11 +56,12 @@ async fn recibir_completo_crea_una_compra_real_y_mueve_inventario() {
     let orden = session
         .post(
             "/v1/ordenes-compra",
-            json!({ "proveedor_id": proveedor["id"], "items": [{ "producto_id": producto_id, "cantidad_solicitada": "5", "costo_unitario": "80" }] }),
+            json!({ "items": [{ "producto_id": producto_id, "proveedor_id": proveedor["id"], "cantidad_solicitada": "5", "costo_unitario": "80" }] }),
         )
         .await;
     let orden_id = orden["id"].as_str().unwrap();
     let item_id = orden["items"][0]["id"].as_str().unwrap();
+    assert_eq!(orden["items"][0]["proveedor_id"], proveedor["id"], "la línea conserva el proveedor elegido");
 
     let compra = session
         .post(
@@ -69,6 +70,7 @@ async fn recibir_completo_crea_una_compra_real_y_mueve_inventario() {
         )
         .await;
     assert_decimal_eq(decimal_field(&compra, "subtotal"), dec!(400.00), "subtotal de la compra real (5 x 80)");
+    assert_eq!(compra["proveedor_id"], proveedor["id"], "única línea con proveedor único -> se atribuye a la compra");
 
     let orden_actualizada = session.get(&format!("/v1/ordenes-compra/{orden_id}")).await;
     assert_eq!(orden_actualizada["estado"], "RECIBIDA");
@@ -87,7 +89,7 @@ async fn recibir_parcialmente_dos_veces_completa_la_orden_sin_exceder_lo_solicit
     let orden = session
         .post(
             "/v1/ordenes-compra",
-            json!({ "proveedor_id": proveedor["id"], "items": [{ "producto_id": producto_id, "cantidad_solicitada": "10", "costo_unitario": "50" }] }),
+            json!({ "items": [{ "producto_id": producto_id, "proveedor_id": proveedor["id"], "cantidad_solicitada": "10", "costo_unitario": "50" }] }),
         )
         .await;
     let orden_id = orden["id"].as_str().unwrap();
@@ -117,6 +119,44 @@ async fn recibir_parcialmente_dos_veces_completa_la_orden_sin_exceder_lo_solicit
 }
 
 #[tokio::test]
+async fn una_orden_puede_mezclar_lineas_de_varios_proveedores_o_sin_proveedor() {
+    let session = register_tenant().await;
+    let proveedor_a = create_proveedor(&session).await;
+    let proveedor_b = create_proveedor(&session).await;
+    let producto_a = create_producto(&session, dec!(200), dec!(0)).await;
+    let producto_b = create_producto(&session, dec!(200), dec!(0)).await;
+    let producto_sin_proveedor = create_producto(&session, dec!(200), dec!(0)).await;
+
+    let orden = session
+        .post(
+            "/v1/ordenes-compra",
+            json!({ "items": [
+                { "producto_id": producto_a["id"], "proveedor_id": proveedor_a["id"], "cantidad_solicitada": "3", "costo_unitario": "50" },
+                { "producto_id": producto_b["id"], "proveedor_id": proveedor_b["id"], "cantidad_solicitada": "2", "costo_unitario": "50" },
+                { "producto_id": producto_sin_proveedor["id"], "cantidad_solicitada": "1", "costo_unitario": "50" },
+            ] }),
+        )
+        .await;
+    let orden_id = orden["id"].as_str().unwrap();
+    assert_eq!(orden["items"].as_array().unwrap().len(), 3);
+    assert!(orden["items"][2]["proveedor_id"].is_null(), "línea sin proveedor queda null");
+
+    let items_recibir: Vec<_> = orden["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|it| json!({ "item_id": it["id"], "cantidad": it["cantidad_solicitada"] }))
+        .collect();
+    let compra = session
+        .post(&format!("/v1/ordenes-compra/{orden_id}/recibir"), json!({ "items": items_recibir }))
+        .await;
+    // Tres líneas con dos proveedores distintos (más una sin proveedor) ->
+    // una única compra combinada, sin proveedor único que atribuirle.
+    assert!(compra["proveedor_id"].is_null(), "líneas de proveedores distintos no producen un proveedor único en la compra");
+    assert_decimal_eq(decimal_field(&compra, "subtotal"), dec!(300.00), "3x50 + 2x50 + 1x50");
+}
+
+#[tokio::test]
 async fn cancelar_una_orden_ya_recibida_es_rechazado() {
     let session = register_tenant().await;
     let proveedor = create_proveedor(&session).await;
@@ -125,7 +165,7 @@ async fn cancelar_una_orden_ya_recibida_es_rechazado() {
     let orden = session
         .post(
             "/v1/ordenes-compra",
-            json!({ "proveedor_id": proveedor["id"], "items": [{ "producto_id": producto["id"], "cantidad_solicitada": "1", "costo_unitario": "50" }] }),
+            json!({ "items": [{ "producto_id": producto["id"], "proveedor_id": proveedor["id"], "cantidad_solicitada": "1", "costo_unitario": "50" }] }),
         )
         .await;
     let orden_id = orden["id"].as_str().unwrap();

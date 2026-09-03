@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { FileText, Plus, Search } from "lucide-react";
+import { FileText, Plus, Printer, Search } from "lucide-react";
 import {
   Badge, Button, Input, Select,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
@@ -155,6 +155,7 @@ function CotizacionesPageContent() {
               <SortableTableHead column="fecha_vencimiento" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Vence</SortableTableHead>
               <SortableTableHead column="estado" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Estado</SortableTableHead>
               <SortableTableHead column="total" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Total</SortableTableHead>
+              <TableHead className="w-16 text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -167,6 +168,11 @@ function CotizacionesPageContent() {
                 <TableCell className="text-muted-foreground">{c.fecha_vencimiento ? new Date(c.fecha_vencimiento).toLocaleDateString("es-DO") : "—"}</TableCell>
                 <TableCell><Badge variant={ESTADO_VARIANT[c.estado] || "default"}>{c.estado}</Badge></TableCell>
                 <TableCell className="text-right font-mono tabular-nums font-medium">{formatDOP(c.total)}</TableCell>
+                <TableCell className="text-right">
+                  <Link href={`/imprimir/cotizacion/${c.id}` as any} target="_blank">
+                    <Button size="icon" variant="ghost" title="Imprimir"><Printer className="h-4 w-4" /></Button>
+                  </Link>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>

@@ -940,10 +940,12 @@ async fn main() -> anyhow::Result<()> {
         -- estado, ver compras_service::create_compra) - recibir una orden de
         -- compra es lo que efectivamente crea la fila en `compras` vía el
         -- servicio existente, esta tabla nunca toca inventario directamente.
+        -- proveedor_id vive por línea (orden_compra_items), no aquí: una
+        -- orden puede mezclar productos de varios proveedores o de ninguno.
         CREATE TABLE IF NOT EXISTS ordenes_compra (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
-            proveedor_id UUID NOT NULL REFERENCES proveedores(id),
+            proveedor_id UUID REFERENCES proveedores(id),
             orden_servicio_id UUID REFERENCES ordenes_servicio(id),
             estado TEXT NOT NULL DEFAULT 'BORRADOR', -- BORRADOR | ENVIADA | RECIBIDA_PARCIAL | RECIBIDA | CANCELADA
             subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -960,11 +962,16 @@ async fn main() -> anyhow::Result<()> {
             ALTER TABLE ordenes_compra ADD CONSTRAINT chk_ordenes_compra_estado
                 CHECK (estado IN ('BORRADOR', 'ENVIADA', 'RECIBIDA_PARCIAL', 'RECIBIDA', 'CANCELADA'));
         EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+        -- proveedor_id ya no es obligatorio a nivel de orden (columna
+        -- conservada por compatibilidad con filas existentes, sin uso en
+        -- código nuevo) - relaja bases donde la tabla ya existía NOT NULL.
+        ALTER TABLE ordenes_compra ALTER COLUMN proveedor_id DROP NOT NULL;
 
         CREATE TABLE IF NOT EXISTS orden_compra_items (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             orden_compra_id UUID NOT NULL REFERENCES ordenes_compra(id) ON DELETE CASCADE,
             producto_id UUID NOT NULL REFERENCES productos(id),
+            proveedor_id UUID REFERENCES proveedores(id) ON DELETE SET NULL,
             sku TEXT NOT NULL,
             nombre TEXT NOT NULL,
             cantidad_solicitada DECIMAL(12,2) NOT NULL,
@@ -972,6 +979,8 @@ async fn main() -> anyhow::Result<()> {
             costo_unitario DECIMAL(12,2) NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_orden_compra_items_orden ON orden_compra_items(orden_compra_id);
+        ALTER TABLE orden_compra_items ADD COLUMN IF NOT EXISTS proveedor_id UUID REFERENCES proveedores(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_orden_compra_items_proveedor ON orden_compra_items(proveedor_id);
 
         -- Adjuntos genéricos: no existía ninguna abstracción de storage
         -- reusable (solo el patrón de disco de image_service.rs para fotos

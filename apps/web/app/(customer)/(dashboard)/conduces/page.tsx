@@ -2,7 +2,7 @@
 
 import { Suspense } from "react";
 import Link from "next/link";
-import { PackageCheck, Plus, Search } from "lucide-react";
+import { PackageCheck, Plus, Printer, Search } from "lucide-react";
 import {
   Button, Input,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
@@ -110,6 +110,7 @@ function ConducesPageContent() {
               <TableHead>Cliente</TableHead>
               <TableHead>Dirección</TableHead>
               <TableHead>Venta</TableHead>
+              <TableHead className="w-16 text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -128,6 +129,11 @@ function ConducesPageContent() {
                   ) : (
                     <span className="text-xs text-muted-foreground">—</span>
                   )}
+                </TableCell>
+                <TableCell className="text-right">
+                  <Link href={`/imprimir/conduce/${c.id}` as any} target="_blank">
+                    <Button size="icon" variant="ghost" title="Imprimir"><Printer className="h-4 w-4" /></Button>
+                  </Link>
                 </TableCell>
               </TableRow>
             ))}

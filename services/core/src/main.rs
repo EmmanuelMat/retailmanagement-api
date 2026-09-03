@@ -3354,12 +3354,18 @@ async fn http_recibir_orden_compra(
     let recepcion = state.orden_compra_service.preparar_recepcion(&claims.tenant_id, id, &req).await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
+    // Las líneas recibidas pueden venir de distintos proveedores (o de
+    // ninguno) - se crea una única compra combinada; se le atribuye el
+    // proveedor solo si todas las líneas comparten exactamente uno.
+    let distintos: std::collections::HashSet<Uuid> = recepcion.lineas.iter().filter_map(|(_, _, _, p)| *p).collect();
+    let proveedor_id = if distintos.len() == 1 { distintos.into_iter().next() } else { None };
+
     let compra_req = services::compras_service::CreateCompraRequest {
-        proveedor_id: Some(recepcion.orden.proveedor_id),
+        proveedor_id,
         ncf_proveedor,
         metodo_pago,
         fecha_vencimiento,
-        items: recepcion.lineas.iter().map(|(producto_id, cantidad, costo_unitario)| services::compras_service::CreateCompraItemRequest {
+        items: recepcion.lineas.iter().map(|(producto_id, cantidad, costo_unitario, _)| services::compras_service::CreateCompraItemRequest {
             producto_id: *producto_id,
             cantidad: *cantidad,
             costo_unitario: *costo_unitario,

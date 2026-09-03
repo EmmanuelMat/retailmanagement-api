@@ -50,12 +50,21 @@ export function ProductoForm({
   initial,
   submitLabel,
   onSubmit,
+  onSuccess,
+  onCancel,
+  bare,
   productoId,
   imagenUrl,
 }: {
   initial?: Partial<ProductoFormValues>;
   submitLabel: string;
-  onSubmit: (values: ProductoFormValues) => Promise<void>;
+  onSubmit: (values: ProductoFormValues) => Promise<any>;
+  /** If given, called with onSubmit's result instead of navigating to /inventario/productos — for embedding this form outside its own page (e.g. inside a Dialog). */
+  onSuccess?: (result: any) => void;
+  /** If given, the Cancelar button calls this instead of navigating to /inventario/productos. */
+  onCancel?: () => void;
+  /** Skip the Card wrapper — for embedding inside a container that already provides one (e.g. a Dialog). */
+  bare?: boolean;
   // La foto solo puede subirse una vez el producto existe (el endpoint
   // necesita su id) - por eso es opcional y solo se muestra al editar.
   productoId?: string;
@@ -101,8 +110,9 @@ export function ProductoForm({
     setSaving(true);
     setError("");
     try {
-      await onSubmit(values);
-      router.push("/inventario/productos");
+      const result = await onSubmit(values);
+      if (onSuccess) onSuccess(result);
+      else router.push("/inventario/productos");
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -110,9 +120,7 @@ export function ProductoForm({
     }
   }
 
-  return (
-    <Card className="max-w-5xl">
-      <CardContent className="pt-5">
+  const form = (
         <form onSubmit={handleSubmit} className="space-y-5">
           {productoId && (
             <div className="flex items-center gap-4">
@@ -235,10 +243,15 @@ export function ProductoForm({
 
           <div className="flex gap-3">
             <Button type="submit" disabled={saving}>{saving ? "Guardando..." : submitLabel}</Button>
-            <Button type="button" variant="secondary" onClick={() => router.push("/inventario/productos")}>Cancelar</Button>
+            <Button type="button" variant="secondary" onClick={() => (onCancel ? onCancel() : router.push("/inventario/productos"))}>Cancelar</Button>
           </div>
         </form>
-      </CardContent>
+  );
+
+  if (bare) return form;
+  return (
+    <Card className="max-w-5xl">
+      <CardContent className="pt-5">{form}</CardContent>
     </Card>
   );
 }

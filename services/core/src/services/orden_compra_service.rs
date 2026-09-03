@@ -5,6 +5,8 @@
 //! parcialmente) es lo que efectivamente crea la fila en `compras` vía el
 //! servicio existente; esta tabla nunca toca inventario directamente,
 //! orquestado en main.rs igual que la conversión de cotización a venta.
+//! El proveedor vive por línea (opcional) y no en la orden - una orden
+//! puede mezclar productos de varios proveedores o de ninguno.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
@@ -18,7 +20,7 @@ const ORDEN_COLUMNS: &str = "id, tenant_id, proveedor_id, orden_servicio_id, est
 pub struct OrdenCompra {
     pub id: Uuid,
     pub tenant_id: String,
-    pub proveedor_id: Uuid,
+    pub proveedor_id: Option<Uuid>,
     pub orden_servicio_id: Option<Uuid>,
     pub estado: String,
     pub subtotal: Decimal,
@@ -36,12 +38,15 @@ pub struct OrdenCompraItem {
     pub id: Uuid,
     pub orden_compra_id: Uuid,
     pub producto_id: Uuid,
+    pub proveedor_id: Option<Uuid>,
     pub sku: String,
     pub nombre: String,
     pub cantidad_solicitada: Decimal,
     pub cantidad_recibida: Decimal,
     pub costo_unitario: Decimal,
 }
+
+const ITEM_COLUMNS: &str = "id, orden_compra_id, producto_id, proveedor_id, sku, nombre, cantidad_solicitada, cantidad_recibida, costo_unitario";
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct OrdenCompraConProveedor {
@@ -56,13 +61,13 @@ pub struct OrdenCompraConProveedor {
 #[derive(Debug, Deserialize)]
 pub struct CreateOrdenCompraItemRequest {
     pub producto_id: Uuid,
+    pub proveedor_id: Option<Uuid>,
     pub cantidad_solicitada: Decimal,
     pub costo_unitario: Decimal,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateOrdenCompraRequest {
-    pub proveedor_id: Uuid,
     pub orden_servicio_id: Option<Uuid>,
     pub fecha_esperada: Option<NaiveDate>,
     pub notas: Option<String>,
@@ -96,7 +101,7 @@ pub struct OrdenCompraCompleta {
 /// no crear un ciclo entre módulos de servicio).
 pub struct RecepcionLista {
     pub orden: OrdenCompra,
-    pub lineas: Vec<(Uuid, Decimal, Decimal)>, // producto_id, cantidad_recibida_ahora, costo_unitario
+    pub lineas: Vec<(Uuid, Decimal, Decimal, Option<Uuid>)>, // producto_id, cantidad_recibida_ahora, costo_unitario, proveedor_id
 }
 
 pub struct OrdenCompraService {
@@ -115,7 +120,7 @@ impl OrdenCompraService {
         let mut tx = self.pool.begin().await?;
 
         let mut subtotal_total = Decimal::ZERO;
-        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal)> = Vec::new();
+        let mut lineas: Vec<(Uuid, Option<Uuid>, String, String, Decimal, Decimal)> = Vec::new();
         for item in &req.items {
             if item.cantidad_solicitada <= Decimal::ZERO || item.costo_unitario < Decimal::ZERO {
                 anyhow::bail!("Cantidad o costo inválido");
@@ -132,7 +137,7 @@ impl OrdenCompraService {
                 anyhow::bail!("No se pueden ordenar servicios en una orden de compra - usa Gastos para este concepto");
             }
             subtotal_total += item.costo_unitario * item.cantidad_solicitada;
-            lineas.push((item.producto_id, sku, nombre, item.cantidad_solicitada, item.costo_unitario));
+            lineas.push((item.producto_id, item.proveedor_id, sku, nombre, item.cantidad_solicitada, item.costo_unitario));
         }
         // El ITBIS real de una compra se fija al recibir (puede variar por
         // línea vía itbis_tipo, ver compras_service) - aquí el total es un
@@ -140,12 +145,11 @@ impl OrdenCompraService {
         let total = subtotal_total;
 
         let orden = sqlx::query_as::<_, OrdenCompra>(&format!(
-            r#"INSERT INTO ordenes_compra (tenant_id, proveedor_id, orden_servicio_id, subtotal, total, fecha_esperada, notas, usuario_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            r#"INSERT INTO ordenes_compra (tenant_id, orden_servicio_id, subtotal, total, fecha_esperada, notas, usuario_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
                RETURNING {ORDEN_COLUMNS}"#
         ))
         .bind(tenant_id)
-        .bind(req.proveedor_id)
         .bind(req.orden_servicio_id)
         .bind(subtotal_total)
         .bind(total)
@@ -156,14 +160,15 @@ impl OrdenCompraService {
         .await?;
 
         let mut items = Vec::new();
-        for (producto_id, sku, nombre, cantidad, costo_unitario) in lineas {
-            let it = sqlx::query_as::<_, OrdenCompraItem>(
-                r#"INSERT INTO orden_compra_items (orden_compra_id, producto_id, sku, nombre, cantidad_solicitada, costo_unitario)
-                   VALUES ($1, $2, $3, $4, $5, $6)
-                   RETURNING id, orden_compra_id, producto_id, sku, nombre, cantidad_solicitada, cantidad_recibida, costo_unitario"#,
-            )
+        for (producto_id, proveedor_id, sku, nombre, cantidad, costo_unitario) in lineas {
+            let it = sqlx::query_as::<_, OrdenCompraItem>(&format!(
+                r#"INSERT INTO orden_compra_items (orden_compra_id, producto_id, proveedor_id, sku, nombre, cantidad_solicitada, costo_unitario)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                   RETURNING {ITEM_COLUMNS}"#
+            ))
             .bind(orden.id)
             .bind(producto_id)
+            .bind(proveedor_id)
             .bind(&sku)
             .bind(&nombre)
             .bind(cantidad)
@@ -184,9 +189,9 @@ impl OrdenCompraService {
             .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Orden de compra no encontrada"))?;
-        let items = sqlx::query_as::<_, OrdenCompraItem>(
-            "SELECT id, orden_compra_id, producto_id, sku, nombre, cantidad_solicitada, cantidad_recibida, costo_unitario FROM orden_compra_items WHERE orden_compra_id = $1",
-        )
+        let items = sqlx::query_as::<_, OrdenCompraItem>(&format!(
+            "SELECT {ITEM_COLUMNS} FROM orden_compra_items WHERE orden_compra_id = $1"
+        ))
         .bind(id)
         .fetch_all(&self.pool)
         .await?;
@@ -218,10 +223,22 @@ impl OrdenCompraService {
 
         let order_by = sort.resolve(Self::ORDENES_SORTABLE, "o.created_at DESC");
         let limit = page.limit(20);
+        // El proveedor ahora vive por línea (orden_compra_items.proveedor_id,
+        // opcional) - se agrega aquí para el listado: sin proveedor en
+        // ninguna línea -> NULL, un único proveedor distinto -> su nombre,
+        // más de uno -> "Varios proveedores".
         let query = format!(
-            r#"SELECT o.id, p.nombre AS proveedor_nombre, o.estado, o.total, o.fecha_esperada, o.created_at
+            r#"SELECT o.id,
+                      (SELECT CASE
+                          WHEN COUNT(DISTINCT oi.proveedor_id) = 0 THEN NULL
+                          WHEN COUNT(DISTINCT oi.proveedor_id) = 1 THEN MAX(p.nombre)
+                          ELSE 'Varios proveedores'
+                       END
+                       FROM orden_compra_items oi
+                       LEFT JOIN proveedores p ON p.id = oi.proveedor_id
+                       WHERE oi.orden_compra_id = o.id AND oi.proveedor_id IS NOT NULL) AS proveedor_nombre,
+                      o.estado, o.total, o.fecha_esperada, o.created_at
                FROM ordenes_compra o
-               LEFT JOIN proveedores p ON p.id = o.proveedor_id
                {WHERE_CLAUSE}
                ORDER BY {order_by}
                LIMIT $3 OFFSET $4"#
@@ -259,14 +276,14 @@ impl OrdenCompraService {
             if r.cantidad <= Decimal::ZERO {
                 anyhow::bail!("La cantidad a recibir debe ser mayor a cero");
             }
-            let item: Option<(Uuid, Decimal, Decimal, Decimal)> = sqlx::query_as(
-                "SELECT producto_id, cantidad_solicitada, cantidad_recibida, costo_unitario FROM orden_compra_items WHERE id = $1 AND orden_compra_id = $2 FOR UPDATE",
+            let item: Option<(Uuid, Decimal, Decimal, Decimal, Option<Uuid>)> = sqlx::query_as(
+                "SELECT producto_id, cantidad_solicitada, cantidad_recibida, costo_unitario, proveedor_id FROM orden_compra_items WHERE id = $1 AND orden_compra_id = $2 FOR UPDATE",
             )
             .bind(r.item_id)
             .bind(orden_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let (producto_id, cantidad_solicitada, cantidad_recibida_previa, costo_unitario) =
+            let (producto_id, cantidad_solicitada, cantidad_recibida_previa, costo_unitario, proveedor_id) =
                 item.ok_or_else(|| anyhow::anyhow!("Línea de orden de compra no encontrada"))?;
             let nueva_recibida = cantidad_recibida_previa + r.cantidad;
             if nueva_recibida > cantidad_solicitada {
@@ -277,7 +294,7 @@ impl OrdenCompraService {
                 .bind(r.item_id)
                 .execute(&mut *tx)
                 .await?;
-            lineas.push((producto_id, r.cantidad, costo_unitario));
+            lineas.push((producto_id, r.cantidad, costo_unitario, proveedor_id));
         }
 
         let pendientes: i64 = sqlx::query_scalar(

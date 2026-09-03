@@ -28,10 +28,19 @@ export function ProveedorForm({
   initial,
   submitLabel,
   onSubmit,
+  onSuccess,
+  onCancel,
+  bare,
 }: {
   initial?: Partial<ProveedorFormValues>;
   submitLabel: string;
-  onSubmit: (values: ProveedorFormValues) => Promise<void>;
+  onSubmit: (values: ProveedorFormValues) => Promise<any>;
+  /** If given, called with onSubmit's result instead of navigating to /proveedores — for embedding this form outside its own page (e.g. inside a Dialog). */
+  onSuccess?: (result: any) => void;
+  /** If given, the Cancelar button calls this instead of navigating to /proveedores. */
+  onCancel?: () => void;
+  /** Skip the Card wrapper — for embedding inside a container that already provides one (e.g. a Dialog). */
+  bare?: boolean;
 }) {
   const router = useRouter();
   const [values, setValues] = useState<ProveedorFormValues>({ ...EMPTY, ...initial });
@@ -70,8 +79,9 @@ export function ProveedorForm({
     setSaving(true);
     setError("");
     try {
-      await onSubmit(values);
-      router.push("/proveedores");
+      const result = await onSubmit(values);
+      if (onSuccess) onSuccess(result);
+      else router.push("/proveedores");
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -79,9 +89,7 @@ export function ProveedorForm({
     }
   }
 
-  return (
-    <Card className="max-w-4xl">
-      <CardContent className="pt-5">
+  const form = (
         <form onSubmit={handleSubmit} className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1.5 md:col-span-2">
@@ -132,10 +140,15 @@ export function ProveedorForm({
 
           <div className="flex gap-3">
             <Button type="submit" disabled={saving}>{saving ? "Guardando..." : submitLabel}</Button>
-            <Button type="button" variant="secondary" onClick={() => router.push("/proveedores")}>Cancelar</Button>
+            <Button type="button" variant="secondary" onClick={() => (onCancel ? onCancel() : router.push("/proveedores"))}>Cancelar</Button>
           </div>
         </form>
-      </CardContent>
+  );
+
+  if (bare) return form;
+  return (
+    <Card className="max-w-4xl">
+      <CardContent className="pt-5">{form}</CardContent>
     </Card>
   );
 }
