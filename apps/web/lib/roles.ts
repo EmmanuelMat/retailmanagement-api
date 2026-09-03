@@ -58,15 +58,16 @@ export function isDgiiRoute(pathname: string): boolean {
  * this app.
  *
  * A route's second element is a list of module codes — any ONE of them
- * being active is enough. Ventas/cotizaciones/clientes serve both the
- * POS/retail flow and a SERVICIOS tenant's Cotización → Orden de Servicio
- * → Facturación flow, so they stay reachable under ORDENES_SERVICIO alone,
- * even for a tenant that never activated POS_VENTAS (no cash register).
+ * being active is enough. Ventas/clientes serve both the POS/retail flow
+ * and a SERVICIOS tenant's Cotización → Orden de Servicio → Facturación
+ * flow, so they stay reachable under ORDENES_SERVICIO alone, even for a
+ * tenant that never activated POS_VENTAS (no cash register). Cotizaciones
+ * has its own module (COTIZACIONES) instead of riding on either of those.
  */
 const ROUTE_MODULOS: [string, string[]][] = [
   ["/pos", ["POS_VENTAS"]],
   ["/ventas", ["POS_VENTAS", "ORDENES_SERVICIO"]],
-  ["/cotizaciones", ["POS_VENTAS", "ORDENES_SERVICIO"]],
+  ["/cotizaciones", ["COTIZACIONES"]],
   ["/conduces", ["POS_VENTAS"]],
   ["/clientes", ["POS_VENTAS", "ORDENES_SERVICIO"]],
   ["/ordenes-servicio", ["ORDENES_SERVICIO"]],

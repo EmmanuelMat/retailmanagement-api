@@ -270,10 +270,10 @@ fn required_modulo(path: &str) -> Option<&'static [&'static str]> {
         return Some(&["IA_ASISTENTE"]);
     }
     match path {
+        p if p.starts_with("/v1/cotizaciones") => Some(&["COTIZACIONES"]),
         p if p.starts_with("/v1/ventas")
             || p.starts_with("/v1/notas-credito")
-            || p.starts_with("/v1/clientes")
-            || p.starts_with("/v1/cotizaciones") =>
+            || p.starts_with("/v1/clientes") =>
         {
             Some(&["POS_VENTAS", "ORDENES_SERVICIO"])
         }
