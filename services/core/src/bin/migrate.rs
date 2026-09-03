@@ -1045,6 +1045,47 @@ async fn main() -> anyhow::Result<()> {
             ('IA_ASISTENTE', 'Asistente IA', 'Resumen del día y chat con IA.', 100)
         ON CONFLICT (codigo) DO NOTHING;
 
+        -- DELIVERY fue creado a mano desde el catálogo de staff (nunca
+        -- estuvo en este seed) como "Delivery y pedidos en línea", un solo
+        -- toggle cubriendo dos capacidades distintas. Se separa en dos
+        -- módulos independientes; el UPDATE está acotado al nombre exacto
+        -- original para no pisar un renombrado posterior hecho a mano.
+        UPDATE modulos_catalogo SET nombre = 'Delivery'
+        WHERE codigo = 'DELIVERY' AND nombre = 'Delivery y pedidos en línea';
+
+        INSERT INTO modulos_catalogo (codigo, nombre, descripcion, orden) VALUES
+            ('PEDIDOS_LINEA', 'Pedidos en línea', 'Recibe y gestiona pedidos hechos por clientes desde internet.', 1)
+        ON CONFLICT (codigo) DO NOTHING;
+
+        -- Todo tenant que ya tenía DELIVERY (el toggle combinado) conserva
+        -- ambas capacidades tras la separación, en vez de perder "pedidos en
+        -- línea" silenciosamente.
+        INSERT INTO tenant_modulos (tenant_id, modulo_codigo, activado_por)
+        SELECT tenant_id, 'PEDIDOS_LINEA', activado_por FROM tenant_modulos WHERE modulo_codigo = 'DELIVERY'
+        ON CONFLICT DO NOTHING;
+
+        -- Cotizaciones vivía solo como texto dentro de la descripción de
+        -- POS_VENTAS ("Terminal de ventas, cotizaciones, conduces...") y de
+        -- forma funcional detrás de POS_VENTAS u ORDENES_SERVICIO (ver
+        -- required_modulo) - sin toggle propio. Se separa en su propio
+        -- módulo, igual que DELIVERY/PEDIDOS_LINEA arriba.
+        UPDATE modulos_catalogo SET descripcion = 'Terminal de ventas, conduces y clientes a crédito (fiado).'
+        WHERE codigo = 'POS_VENTAS' AND descripcion = 'Terminal de ventas, cotizaciones, conduces y clientes a crédito (fiado).';
+
+        INSERT INTO modulos_catalogo (codigo, nombre, descripcion, orden) VALUES
+            ('COTIZACIONES', 'Cotizaciones', 'Genera cotizaciones para clientes, con o sin caja registradora.', 11)
+        ON CONFLICT (codigo) DO NOTHING;
+
+        -- Todo tenant que ya alcanzaba cotizaciones vía POS_VENTAS u
+        -- ORDENES_SERVICIO conserva el acceso tras separarlo en su propio
+        -- módulo. DISTINCT ON evita un choque de llave primaria dentro del
+        -- mismo INSERT para un tenant que tenga ambos módulos origen.
+        INSERT INTO tenant_modulos (tenant_id, modulo_codigo, activado_por)
+        SELECT DISTINCT ON (tenant_id) tenant_id, 'COTIZACIONES', activado_por
+        FROM tenant_modulos WHERE modulo_codigo IN ('POS_VENTAS', 'ORDENES_SERVICIO')
+        ORDER BY tenant_id, activado_at
+        ON CONFLICT DO NOTHING;
+
         -- Formato 606 (DGII, Norma 07-2018, instructivo vigente) tiene 23
         -- columnas; `compras` solo cubría 5. Estas columnas cierran esa
         -- brecha para poder generar el 606 completo sin inventar datos.

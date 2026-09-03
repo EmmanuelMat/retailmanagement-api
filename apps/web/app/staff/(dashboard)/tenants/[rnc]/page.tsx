@@ -315,7 +315,7 @@ function ModulosTab({ rnc }: { rnc: string }) {
         <Badge variant="secondary" className="shrink-0 ml-4">{activos}/{modulos.length} activos</Badge>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3">
         {modulos.map((m) => (
           <div
             key={m.codigo}
