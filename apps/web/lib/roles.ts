@@ -56,25 +56,31 @@ export function isDgiiRoute(pathname: string): boolean {
  * `modulo_guard`). Which modules a tenant has is decided on the staff site,
  * never by the tenant themselves — there is no module picker anywhere in
  * this app.
+ *
+ * A route's second element is a list of module codes — any ONE of them
+ * being active is enough. Ventas/cotizaciones/clientes serve both the
+ * POS/retail flow and a SERVICIOS tenant's Cotización → Orden de Servicio
+ * → Facturación flow, so they stay reachable under ORDENES_SERVICIO alone,
+ * even for a tenant that never activated POS_VENTAS (no cash register).
  */
-const ROUTE_MODULOS: [string, string][] = [
-  ["/pos", "POS_VENTAS"],
-  ["/ventas", "POS_VENTAS"],
-  ["/cotizaciones", "POS_VENTAS"],
-  ["/conduces", "POS_VENTAS"],
-  ["/clientes", "POS_VENTAS"],
-  ["/ordenes-servicio", "ORDENES_SERVICIO"],
-  ["/inventario", "INVENTARIO"],
-  ["/compras", "COMPRAS_GASTOS"],
-  ["/ordenes-compra", "COMPRAS_GASTOS"],
-  ["/proveedores", "COMPRAS_GASTOS"],
-  ["/gastos", "COMPRAS_GASTOS"],
-  ["/contabilidad", "CONTABILIDAD"],
-  ["/caja", "CAJA_BANCOS"],
-  ["/bancos", "CAJA_BANCOS"],
-  ["/nomina", "NOMINA"],
-  ["/reportes/dgii", "DGII_ECF"],
-  ["/configuracion/dgii", "DGII_ECF"],
+const ROUTE_MODULOS: [string, string[]][] = [
+  ["/pos", ["POS_VENTAS"]],
+  ["/ventas", ["POS_VENTAS", "ORDENES_SERVICIO"]],
+  ["/cotizaciones", ["POS_VENTAS", "ORDENES_SERVICIO"]],
+  ["/conduces", ["POS_VENTAS"]],
+  ["/clientes", ["POS_VENTAS", "ORDENES_SERVICIO"]],
+  ["/ordenes-servicio", ["ORDENES_SERVICIO"]],
+  ["/inventario", ["INVENTARIO"]],
+  ["/compras", ["COMPRAS_GASTOS"]],
+  ["/ordenes-compra", ["COMPRAS_GASTOS"]],
+  ["/proveedores", ["COMPRAS_GASTOS"]],
+  ["/gastos", ["COMPRAS_GASTOS"]],
+  ["/contabilidad", ["CONTABILIDAD"]],
+  ["/caja", ["CAJA_BANCOS"]],
+  ["/bancos", ["CAJA_BANCOS"]],
+  ["/nomina", ["NOMINA"]],
+  ["/reportes/dgii", ["DGII_ECF"]],
+  ["/configuracion/dgii", ["DGII_ECF"]],
 ];
 
 /**
@@ -91,7 +97,7 @@ const ROUTE_MODULOS: [string, string][] = [
 export function isModuloAllowed(pathname: string, modulosActivos: Set<string> | null): boolean {
   if (!modulosActivos) return false;
   const match = ROUTE_MODULOS.find(([prefix]) => pathname.startsWith(prefix));
-  return !match || modulosActivos.has(match[1]);
+  return !match || match[1].some((codigo) => modulosActivos.has(codigo));
 }
 
 /** Same rule as `isModuloAllowed`, for features that aren't tied to a route

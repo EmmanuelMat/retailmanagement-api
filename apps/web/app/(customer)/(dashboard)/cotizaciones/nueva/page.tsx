@@ -40,9 +40,17 @@ export default function NuevaCotizacionPage() {
   const [lineas, setLineas] = useState<Linea[]>([{ productoId: "", cantidad: "", descuento: "", precioUnitario: "" }]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-
   useEffect(() => {
-    apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
+    // Un tenant SERVICIOS cotiza solo trabajo (servicios) - los materiales
+    // se agregan después, ya con la orden de servicio, en su pestaña
+    // Materiales (ver ordenes-servicio/[id]/page.tsx), no aquí.
+    let esServicios = false;
+    try {
+      const raw = localStorage.getItem("tenant");
+      if (raw) esServicios = JSON.parse(raw).tipo_negocio === "SERVICIOS";
+    } catch {}
+    const tipoQuery = esServicios ? "&tipo=SERVICIO" : "";
+    apiFetch<{ items: Producto[] }>(`/api/productos?pageSize=5000&activo=true${tipoQuery}`).then((d) => setProductos(d.items)).catch(() => {});
     apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
   }, []);
 

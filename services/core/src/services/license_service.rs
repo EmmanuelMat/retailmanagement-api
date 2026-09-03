@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::sign::Signer;
@@ -102,7 +102,12 @@ impl LicenseService {
     /// Barato: una lectura + una escritura de una sola fila.
     pub async fn check_and_update(&self, tenant_id: &str) -> Result<LicenseState> {
         let mut row = self.fetch(tenant_id).await?;
-        let now = Utc::now();
+        // Truncado a microsegundos: Postgres TIMESTAMPTZ solo guarda esa
+        // precisión, así que cualquier campo de fecha firmado con un `now`
+        // de mayor precisión (nanosegundos) produce una firma que ya no
+        // coincide en cuanto se relee de la fila - ver el bug real que esto
+        // arregla en `activate` más abajo.
+        let now = Utc::now().trunc_subsecs(6);
 
         // Fila recién creada (DEFAULT '' de la migración) todavía no tiene
         // firma propia - no es manipulación, solo falta la primera firma.
@@ -146,7 +151,14 @@ impl LicenseService {
     /// `X-Vendor-Secret` en `http_activar_licencia` (main.rs).
     pub async fn activate(&self, tenant_id: &str) -> Result<()> {
         let mut row = self.fetch(tenant_id).await?;
-        let now = Utc::now();
+        // Ver comentario en `check_and_update` - sin truncar, `license_activated_at`
+        // se firma con precisión de nanosegundos pero Postgres solo guarda
+        // microsegundos, así que la primera relectura de la fila (la próxima
+        // request autenticada) recalcula una firma distinta a la guardada y
+        // el tenant recién activado se marca como "manipulado" -> expired de
+        // inmediato. Este era el bug real detrás de "se desactiva justo
+        // después de activarlo".
+        let now = Utc::now().trunc_subsecs(6);
         row.license_status = "active".to_string();
         row.license_activated_at = Some(now);
         if row.last_seen_at < now {

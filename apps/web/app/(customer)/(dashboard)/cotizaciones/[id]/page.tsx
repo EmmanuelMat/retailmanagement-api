@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { FileText } from "lucide-react";
-import { Badge, Button, Card, CardContent, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Badge, Button, Card, CardContent, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch, ApiError } from "@/lib/api";
 
 interface CotizacionItem {
@@ -20,6 +20,7 @@ interface CotizacionItem {
 
 interface CotizacionDetalle {
   id: string;
+  cliente_id: string | null;
   subtotal: string;
   itbis_total: string;
   total: string;
@@ -30,6 +31,9 @@ interface CotizacionDetalle {
   items: CotizacionItem[];
 }
 
+interface Cliente { id: string; nombre: string; }
+interface AuditoriaEntry { id: string; accion: string; created_at: string; }
+
 const ESTADO_VARIANT: Record<string, "default" | "success" | "warning" | "destructive" | "secondary"> = {
   PENDIENTE: "warning",
   ACEPTADA: "default",
@@ -37,6 +41,15 @@ const ESTADO_VARIANT: Record<string, "default" | "success" | "warning" | "destru
   RECHAZADA: "destructive",
   VENCIDA: "secondary",
 };
+const ESTADO_LABEL: Record<string, string> = {
+  PENDIENTE: "Pendiente", ACEPTADA: "Aceptada", CONVERTIDA: "Convertida", RECHAZADA: "Rechazada", VENCIDA: "Vencida",
+};
+
+const TABS = [
+  { value: "resumen", label: "Resumen" },
+  { value: "conversion", label: "Conversión" },
+  { value: "actividad", label: "Actividad" },
+];
 
 export default function CotizacionDetallePage() {
   const params = useParams<{ id: string }>();
@@ -44,17 +57,11 @@ export default function CotizacionDetallePage() {
   const [cotizacion, setCotizacion] = useState<CotizacionDetalle | null>(null);
   const [error, setError] = useState("");
   const [rechazando, setRechazando] = useState(false);
+  const [tab, setTab] = useState("resumen");
 
-  const [metodoPago, setMetodoPago] = useState("EFECTIVO");
-  const [convirtiendo, setConvirtiendo] = useState(false);
-  const [convertirError, setConvertirError] = useState("");
-
-  const [mostrarAprobacion, setMostrarAprobacion] = useState(false);
-  const [aprobacionMensaje, setAprobacionMensaje] = useState("");
-  const [adminEmail, setAdminEmail] = useState("");
-  const [adminPassword, setAdminPassword] = useState("");
+  const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [auditoria, setAuditoria] = useState<AuditoriaEntry[]>([]);
   const [esServicios, setEsServicios] = useState(false);
-  const [convirtiendoOrden, setConvirtiendoOrden] = useState(false);
 
   useEffect(() => {
     try {
@@ -67,7 +74,20 @@ export default function CotizacionDetallePage() {
     apiFetch<CotizacionDetalle>(`/api/cotizaciones/${params.id}`).then(setCotizacion).catch((e) => setError(e.message));
   }
 
-  useEffect(() => { load(); }, [params.id]);
+  useEffect(() => {
+    load();
+    apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.id]);
+
+  useEffect(() => {
+    if (tab !== "actividad" || !params.id) return;
+    apiFetch<{ items: AuditoriaEntry[] }>(`/api/auditoria?entidad=cotizacion&entidadId=${params.id}&pageSize=50&sortBy=created_at&sortDir=desc`)
+      .then((d) => setAuditoria(d.items))
+      .catch(() => {});
+  }, [tab, params.id]);
+
+  const clienteNombre = clientes.find((c) => c.id === cotizacion?.cliente_id)?.nombre;
 
   async function handleRechazar() {
     setRechazando(true);
@@ -81,14 +101,131 @@ export default function CotizacionDetallePage() {
     }
   }
 
+  if (error && !cotizacion) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-xl">{error}</div>;
+  if (!cotizacion) return <p className="text-sm text-muted-foreground">Cargando...</p>;
+
+  const codigo = `COT-${cotizacion.id.slice(0, 8).toUpperCase()}`;
+  const puedeConvertir = cotizacion.estado === "PENDIENTE" || cotizacion.estado === "ACEPTADA";
+
+  return (
+    <div className="space-y-4 max-w-6xl">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-2xl font-bold font-serif tracking-tight">Cotización</h1>
+          <span className="font-mono text-sm text-muted-foreground">{codigo}</span>
+          <Badge variant={ESTADO_VARIANT[cotizacion.estado] || "default"}>{ESTADO_LABEL[cotizacion.estado] || cotizacion.estado}</Badge>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <Link href={`/imprimir/cotizacion/${cotizacion.id}` as any} target="_blank">
+            <Button size="sm" variant="secondary"><FileText className="h-3.5 w-3.5" />Imprimir</Button>
+          </Link>
+          {puedeConvertir && (
+            <Button size="sm" variant="destructive" disabled={rechazando} onClick={handleRechazar}>Rechazar</Button>
+          )}
+        </div>
+      </div>
+
+      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{error}</div>}
+
+      <Card>
+        <CardContent className="pt-5 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+          <div><p className="text-xs text-muted-foreground">Cliente</p><p className="font-medium">{clienteNombre || "Consumidor final"}</p></div>
+          <div><p className="text-xs text-muted-foreground">Fecha</p><p className="text-muted-foreground">{new Date(cotizacion.created_at).toLocaleDateString("es-DO")}</p></div>
+          <div><p className="text-xs text-muted-foreground">Válida hasta</p><p className="text-muted-foreground">{cotizacion.fecha_vencimiento ? new Date(cotizacion.fecha_vencimiento).toLocaleDateString("es-DO") : "—"}</p></div>
+          <div><p className="text-xs text-muted-foreground">Venta destino</p><p className="text-muted-foreground">{cotizacion.venta_id ? <Link href={`/ventas/${cotizacion.venta_id}` as any} className="text-primary hover:underline">Ver venta</Link> : "—"}</p></div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <Tabs items={TABS} value={tab} onChange={setTab} className="px-4" />
+        <CardContent className="pt-5">
+          {tab === "resumen" && <ResumenTab cotizacion={cotizacion} />}
+          {tab === "conversion" && (
+            <ConversionTab
+              cotizacion={cotizacion}
+              puedeConvertir={puedeConvertir}
+              esServicios={esServicios}
+              onConvertida={(destino) => router.push(destino as any)}
+            />
+          )}
+          {tab === "actividad" && <ActividadTab entradas={auditoria} />}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function TotalsBox({ cotizacion }: { cotizacion: CotizacionDetalle }) {
+  return (
+    <div className="text-sm space-y-1 max-w-xs ml-auto pt-3">
+      <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatDOP(cotizacion.subtotal)}</span></div>
+      <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(cotizacion.itbis_total)}</span></div>
+      <div className="flex justify-between font-bold text-base pt-1 border-t border-border mt-1"><span>Total</span><span className="tabular-nums">{formatDOP(cotizacion.total)}</span></div>
+    </div>
+  );
+}
+
+function ResumenTab({ cotizacion }: { cotizacion: CotizacionDetalle }) {
+  return (
+    <div className="space-y-4">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>SKU</TableHead>
+            <TableHead>Producto</TableHead>
+            <TableHead className="text-right">Cant.</TableHead>
+            <TableHead className="text-right">Precio</TableHead>
+            <TableHead className="text-right">Descuento</TableHead>
+            <TableHead className="text-right">Subtotal</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {cotizacion.items.map((it) => (
+            <TableRow key={it.id}>
+              <TableCell className="font-mono text-xs text-muted-foreground">{it.sku}</TableCell>
+              <TableCell className="font-medium">{it.nombre}</TableCell>
+              <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
+              <TableCell className="text-right tabular-nums">{formatDOP(it.precio_unitario)}</TableCell>
+              <TableCell className="text-right tabular-nums">{formatDOP(it.descuento)}</TableCell>
+              <TableCell className="text-right tabular-nums font-medium">{formatDOP(it.subtotal)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      <TotalsBox cotizacion={cotizacion} />
+    </div>
+  );
+}
+
+function ConversionTab({
+  cotizacion,
+  puedeConvertir,
+  esServicios,
+  onConvertida,
+}: {
+  cotizacion: CotizacionDetalle;
+  puedeConvertir: boolean;
+  esServicios: boolean;
+  onConvertida: (destino: string) => void;
+}) {
+  const [metodoPago, setMetodoPago] = useState("EFECTIVO");
+  const [convirtiendo, setConvirtiendo] = useState(false);
+  const [convertirError, setConvertirError] = useState("");
+  const [convirtiendoOrden, setConvirtiendoOrden] = useState(false);
+
+  const [mostrarAprobacion, setMostrarAprobacion] = useState(false);
+  const [aprobacionMensaje, setAprobacionMensaje] = useState("");
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+
   async function handleConvertirAOrden() {
     setConvirtiendoOrden(true);
-    setError("");
+    setConvertirError("");
     try {
-      const orden = await apiFetch<{ id: string }>(`/api/cotizaciones/${params.id}/convertir-a-orden`, { method: "POST", body: JSON.stringify({}) });
-      router.push(`/ordenes-servicio/${orden.id}` as any);
+      const orden = await apiFetch<{ id: string }>(`/api/cotizaciones/${cotizacion.id}/convertir-a-orden`, { method: "POST", body: JSON.stringify({}) });
+      onConvertida(`/ordenes-servicio/${orden.id}`);
     } catch (e: any) {
-      setError(e.message);
+      setConvertirError(e.message);
     } finally {
       setConvirtiendoOrden(false);
     }
@@ -98,18 +235,16 @@ export default function CotizacionDetallePage() {
     setConvirtiendo(true);
     setConvertirError("");
     try {
-      const venta = await apiFetch<{ id: string }>(`/api/cotizaciones/${params.id}/convertir`, {
+      const venta = await apiFetch<{ id: string }>(`/api/cotizaciones/${cotizacion.id}/convertir`, {
         method: "POST",
         body: JSON.stringify({ metodo_pago: metodoPago, aprobacion_admin: adminCreds }),
       });
       setMostrarAprobacion(false);
-      router.push(`/ventas/${venta.id}` as any);
+      onConvertida(`/ventas/${venta.id}`);
     } catch (e: any) {
       if (e instanceof ApiError && e.status === 403 && e.message.startsWith("DESCUENTO_REQUIERE_APROBACION")) {
         setAprobacionMensaje(e.message);
         setMostrarAprobacion(true);
-      } else if (adminCreds) {
-        setConvertirError(e.message);
       } else {
         setConvertirError(e.message);
       }
@@ -118,97 +253,40 @@ export default function CotizacionDetallePage() {
     }
   }
 
-  if (error) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-2xl">{error}</div>;
-  if (!cotizacion) return <p className="text-sm text-muted-foreground">Cargando...</p>;
+  if (cotizacion.venta_id) {
+    return (
+      <div className="rounded-md border border-success/20 bg-success/10 text-success p-3 text-sm">
+        Convertida en venta — <Link href={`/ventas/${cotizacion.venta_id}` as any} className="underline font-medium">ver venta</Link>.
+      </div>
+    );
+  }
 
-  const puedeConvertir = cotizacion.estado === "PENDIENTE" || cotizacion.estado === "ACEPTADA";
+  if (!puedeConvertir) {
+    return (
+      <div className="text-center py-8 text-muted-foreground">
+        <p className="text-sm">Esta cotización ya no se puede convertir.</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6 max-w-6xl">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold font-serif tracking-tight">Cotización</h1>
-          <p className="text-sm text-muted-foreground mt-1">{new Date(cotizacion.created_at).toLocaleString("es-DO")}</p>
-        </div>
-        <div className="text-right space-y-2">
-          <Badge variant={ESTADO_VARIANT[cotizacion.estado] || "default"}>{cotizacion.estado}</Badge>
-          <div className="flex justify-end gap-2">
-            <Link href={`/imprimir/cotizacion/${cotizacion.id}` as any} target="_blank">
-              <Button size="sm" variant="secondary"><FileText className="h-3.5 w-3.5" />Imprimir</Button>
-            </Link>
-            {puedeConvertir && (
-              <Button size="sm" variant="secondary" onClick={handleRechazar} disabled={rechazando}>Rechazar</Button>
-            )}
-          </div>
-        </div>
+    <div className="max-w-xs space-y-3">
+      <div className="space-y-1.5">
+        <Label htmlFor="metodo">Método de pago</Label>
+        <Select id="metodo" value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
+          <option value="EFECTIVO">Efectivo</option>
+          <option value="TARJETA">Tarjeta</option>
+          <option value="TRANSFERENCIA">Transferencia</option>
+          <option value="FIADO">{esServicios ? "A crédito" : "Fiado"}</option>
+        </Select>
       </div>
-
-      {cotizacion.venta_id && (
-        <div className="rounded-md border border-success/20 bg-success/10 text-success p-3 text-sm">
-          Convertida en venta — <a href={`/ventas/${cotizacion.venta_id}`} className="underline font-medium">ver venta</a>.
-        </div>
-      )}
-
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>SKU</TableHead>
-                <TableHead>Producto</TableHead>
-                <TableHead className="text-right">Cant.</TableHead>
-                <TableHead className="text-right">Precio</TableHead>
-                <TableHead className="text-right">Descuento</TableHead>
-                <TableHead className="text-right">Subtotal</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {cotizacion.items.map((it) => (
-                <TableRow key={it.id}>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{it.sku}</TableCell>
-                  <TableCell className="font-medium">{it.nombre}</TableCell>
-                  <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatDOP(it.precio_unitario)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatDOP(it.descuento)}</TableCell>
-                  <TableCell className="text-right tabular-nums font-medium">{formatDOP(it.subtotal)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="pt-5 space-y-1 text-sm max-w-xs ml-auto">
-          <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatDOP(cotizacion.subtotal)}</span></div>
-          <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(cotizacion.itbis_total)}</span></div>
-          <div className="flex justify-between font-bold text-base pt-1 border-t border-border mt-1"><span>Total</span><span className="tabular-nums">{formatDOP(cotizacion.total)}</span></div>
-        </CardContent>
-      </Card>
-
-      {puedeConvertir && (
-        <Card>
-          <CardContent className="pt-5 space-y-3 max-w-xs ml-auto">
-            <p className="text-sm font-semibold">Convertir a venta</p>
-            <div className="space-y-1.5">
-              <Label htmlFor="metodo">Método de pago</Label>
-              <Select id="metodo" value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
-                <option value="EFECTIVO">Efectivo</option>
-                <option value="TARJETA">Tarjeta</option>
-                <option value="TRANSFERENCIA">Transferencia</option>
-                <option value="FIADO">{esServicios ? "A crédito" : "Fiado"}</option>
-              </Select>
-            </div>
-            {convertirError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{convertirError}</div>}
-            <Button className="w-full" onClick={() => handleConvertir()} disabled={convirtiendo}>
-              {convirtiendo ? "Procesando..." : "Convertir a venta"}
-            </Button>
-            <Button className="w-full" variant="secondary" onClick={handleConvertirAOrden} disabled={convirtiendoOrden}>
-              {convirtiendoOrden ? "Procesando..." : "Convertir a orden de servicio"}
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+      {convertirError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{convertirError}</div>}
+      <Button className="w-full" onClick={() => handleConvertir()} disabled={convirtiendo}>
+        {convirtiendo ? "Procesando..." : "Convertir a venta"}
+      </Button>
+      <Button className="w-full" variant="secondary" onClick={handleConvertirAOrden} disabled={convirtiendoOrden}>
+        {convirtiendoOrden ? "Procesando..." : "Convertir a orden de servicio"}
+      </Button>
 
       {mostrarAprobacion && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -249,6 +327,23 @@ export default function CotizacionDetallePage() {
           </Card>
         </div>
       )}
+    </div>
+  );
+}
+
+function ActividadTab({ entradas }: { entradas: AuditoriaEntry[] }) {
+  if (entradas.length === 0) return <p className="text-sm text-muted-foreground py-6 text-center">Sin actividad registrada.</p>;
+  return (
+    <div className="space-y-3">
+      {entradas.map((e) => (
+        <div key={e.id} className="flex gap-3">
+          <div className="h-2 w-2 rounded-full bg-primary mt-1.5 shrink-0" />
+          <div>
+            <p className="text-sm">{e.accion.replaceAll("_", " ").toLowerCase()}</p>
+            <p className="text-xs text-muted-foreground font-mono">{new Date(e.created_at).toLocaleString("es-DO")}</p>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
