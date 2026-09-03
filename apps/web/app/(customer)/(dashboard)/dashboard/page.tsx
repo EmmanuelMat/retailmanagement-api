@@ -58,7 +58,7 @@ function DashboardPageContent() {
     } catch {}
     apiFetch<{ codigo: string; activo: boolean }[]>("/api/tenants/me/modulos")
       .then((modulos) => setModulosActivos(new Set(modulos.filter((m) => m.activo).map((m) => m.codigo))))
-      .catch(() => {});
+      .catch(() => setModulosActivos(new Set()));
   }, []);
 
   const iaActiva = isModuloActivo("IA_ASISTENTE", modulosActivos);

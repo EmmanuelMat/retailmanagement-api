@@ -78,13 +78,18 @@ const ROUTE_MODULOS: [string, string][] = [
 ];
 
 /**
- * `modulosActivos === null` means "still loading" — never hide anything for
- * that, only once we actually know. Mirrors the backend: staff's
+ * `modulosActivos === null` means "still loading" — fails CLOSED (hide) for
+ * that window rather than open, so a tenant never sees a module they aren't
+ * entitled to even for a moment. The dashboard shell
+ * (app/(customer)/(dashboard)/layout.tsx) gates its own render on this
+ * resolving first, so in the normal path nothing calls this while it's
+ * still null; this default is the safe fallback for any other caller (or a
+ * fetch that fails and never resolves). Mirrors the backend: staff's
  * `tenant_modulos` configuration applies regardless of license status, so a
  * `trial` tenant sees exactly what staff assigned, not the full system.
  */
 export function isModuloAllowed(pathname: string, modulosActivos: Set<string> | null): boolean {
-  if (!modulosActivos) return true;
+  if (!modulosActivos) return false;
   const match = ROUTE_MODULOS.find(([prefix]) => pathname.startsWith(prefix));
   return !match || modulosActivos.has(match[1]);
 }
@@ -93,6 +98,6 @@ export function isModuloAllowed(pathname: string, modulosActivos: Set<string> | 
  * (e.g. the AI widget/digest, gated by IA_ASISTENTE) — check a module code
  * directly instead of matching a pathname prefix. */
 export function isModuloActivo(codigo: string, modulosActivos: Set<string> | null): boolean {
-  if (!modulosActivos) return true;
+  if (!modulosActivos) return false;
   return modulosActivos.has(codigo);
 }

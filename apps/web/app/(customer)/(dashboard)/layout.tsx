@@ -175,7 +175,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       .catch(() => {});
     apiFetch<{ codigo: string; activo: boolean }[]>("/api/tenants/me/modulos")
       .then((modulos) => setModulosActivos(new Set(modulos.filter((m) => m.activo).map((m) => m.codigo))))
-      .catch(() => {});
+      // Falla cerrado en vez de dejar modulosActivos en null para siempre -
+      // con la pantalla de carga de abajo, null eterno dejaría al usuario
+      // viendo el spinner indefinidamente en vez de un dashboard vacío.
+      .catch(() => setModulosActivos(new Set()));
   }, []);
 
   // El ícono de la pestaña del navegador sigue al negocio con sesión activa,
@@ -247,7 +250,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace("/dashboard?denied=dgii");
       return;
     }
-    if (!isModuloAllowed(pathname, modulosActivos)) {
+    // modulosActivos === null mientras carga - isModuloAllowed ahora falla
+    // cerrado para esos casos, así que hay que esperar a que resuelva antes
+    // de decidir un redirect, o toda página rebotaría a /dashboard en el
+    // primer render (antes de saber siquiera qué módulos tiene el tenant).
+    if (modulosActivos && !isModuloAllowed(pathname, modulosActivos)) {
       router.replace("/dashboard");
     }
   }, [pathname, usuario, tenant, modulosActivos, licencia, router]);
@@ -300,6 +307,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     .slice(0, 2)
     .join("")
     .toUpperCase();
+
+  // Nada del shell (sidebar, widget IA) se pinta hasta saber qué módulos
+  // tiene el tenant - de lo contrario aparecen por un instante ítems de
+  // módulos que el tenant no tiene, hasta que este fetch resuelve y el
+  // filtro de abajo los saca. Todos los hooks del componente ya se
+  // ejecutaron arriba, así que este return temprano no rompe su orden.
+  if (modulosActivos === null) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center gap-3 bg-background">
+        <div className="h-8 w-8 rounded-full border-2 border-border border-t-primary animate-spin" />
+        <p className="text-sm text-muted-foreground">Cargando tu negocio...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen overflow-hidden bg-background">
