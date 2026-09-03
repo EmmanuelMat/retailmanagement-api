@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
+import { FileText } from "lucide-react";
 import { Badge, Button, Card, CardContent, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { ESTADO_VARIANT } from "../estado-variant";
@@ -10,6 +12,7 @@ interface OrdenCompraItem {
   id: string;
   sku: string;
   nombre: string;
+  proveedor_id: string | null;
   cantidad_solicitada: string;
   cantidad_recibida: string;
   costo_unitario: string;
@@ -17,7 +20,6 @@ interface OrdenCompraItem {
 
 interface OrdenCompraDetalle {
   id: string;
-  proveedor_id: string;
   estado: string;
   subtotal: string;
   total: string;
@@ -103,20 +105,29 @@ export default function OrdenCompraDetallePage() {
   if (error && !orden) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-xl">{error}</div>;
   if (!orden) return <p className="text-sm text-muted-foreground">Cargando...</p>;
 
-  const proveedorNombre = proveedores.find((p) => p.id === orden.proveedor_id)?.nombre;
+  const proveedoresDistintos = new Set(orden.items.map((it) => it.proveedor_id).filter((id): id is string => !!id));
+  const proveedorResumen =
+    proveedoresDistintos.size === 0 ? "Sin proveedor" :
+    proveedoresDistintos.size === 1 ? proveedores.find((p) => p.id === [...proveedoresDistintos][0])?.nombre || "—" :
+    "Varios proveedores";
   const puedeRecibir = orden.estado === "BORRADOR" || orden.estado === "ENVIADA" || orden.estado === "RECIBIDA_PARCIAL";
   const puedeCancelar = orden.estado !== "RECIBIDA" && orden.estado !== "CANCELADA";
 
   return (
     <div className="space-y-6 max-w-6xl">
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold font-serif tracking-tight">Orden de Compra</h1>
-          <p className="text-sm text-muted-foreground mt-1">{proveedorNombre || "—"} · {new Date(orden.fecha).toLocaleDateString("es-DO")}</p>
+          <p className="text-sm text-muted-foreground mt-1">{proveedorResumen} · {new Date(orden.fecha).toLocaleDateString("es-DO")}</p>
         </div>
         <div className="text-right space-y-2">
           <Badge variant={ESTADO_VARIANT[orden.estado] || "default"}>{ESTADO_LABEL[orden.estado] || orden.estado}</Badge>
-          {puedeCancelar && <div><Button size="sm" variant="destructive" onClick={handleCancelar}>Cancelar orden</Button></div>}
+          <div className="flex gap-2 justify-end">
+            <Link href={`/imprimir/orden-compra/${orden.id}` as any} target="_blank">
+              <Button size="sm" variant="secondary"><FileText className="h-3.5 w-3.5" />Imprimir</Button>
+            </Link>
+            {puedeCancelar && <Button size="sm" variant="destructive" onClick={handleCancelar}>Cancelar orden</Button>}
+          </div>
         </div>
       </div>
 
@@ -126,6 +137,7 @@ export default function OrdenCompraDetallePage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Producto</TableHead>
+                <TableHead>Proveedor</TableHead>
                 <TableHead className="text-right">Solicitado</TableHead>
                 <TableHead className="text-right">Recibido</TableHead>
                 <TableHead className="text-right">Costo c/u</TableHead>
@@ -138,6 +150,7 @@ export default function OrdenCompraDetallePage() {
                 return (
                   <TableRow key={it.id}>
                     <TableCell className="font-medium">{it.nombre}</TableCell>
+                    <TableCell className="text-muted-foreground">{proveedores.find((p) => p.id === it.proveedor_id)?.nombre || "—"}</TableCell>
                     <TableCell className="text-right tabular-nums">{it.cantidad_solicitada}</TableCell>
                     <TableCell className="text-right tabular-nums">{it.cantidad_recibida}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatDOP(it.costo_unitario)}</TableCell>

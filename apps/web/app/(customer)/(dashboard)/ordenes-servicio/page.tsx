@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { Wrench, Plus, Search } from "lucide-react";
+import { Wrench, Plus, Printer, Search } from "lucide-react";
 import {
   Badge, Button, Input, Select,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
@@ -143,6 +143,7 @@ function OrdenesServicioPageContent() {
               <SortableTableHead column="fecha_programada" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Programada</SortableTableHead>
               <SortableTableHead column="estado" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Estado</SortableTableHead>
               <SortableTableHead column="total" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Total</SortableTableHead>
+              <TableHead className="w-16 text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -157,6 +158,11 @@ function OrdenesServicioPageContent() {
                 <TableCell className="text-muted-foreground">{o.fecha_programada ? new Date(o.fecha_programada).toLocaleDateString("es-DO") : "—"}</TableCell>
                 <TableCell><Badge variant={ESTADO_VARIANT[o.estado] || "default"}>{ESTADO_LABEL[o.estado] || o.estado}</Badge></TableCell>
                 <TableCell className="text-right font-mono tabular-nums font-medium">{formatDOP(o.total)}</TableCell>
+                <TableCell className="text-right">
+                  <Link href={`/imprimir/orden-servicio/${o.id}` as any} target="_blank">
+                    <Button size="icon" variant="ghost" title="Imprimir"><Printer className="h-4 w-4" /></Button>
+                  </Link>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>

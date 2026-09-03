@@ -2,9 +2,10 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Receipt } from "lucide-react";
+import { Printer, Receipt } from "lucide-react";
 import {
   Badge,
+  Button,
   Input,
   Select,
   Table,
@@ -169,6 +170,7 @@ function VentasPageContent() {
               <SortableTableHead column="estado" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Estado DGII</SortableTableHead>
               <TableHead>Pago</TableHead>
               <SortableTableHead column="total" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Total</SortableTableHead>
+              <TableHead className="w-16 text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -182,6 +184,11 @@ function VentasPageContent() {
                 <TableCell>{v.estado_dgii ? <Badge variant={DGII_VARIANT[v.estado_dgii] || "default"}>{v.estado_dgii}</Badge> : <Badge variant="secondary">Sin emitir</Badge>}</TableCell>
                 <TableCell className="text-muted-foreground">{v.metodo_pago}</TableCell>
                 <TableCell className="text-right font-mono tabular-nums font-medium">{formatDOP(v.total)}</TableCell>
+                <TableCell className="text-right">
+                  <Link href={`/imprimir/venta/${v.id}` as any} target="_blank">
+                    <Button size="icon" variant="ghost" title="Imprimir"><Printer className="h-4 w-4" /></Button>
+                  </Link>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
