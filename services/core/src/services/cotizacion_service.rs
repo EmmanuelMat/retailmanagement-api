@@ -76,6 +76,11 @@ pub struct CreateCotizacionRequest {
     pub fecha_vencimiento: Option<NaiveDate>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateCotizacionClienteRequest {
+    pub cliente_id: Option<Uuid>,
+}
+
 pub struct CotizacionCompleta {
     pub cotizacion: Cotizacion,
     pub items: Vec<CotizacionItem>,
@@ -180,6 +185,144 @@ impl CotizacionService {
 
         tx.commit().await?;
         Ok(CotizacionCompleta { cotizacion, items })
+    }
+
+    async fn estado_actual(&self, tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, tenant_id: &str, id: Uuid) -> anyhow::Result<String> {
+        sqlx::query_scalar("SELECT estado FROM cotizaciones WHERE id = $1 AND tenant_id = $2 FOR UPDATE")
+            .bind(id)
+            .bind(tenant_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Cotización no encontrada"))
+    }
+
+    async fn recalcular_totales(&self, tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, cotizacion_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"UPDATE cotizaciones c SET
+                   subtotal = agg.subtotal, itbis_total = agg.itbis, total = agg.subtotal + agg.itbis
+               FROM (
+                   SELECT COALESCE(SUM(subtotal), 0) AS subtotal, COALESCE(SUM(itbis_monto), 0) AS itbis
+                   FROM cotizacion_items WHERE cotizacion_id = $1
+               ) agg
+               WHERE c.id = $1"#,
+        )
+        .bind(cotizacion_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Editable mientras la cotización siga PENDIENTE/ACEPTADA - una vez
+    /// CONVERTIDA (ya es una venta real u orden de servicio) o RECHAZADA no
+    /// tiene sentido seguir agregando líneas.
+    pub async fn add_item(&self, tenant_id: &str, cotizacion_id: Uuid, item: CreateCotizacionItemRequest) -> anyhow::Result<CotizacionItem> {
+        if item.cantidad <= Decimal::ZERO {
+            anyhow::bail!("La cantidad debe ser mayor a cero");
+        }
+        let mut tx = self.pool.begin().await?;
+        let estado = self.estado_actual(&mut tx, tenant_id, cotizacion_id).await?;
+        if estado == "CONVERTIDA" || estado == "RECHAZADA" {
+            anyhow::bail!("No se puede editar una cotización {}", estado.to_lowercase());
+        }
+
+        let row: Option<(String, String, Option<Decimal>, String, String)> = sqlx::query_as(
+            "SELECT sku, nombre, precio_venta, itbis_tipo, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
+        )
+        .bind(item.producto_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (sku, nombre, precio_venta_catalogo, itbis_tipo, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+
+        let precio_unitario = if tipo == "SERVICIO" {
+            let precio = item.precio_unitario.ok_or_else(|| anyhow::anyhow!("{} es un servicio: falta precio_unitario para esta línea", nombre))?;
+            if precio <= Decimal::ZERO {
+                anyhow::bail!("precio_unitario inválido para {}", nombre);
+            }
+            precio
+        } else {
+            precio_venta_catalogo.unwrap_or_default()
+        };
+
+        let descuento = item.descuento.unwrap_or_default();
+        let line_bruto = precio_unitario * item.cantidad;
+        if descuento < Decimal::ZERO || descuento > line_bruto {
+            anyhow::bail!("Descuento inválido para {}", nombre);
+        }
+        let line_subtotal = line_bruto - descuento;
+        let line_itbis = line_subtotal * itbis_rate(&itbis_tipo);
+
+        let ci = sqlx::query_as::<_, CotizacionItem>(
+            r#"INSERT INTO cotizacion_items (cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               RETURNING id, cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal"#,
+        )
+        .bind(cotizacion_id)
+        .bind(item.producto_id)
+        .bind(&sku)
+        .bind(&nombre)
+        .bind(item.cantidad)
+        .bind(precio_unitario)
+        .bind(descuento)
+        .bind(&itbis_tipo)
+        .bind(line_itbis)
+        .bind(line_subtotal)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        self.recalcular_totales(&mut tx, cotizacion_id).await?;
+        tx.commit().await?;
+        Ok(ci)
+    }
+
+    pub async fn remove_item(&self, tenant_id: &str, cotizacion_id: Uuid, item_id: Uuid) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let estado = self.estado_actual(&mut tx, tenant_id, cotizacion_id).await?;
+        if estado == "CONVERTIDA" || estado == "RECHAZADA" {
+            anyhow::bail!("No se puede editar una cotización {}", estado.to_lowercase());
+        }
+        let deleted = sqlx::query("DELETE FROM cotizacion_items WHERE id = $1 AND cotizacion_id = $2")
+            .bind(item_id)
+            .bind(cotizacion_id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            anyhow::bail!("Línea no encontrada");
+        }
+        self.recalcular_totales(&mut tx, cotizacion_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// `cliente_id = None` limpia el cliente (vuelve a "Consumidor final") -
+    /// el picker siempre manda su selección completa, nunca un campo omitido.
+    pub async fn update_cliente(&self, tenant_id: &str, cotizacion_id: Uuid, cliente_id: Option<Uuid>) -> anyhow::Result<Cotizacion> {
+        let mut tx = self.pool.begin().await?;
+        let estado = self.estado_actual(&mut tx, tenant_id, cotizacion_id).await?;
+        if estado == "CONVERTIDA" || estado == "RECHAZADA" {
+            anyhow::bail!("No se puede editar una cotización {}", estado.to_lowercase());
+        }
+        if let Some(cid) = cliente_id {
+            let existe: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM clientes WHERE id = $1 AND tenant_id = $2")
+                .bind(cid)
+                .bind(tenant_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if existe.is_none() {
+                anyhow::bail!("Cliente no encontrado");
+            }
+        }
+        let cotizacion = sqlx::query_as::<_, Cotizacion>(
+            r#"UPDATE cotizaciones SET cliente_id = $1 WHERE id = $2 AND tenant_id = $3
+               RETURNING id, tenant_id, cliente_id, usuario_id, subtotal, itbis_total, total, estado, fecha_vencimiento, venta_id, created_at"#,
+        )
+        .bind(cliente_id)
+        .bind(cotizacion_id)
+        .bind(tenant_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(cotizacion)
     }
 
     const COTIZACIONES_SORTABLE: &'static [(&'static str, &'static str)] = &[

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
 import { Button, Card, CardContent, Input, Label, Select, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
+import { ClientePicker } from "../../cliente-picker";
 
 interface Producto {
   id: string;
@@ -13,11 +14,6 @@ interface Producto {
   itbis_tipo: string;
   precio_venta: string | null;
   tipo: "PRODUCTO" | "SERVICIO";
-}
-
-interface Cliente {
-  id: string;
-  nombre: string;
 }
 
 interface Linea {
@@ -34,7 +30,6 @@ const ITBIS_RATE: Record<string, number> = { GRAVADO_18: 0.18, GRAVADO_16: 0.16,
 export default function NuevaCotizacionPage() {
   const router = useRouter();
   const [productos, setProductos] = useState<Producto[]>([]);
-  const [clientes, setClientes] = useState<Cliente[]>([]);
   const [clienteId, setClienteId] = useState("");
   const [fechaVencimiento, setFechaVencimiento] = useState("");
   const [lineas, setLineas] = useState<Linea[]>([{ productoId: "", cantidad: "", descuento: "", precioUnitario: "" }]);
@@ -51,7 +46,6 @@ export default function NuevaCotizacionPage() {
     } catch {}
     const tipoQuery = esServicios ? "&tipo=SERVICIO" : "";
     apiFetch<{ items: Producto[] }>(`/api/productos?pageSize=5000&activo=true${tipoQuery}`).then((d) => setProductos(d.items)).catch(() => {});
-    apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
   }, []);
 
   function updateLinea(i: number, patch: Partial<Linea>) {
@@ -132,14 +126,8 @@ export default function NuevaCotizacionPage() {
       <Card>
         <CardContent className="pt-5">
           <form onSubmit={handleSubmit} className="space-y-5">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="cliente">Cliente</Label>
-                <Select id="cliente" value={clienteId} onChange={(e) => setClienteId(e.target.value)}>
-                  <option value="">Consumidor final</option>
-                  {clientes.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-                </Select>
-              </div>
+            <div className="grid grid-cols-2 gap-4 items-start">
+              <ClientePicker clienteId={clienteId} onChange={setClienteId} />
               <div className="space-y-1.5">
                 <Label htmlFor="vence">Válida hasta</Label>
                 <Input id="vence" type="date" value={fechaVencimiento} onChange={(e) => setFechaVencimiento(e.target.value)} />
