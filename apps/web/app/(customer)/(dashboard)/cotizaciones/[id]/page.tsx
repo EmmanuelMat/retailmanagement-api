@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { FileText } from "lucide-react";
-import { Badge, Button, Card, CardContent, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { FileText, Plus, Trash2 } from "lucide-react";
+import { Badge, Button, Card, CardContent, Dialog, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch, ApiError } from "@/lib/api";
+import { ClientePicker } from "../../cliente-picker";
 
 interface CotizacionItem {
   id: string;
@@ -16,6 +17,15 @@ interface CotizacionItem {
   descuento: string;
   itbis_monto: string;
   subtotal: string;
+}
+
+interface Producto {
+  id: string;
+  sku: string;
+  nombre: string;
+  itbis_tipo: string;
+  precio_venta: string | null;
+  tipo: "PRODUCTO" | "SERVICIO";
 }
 
 interface CotizacionDetalle {
@@ -60,8 +70,12 @@ export default function CotizacionDetallePage() {
   const [tab, setTab] = useState("resumen");
 
   const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [productos, setProductos] = useState<Producto[]>([]);
   const [auditoria, setAuditoria] = useState<AuditoriaEntry[]>([]);
   const [esServicios, setEsServicios] = useState(false);
+  const [cambiandoCliente, setCambiandoCliente] = useState(false);
+  const [nuevoClienteId, setNuevoClienteId] = useState("");
+  const [guardandoCliente, setGuardandoCliente] = useState(false);
 
   useEffect(() => {
     try {
@@ -77,8 +91,27 @@ export default function CotizacionDetallePage() {
   useEffect(() => {
     load();
     apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
+    const tipoQuery = esServicios ? "&tipo=SERVICIO" : "";
+    apiFetch<{ items: Producto[] }>(`/api/productos?pageSize=5000&activo=true${tipoQuery}`).then((d) => setProductos(d.items)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.id]);
+  }, [params.id, esServicios]);
+
+  async function handleGuardarCliente() {
+    setGuardandoCliente(true);
+    setError("");
+    try {
+      await apiFetch(`/api/cotizaciones/${params.id}/cliente`, {
+        method: "PUT",
+        body: JSON.stringify({ cliente_id: nuevoClienteId || null }),
+      });
+      setCambiandoCliente(false);
+      load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setGuardandoCliente(false);
+    }
+  }
 
   useEffect(() => {
     if (tab !== "actividad" || !params.id) return;
@@ -106,6 +139,9 @@ export default function CotizacionDetallePage() {
 
   const codigo = `COT-${cotizacion.id.slice(0, 8).toUpperCase()}`;
   const puedeConvertir = cotizacion.estado === "PENDIENTE" || cotizacion.estado === "ACEPTADA";
+  // Igual que el guard en cotizacion_service.rs::add_item/remove_item/update_cliente -
+  // ya no se puede editar una vez CONVERTIDA (venta/orden real) o RECHAZADA.
+  const puedeEditar = cotizacion.estado !== "CONVERTIDA" && cotizacion.estado !== "RECHAZADA";
 
   return (
     <div className="space-y-4 max-w-6xl">
@@ -129,17 +165,45 @@ export default function CotizacionDetallePage() {
 
       <Card>
         <CardContent className="pt-5 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
-          <div><p className="text-xs text-muted-foreground">Cliente</p><p className="font-medium">{clienteNombre || "Consumidor final"}</p></div>
+          <div>
+            <p className="text-xs text-muted-foreground">Cliente</p>
+            <p className="font-medium flex items-center gap-2">
+              {clienteNombre || "Consumidor final"}
+              {puedeEditar && (
+                <button
+                  type="button"
+                  className="text-xs font-normal text-primary hover:underline"
+                  onClick={() => { setNuevoClienteId(cotizacion.cliente_id || ""); setCambiandoCliente(true); }}
+                >
+                  Cambiar
+                </button>
+              )}
+            </p>
+          </div>
           <div><p className="text-xs text-muted-foreground">Fecha</p><p className="text-muted-foreground">{new Date(cotizacion.created_at).toLocaleDateString("es-DO")}</p></div>
           <div><p className="text-xs text-muted-foreground">Válida hasta</p><p className="text-muted-foreground">{cotizacion.fecha_vencimiento ? new Date(cotizacion.fecha_vencimiento).toLocaleDateString("es-DO") : "—"}</p></div>
           <div><p className="text-xs text-muted-foreground">Venta destino</p><p className="text-muted-foreground">{cotizacion.venta_id ? <Link href={`/ventas/${cotizacion.venta_id}` as any} className="text-primary hover:underline">Ver venta</Link> : "—"}</p></div>
         </CardContent>
       </Card>
 
+      <Dialog open={cambiandoCliente} onClose={() => setCambiandoCliente(false)} title="Cambiar cliente">
+        <div className="space-y-4">
+          <ClientePicker clienteId={nuevoClienteId} onChange={setNuevoClienteId} />
+          <div className="flex gap-3">
+            <Button className="flex-1" disabled={guardandoCliente} onClick={handleGuardarCliente}>
+              {guardandoCliente ? "Guardando..." : "Guardar"}
+            </Button>
+            <Button variant="secondary" onClick={() => setCambiandoCliente(false)}>Cancelar</Button>
+          </div>
+        </div>
+      </Dialog>
+
       <Card>
         <Tabs items={TABS} value={tab} onChange={setTab} className="px-4" />
         <CardContent className="pt-5">
-          {tab === "resumen" && <ResumenTab cotizacion={cotizacion} />}
+          {tab === "resumen" && (
+            <ResumenTab cotizacion={cotizacion} productos={productos} puedeEditar={puedeEditar} onChanged={load} />
+          )}
           {tab === "conversion" && (
             <ConversionTab
               cotizacion={cotizacion}
@@ -165,7 +229,71 @@ function TotalsBox({ cotizacion }: { cotizacion: CotizacionDetalle }) {
   );
 }
 
-function ResumenTab({ cotizacion }: { cotizacion: CotizacionDetalle }) {
+function ResumenTab({
+  cotizacion,
+  productos,
+  puedeEditar,
+  onChanged,
+}: {
+  cotizacion: CotizacionDetalle;
+  productos: Producto[];
+  puedeEditar: boolean;
+  onChanged: () => void;
+}) {
+  const [productoId, setProductoId] = useState("");
+  const [cantidad, setCantidad] = useState("");
+  const [descuento, setDescuento] = useState("");
+  const [precioUnitario, setPrecioUnitario] = useState("");
+  const [agregando, setAgregando] = useState(false);
+  const [quitandoId, setQuitandoId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const prodSel = productos.find((p) => p.id === productoId);
+  const esServicio = prodSel?.tipo === "SERVICIO";
+
+  async function handleAdd() {
+    if (!productoId || !cantidad) return;
+    if (esServicio && !(Number(precioUnitario) > 0)) {
+      setError("Escribe el precio de este servicio.");
+      return;
+    }
+    setAgregando(true);
+    setError("");
+    try {
+      await apiFetch(`/api/cotizaciones/${cotizacion.id}/items`, {
+        method: "POST",
+        body: JSON.stringify({
+          producto_id: productoId,
+          cantidad,
+          descuento: descuento || undefined,
+          precio_unitario: esServicio ? precioUnitario : undefined,
+        }),
+      });
+      setProductoId("");
+      setCantidad("");
+      setDescuento("");
+      setPrecioUnitario("");
+      onChanged();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setAgregando(false);
+    }
+  }
+
+  async function handleRemove(itemId: string) {
+    setQuitandoId(itemId);
+    setError("");
+    try {
+      await apiFetch(`/api/cotizaciones/${cotizacion.id}/items/${itemId}`, { method: "DELETE" });
+      onChanged();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setQuitandoId(null);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Table>
@@ -177,6 +305,7 @@ function ResumenTab({ cotizacion }: { cotizacion: CotizacionDetalle }) {
             <TableHead className="text-right">Precio</TableHead>
             <TableHead className="text-right">Descuento</TableHead>
             <TableHead className="text-right">Subtotal</TableHead>
+            {puedeEditar && <TableHead className="w-10" />}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -188,10 +317,41 @@ function ResumenTab({ cotizacion }: { cotizacion: CotizacionDetalle }) {
               <TableCell className="text-right tabular-nums">{formatDOP(it.precio_unitario)}</TableCell>
               <TableCell className="text-right tabular-nums">{formatDOP(it.descuento)}</TableCell>
               <TableCell className="text-right tabular-nums font-medium">{formatDOP(it.subtotal)}</TableCell>
+              {puedeEditar && (
+                <TableCell className="text-right">
+                  <Button size="icon" variant="ghost" disabled={quitandoId === it.id} onClick={() => handleRemove(it.id)}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </TableCell>
+              )}
             </TableRow>
           ))}
         </TableBody>
       </Table>
+
+      {puedeEditar && (
+        <div className={`grid gap-2 items-end ${esServicio ? "grid-cols-[1fr_90px_110px_110px_auto]" : "grid-cols-[1fr_90px_110px_auto]"}`}>
+          <Select value={productoId} onChange={(e) => setProductoId(e.target.value)}>
+            <option value="">Producto…</option>
+            {productos.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.sku} · {p.nombre} {p.tipo === "SERVICIO" ? "(servicio)" : `(${formatDOP(p.precio_venta || "0")})`}
+              </option>
+            ))}
+          </Select>
+          <Input type="number" step="0.01" placeholder="Cant." value={cantidad} onChange={(e) => setCantidad(e.target.value)} />
+          {esServicio && (
+            <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />
+          )}
+          <Input type="number" step="0.01" placeholder="Descuento RD$" value={descuento} onChange={(e) => setDescuento(e.target.value)} />
+          <Button type="button" size="sm" disabled={agregando || !productoId || !cantidad} onClick={handleAdd}>
+            <Plus className="h-4 w-4" />{agregando ? "..." : "Agregar"}
+          </Button>
+        </div>
+      )}
+
+      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{error}</div>}
+
       <TotalsBox cotizacion={cotizacion} />
     </div>
   );

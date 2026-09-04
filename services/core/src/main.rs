@@ -576,6 +576,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/notas-credito/:id", get(http_get_nota_credito))
         .route("/v1/cotizaciones", get(http_list_cotizaciones).post(http_create_cotizacion))
         .route("/v1/cotizaciones/:id", get(http_get_cotizacion))
+        .route("/v1/cotizaciones/:id/items", post(http_add_cotizacion_item))
+        .route("/v1/cotizaciones/:id/items/:item_id", axum::routing::delete(http_remove_cotizacion_item))
+        .route("/v1/cotizaciones/:id/cliente", axum::routing::put(http_update_cotizacion_cliente))
         .route("/v1/cotizaciones/:id/rechazar", post(http_rechazar_cotizacion))
         .route("/v1/cotizaciones/:id/convertir", post(http_convertir_cotizacion))
         .route("/v1/conduces", get(http_list_conduces).post(http_create_conduce))
@@ -2630,6 +2633,41 @@ async fn http_get_cotizacion(
     let completa = state.cotizacion_service.get_cotizacion(&claims.tenant_id, id).await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     Ok(Json(CotizacionCompletaResponse { cotizacion: completa.cotizacion, items: completa.items }))
+}
+
+async fn http_add_cotizacion_item(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::cotizacion_service::CreateCotizacionItemRequest>,
+) -> Result<Json<services::cotizacion_service::CotizacionItem>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let item = state.cotizacion_service.add_item(&claims.tenant_id, id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(item))
+}
+
+async fn http_remove_cotizacion_item(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((id, item_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.cotizacion_service.remove_item(&claims.tenant_id, id, item_id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn http_update_cotizacion_cliente(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::cotizacion_service::UpdateCotizacionClienteRequest>,
+) -> Result<Json<services::cotizacion_service::Cotizacion>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let cotizacion = state.cotizacion_service.update_cliente(&claims.tenant_id, id, req.cliente_id).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(cotizacion))
 }
 
 async fn http_rechazar_cotizacion(
