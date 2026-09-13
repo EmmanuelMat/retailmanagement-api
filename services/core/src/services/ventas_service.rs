@@ -78,6 +78,10 @@ pub struct VentaItem {
     /// usado por contabilidad_service::sincronizar para el asiento de Costo
     /// de Ventas. NULL en filas de antes de esta columna existir.
     pub costo_unitario: Option<Decimal>,
+    /// Nota de línea libre - viaja desde cotizacion_items.descripcion cuando
+    /// la venta viene de convertir una cotización; NULL para una venta
+    /// directa (POS).
+    pub descripcion: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -104,6 +108,7 @@ pub struct CreateVentaItemRequest {
     /// normal: el precio siempre viene de `productos.precio_venta`, nunca del
     /// cliente, para no permitir manipular el precio de un ítem con precio fijo.
     pub precio_unitario: Option<Decimal>,
+    pub descripcion: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,7 +183,7 @@ impl VentasService {
         let mut subtotal_total = Decimal::ZERO;
         let mut itbis_total = Decimal::ZERO;
         let mut descuento_total = Decimal::ZERO;
-        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal, Decimal, String)> = Vec::new();
+        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal, Decimal, String, Option<String>)> = Vec::new();
 
         for item in &req.items {
             if item.cantidad <= Decimal::ZERO {
@@ -234,7 +239,7 @@ impl VentasService {
                     .await?;
             }
 
-            lineas.push((item.producto_id, sku, nombre, item.cantidad, precio_venta, descuento, itbis_tipo, line_itbis, line_subtotal, costo, tipo));
+            lineas.push((item.producto_id, sku, nombre, item.cantidad, precio_venta, descuento, itbis_tipo, line_itbis, line_subtotal, costo, tipo, item.descripcion.clone()));
         }
 
         // ADMIN siempre puede descontar lo que sea. Cualquier otro rol (en la
@@ -307,11 +312,11 @@ impl VentasService {
         };
 
         let mut items = Vec::new();
-        for (producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal, costo, tipo) in lineas {
+        for (producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal, costo, tipo, descripcion) in lineas {
             let vi = sqlx::query_as::<_, VentaItem>(
-                r#"INSERT INTO venta_items (venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                   RETURNING id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario"#,
+                r#"INSERT INTO venta_items (venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario, descripcion)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                   RETURNING id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario, descripcion"#,
             )
             .bind(venta.id)
             .bind(producto_id)
@@ -325,6 +330,7 @@ impl VentasService {
             .bind(line_subtotal)
             .bind(cantidad_entregada_inicial(cantidad, &tipo))
             .bind(costo)
+            .bind(&descripcion)
             .fetch_one(&mut *tx)
             .await?;
             items.push(vi);

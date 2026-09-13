@@ -2720,6 +2720,7 @@ async fn http_convertir_cotizacion(
             // un Servicio sin precio de catálogo) - se reusa tal cual, no se
             // vuelve a pedir en la conversión.
             precio_unitario: Some(it.precio_unitario),
+            descripcion: it.descripcion.clone(),
         }).collect(),
         metodo_pago: req.metodo_pago,
         tipo_ecf: req.tipo_ecf,
@@ -3222,6 +3223,7 @@ async fn http_facturar_orden(
             cantidad: it.cantidad,
             descuento: Some(it.descuento),
             precio_unitario: Some(it.precio_unitario),
+            descripcion: None,
         }).collect(),
         metodo_pago: req.metodo_pago,
         tipo_ecf: req.tipo_ecf,

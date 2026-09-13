@@ -47,6 +47,7 @@ pub struct CotizacionItem {
     pub itbis_tipo: String,
     pub itbis_monto: Decimal,
     pub subtotal: Decimal,
+    pub descripcion: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -64,9 +65,12 @@ pub struct CreateCotizacionItemRequest {
     pub producto_id: Uuid,
     pub cantidad: Decimal,
     pub descuento: Option<Decimal>,
-    /// Requerido cuando el producto es tipo SERVICIO - ver el mismo campo en
-    /// ventas_service::CreateVentaItemRequest.
+    /// Siempre requerido - a diferencia de ventas_service::CreateVentaItemRequest,
+    /// una cotización nunca usa el precio de catálogo automáticamente (ver
+    /// docs/superpowers/specs/2026-09-13-cotizacion-servicio-pricing-design.md).
     pub precio_unitario: Option<Decimal>,
+    /// Nota de línea libre, opcional.
+    pub descripcion: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,7 +108,7 @@ impl CotizacionService {
 
         let mut subtotal_total = Decimal::ZERO;
         let mut itbis_total = Decimal::ZERO;
-        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal)> = Vec::new();
+        let mut lineas: Vec<(Uuid, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal, Option<String>)> = Vec::new();
 
         // A diferencia de create_venta, aquí NO se bloquea la fila con FOR
         // UPDATE ni se descuenta stock - una cotización no reserva inventario.
@@ -112,24 +116,19 @@ impl CotizacionService {
             if item.cantidad <= Decimal::ZERO {
                 anyhow::bail!("La cantidad debe ser mayor a cero");
             }
-            let row: Option<(String, String, Option<Decimal>, String, String)> = sqlx::query_as(
-                "SELECT sku, nombre, precio_venta, itbis_tipo, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
+            let row: Option<(String, String, String)> = sqlx::query_as(
+                "SELECT sku, nombre, itbis_tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
             )
             .bind(item.producto_id)
             .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let (sku, nombre, precio_venta_catalogo, itbis_tipo, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+            let (sku, nombre, itbis_tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
 
-            let precio_venta = if tipo == "SERVICIO" {
-                let precio = item.precio_unitario.ok_or_else(|| anyhow::anyhow!("{} es un servicio: falta precio_unitario para esta línea", nombre))?;
-                if precio <= Decimal::ZERO {
-                    anyhow::bail!("precio_unitario inválido para {}", nombre);
-                }
-                precio
-            } else {
-                precio_venta_catalogo.unwrap_or_default()
-            };
+            let precio_venta = item.precio_unitario.ok_or_else(|| anyhow::anyhow!("Falta precio_unitario para {}", nombre))?;
+            if precio_venta <= Decimal::ZERO {
+                anyhow::bail!("precio_unitario inválido para {}", nombre);
+            }
 
             let descuento = item.descuento.unwrap_or_default();
             let line_bruto = precio_venta * item.cantidad;
@@ -141,7 +140,7 @@ impl CotizacionService {
             subtotal_total += line_subtotal;
             itbis_total += line_itbis;
 
-            lineas.push((item.producto_id, sku, nombre, item.cantidad, precio_venta, descuento, itbis_tipo, line_itbis, line_subtotal));
+            lineas.push((item.producto_id, sku, nombre, item.cantidad, precio_venta, descuento, itbis_tipo, line_itbis, line_subtotal, item.descripcion.clone()));
         }
 
         let total = subtotal_total + itbis_total;
@@ -162,11 +161,11 @@ impl CotizacionService {
         .await?;
 
         let mut items = Vec::new();
-        for (producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal) in lineas {
+        for (producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal, descripcion) in lineas {
             let ci = sqlx::query_as::<_, CotizacionItem>(
-                r#"INSERT INTO cotizacion_items (cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                   RETURNING id, cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal"#,
+                r#"INSERT INTO cotizacion_items (cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, descripcion)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                   RETURNING id, cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, descripcion"#,
             )
             .bind(cotizacion.id)
             .bind(producto_id)
@@ -178,6 +177,7 @@ impl CotizacionService {
             .bind(&itbis_tipo)
             .bind(itbis_monto)
             .bind(line_subtotal)
+            .bind(&descripcion)
             .fetch_one(&mut *tx)
             .await?;
             items.push(ci);
@@ -225,24 +225,19 @@ impl CotizacionService {
             anyhow::bail!("No se puede editar una cotización {}", estado.to_lowercase());
         }
 
-        let row: Option<(String, String, Option<Decimal>, String, String)> = sqlx::query_as(
-            "SELECT sku, nombre, precio_venta, itbis_tipo, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT sku, nombre, itbis_tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
         )
         .bind(item.producto_id)
         .bind(tenant_id)
         .fetch_optional(&mut *tx)
         .await?;
-        let (sku, nombre, precio_venta_catalogo, itbis_tipo, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+        let (sku, nombre, itbis_tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
 
-        let precio_unitario = if tipo == "SERVICIO" {
-            let precio = item.precio_unitario.ok_or_else(|| anyhow::anyhow!("{} es un servicio: falta precio_unitario para esta línea", nombre))?;
-            if precio <= Decimal::ZERO {
-                anyhow::bail!("precio_unitario inválido para {}", nombre);
-            }
-            precio
-        } else {
-            precio_venta_catalogo.unwrap_or_default()
-        };
+        let precio_unitario = item.precio_unitario.ok_or_else(|| anyhow::anyhow!("Falta precio_unitario para {}", nombre))?;
+        if precio_unitario <= Decimal::ZERO {
+            anyhow::bail!("precio_unitario inválido para {}", nombre);
+        }
 
         let descuento = item.descuento.unwrap_or_default();
         let line_bruto = precio_unitario * item.cantidad;
@@ -253,9 +248,9 @@ impl CotizacionService {
         let line_itbis = line_subtotal * itbis_rate(&itbis_tipo);
 
         let ci = sqlx::query_as::<_, CotizacionItem>(
-            r#"INSERT INTO cotizacion_items (cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-               RETURNING id, cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal"#,
+            r#"INSERT INTO cotizacion_items (cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, descripcion)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+               RETURNING id, cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, descripcion"#,
         )
         .bind(cotizacion_id)
         .bind(item.producto_id)
@@ -267,6 +262,7 @@ impl CotizacionService {
         .bind(&itbis_tipo)
         .bind(line_itbis)
         .bind(line_subtotal)
+        .bind(&item.descripcion)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -399,7 +395,7 @@ impl CotizacionService {
         .ok_or_else(|| anyhow::anyhow!("Cotización no encontrada"))?;
 
         let items = sqlx::query_as::<_, CotizacionItem>(
-            "SELECT id, cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal FROM cotizacion_items WHERE cotizacion_id = $1",
+            "SELECT id, cotizacion_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, descripcion FROM cotizacion_items WHERE cotizacion_id = $1",
         )
         .bind(id)
         .fetch_all(&self.pool)
