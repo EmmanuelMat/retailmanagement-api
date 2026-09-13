@@ -3222,7 +3222,7 @@ async fn http_facturar_orden(
             producto_id: it.producto_id,
             cantidad: it.cantidad,
             descuento: Some(it.descuento),
-            precio_unitario: Some(it.precio_unitario),
+            precio_unitario: it.precio_unitario,
             descripcion: None,
         }).collect(),
         metodo_pago: req.metodo_pago,
@@ -3287,8 +3287,6 @@ async fn http_convertir_cotizacion_a_orden(
         items: cotizacion_completa.items.iter().map(|it| services::orden_servicio_service::CreateOrdenServicioItemRequest {
             producto_id: it.producto_id,
             cantidad: it.cantidad,
-            descuento: Some(it.descuento),
-            precio_unitario: Some(it.precio_unitario),
             tecnico_id: None,
             observaciones: None,
         }).collect(),

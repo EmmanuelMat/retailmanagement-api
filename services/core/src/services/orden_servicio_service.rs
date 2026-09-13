@@ -65,11 +65,14 @@ pub struct OrdenServicioItem {
     pub nombre: String,
     pub tipo: String,
     pub cantidad: Decimal,
-    pub precio_unitario: Decimal,
+    /// El precio ya no vive aquí - se captura una sola vez, al facturar (ver
+    /// http_facturar_orden en main.rs). NULL para toda orden creada desde
+    /// este cambio en adelante; una orden vieja conserva su precio histórico.
+    pub precio_unitario: Option<Decimal>,
     pub descuento: Decimal,
-    pub itbis_tipo: String,
-    pub itbis_monto: Decimal,
-    pub subtotal: Decimal,
+    pub itbis_tipo: Option<String>,
+    pub itbis_monto: Option<Decimal>,
+    pub subtotal: Option<Decimal>,
     pub tecnico_id: Option<Uuid>,
     pub observaciones: Option<String>,
 }
@@ -121,11 +124,10 @@ pub struct OrdenServicioConCliente {
 pub struct CreateOrdenServicioItemRequest {
     pub producto_id: Uuid,
     pub cantidad: Decimal,
-    pub descuento: Option<Decimal>,
-    /// Requerido cuando el producto es tipo SERVICIO - ver el mismo campo en
-    /// cotizacion_service::CreateCotizacionItemRequest.
-    pub precio_unitario: Option<Decimal>,
     pub tecnico_id: Option<Uuid>,
+    /// Nota de línea libre - esta es la "descripción" que el usuario ve; no
+    /// hay columna de precio en esta tabla (ver
+    /// docs/superpowers/specs/2026-09-13-cotizacion-servicio-pricing-design.md).
     pub observaciones: Option<String>,
 }
 
@@ -205,59 +207,29 @@ impl OrdenServicioService {
 
         let mut tx = self.pool.begin().await?;
 
-        let mut subtotal_total = Decimal::ZERO;
-        let mut itbis_total = Decimal::ZERO;
-        let mut descuento_total = Decimal::ZERO;
-        #[allow(clippy::type_complexity)]
-        let mut lineas: Vec<(Uuid, String, String, String, Decimal, Decimal, Decimal, String, Decimal, Decimal, Option<Uuid>, Option<String>)> = Vec::new();
+        let mut lineas: Vec<(Uuid, String, String, String, Decimal, Option<Uuid>, Option<String>)> = Vec::new();
 
         for item in &req.items {
             if item.cantidad <= Decimal::ZERO {
                 anyhow::bail!("La cantidad debe ser mayor a cero");
             }
-            let row: Option<(String, String, Option<Decimal>, String, String)> = sqlx::query_as(
-                "SELECT sku, nombre, precio_venta, itbis_tipo, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
+            let row: Option<(String, String, String)> = sqlx::query_as(
+                "SELECT sku, nombre, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
             )
             .bind(item.producto_id)
             .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let (sku, nombre, precio_venta_catalogo, itbis_tipo, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+            let (sku, nombre, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
 
-            let precio_unitario = if tipo == "SERVICIO" {
-                let precio = item.precio_unitario.ok_or_else(|| anyhow::anyhow!("{} es un servicio: falta precio_unitario para esta línea", nombre))?;
-                if precio <= Decimal::ZERO {
-                    anyhow::bail!("precio_unitario inválido para {}", nombre);
-                }
-                precio
-            } else {
-                precio_venta_catalogo.unwrap_or_default()
-            };
-
-            let descuento = item.descuento.unwrap_or_default();
-            let line_bruto = precio_unitario * item.cantidad;
-            if descuento < Decimal::ZERO || descuento > line_bruto {
-                anyhow::bail!("Descuento inválido para {}", nombre);
-            }
-            let line_subtotal = line_bruto - descuento;
-            let line_itbis = line_subtotal * itbis_rate(&itbis_tipo);
-            subtotal_total += line_subtotal;
-            itbis_total += line_itbis;
-            descuento_total += descuento;
-
-            lineas.push((
-                item.producto_id, sku, nombre, tipo, item.cantidad, precio_unitario, descuento,
-                itbis_tipo, line_itbis, line_subtotal, item.tecnico_id, item.observaciones.clone(),
-            ));
+            lineas.push((item.producto_id, sku, nombre, tipo, item.cantidad, item.tecnico_id, item.observaciones.clone()));
         }
-
-        let total = subtotal_total + itbis_total;
 
         let orden = sqlx::query_as::<_, OrdenServicio>(&format!(
             r#"INSERT INTO ordenes_servicio
                    (tenant_id, cliente_id, cotizacion_id, condicion_id, prioridad, fecha_programada,
-                    direccion, descripcion, subtotal, descuento, itbis_total, total, notas, usuario_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    direccion, descripcion, notas, usuario_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                RETURNING {ORDEN_COLUMNS}"#
         ))
         .bind(tenant_id)
@@ -268,21 +240,17 @@ impl OrdenServicioService {
         .bind(req.fecha_programada)
         .bind(&req.direccion)
         .bind(&req.descripcion)
-        .bind(subtotal_total)
-        .bind(descuento_total)
-        .bind(itbis_total)
-        .bind(total)
         .bind(&req.notas)
         .bind(usuario_id)
         .fetch_one(&mut *tx)
         .await?;
 
         let mut items = Vec::new();
-        for (producto_id, sku, nombre, tipo, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, line_subtotal, tecnico_id, observaciones) in lineas {
+        for (producto_id, sku, nombre, tipo, cantidad, tecnico_id, observaciones) in lineas {
             let it = sqlx::query_as::<_, OrdenServicioItem>(
                 r#"INSERT INTO orden_servicio_items
-                       (orden_servicio_id, producto_id, sku, nombre, tipo, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, tecnico_id, observaciones)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                       (orden_servicio_id, producto_id, sku, nombre, tipo, cantidad, tecnico_id, observaciones)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                    RETURNING id, orden_servicio_id, producto_id, sku, nombre, tipo, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, tecnico_id, observaciones"#,
             )
             .bind(orden.id)
@@ -291,11 +259,6 @@ impl OrdenServicioService {
             .bind(&nombre)
             .bind(&tipo)
             .bind(cantidad)
-            .bind(precio_unitario)
-            .bind(descuento)
-            .bind(&itbis_tipo)
-            .bind(itbis_monto)
-            .bind(line_subtotal)
             .bind(tecnico_id)
             .bind(&observaciones)
             .fetch_one(&mut *tx)
@@ -485,14 +448,14 @@ impl OrdenServicioService {
             anyhow::bail!("No se puede editar una orden {}", estado.to_lowercase());
         }
 
-        let row: Option<(String, String, Option<Decimal>, String, String)> = sqlx::query_as(
-            "SELECT sku, nombre, precio_venta, itbis_tipo, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT sku, nombre, tipo FROM productos WHERE id = $1 AND tenant_id = $2 AND activo = true",
         )
         .bind(item.producto_id)
         .bind(tenant_id)
         .fetch_optional(&mut *tx)
         .await?;
-        let (sku, nombre, precio_venta_catalogo, itbis_tipo, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
+        let (sku, nombre, tipo) = row.ok_or_else(|| anyhow::anyhow!("Producto no encontrado"))?;
 
         // Evita el doble descuento de stock: facturar este renglón (vía
         // ventas_service::create_venta, reusado sin cambios en crear_factura)
@@ -516,23 +479,10 @@ impl OrdenServicioService {
             }
         }
 
-        let precio_unitario = if tipo == "SERVICIO" {
-            item.precio_unitario.filter(|p| *p > Decimal::ZERO).ok_or_else(|| anyhow::anyhow!("{} es un servicio: falta precio_unitario para esta línea", nombre))?
-        } else {
-            precio_venta_catalogo.unwrap_or_default()
-        };
-        let descuento = item.descuento.unwrap_or_default();
-        let line_bruto = precio_unitario * item.cantidad;
-        if descuento < Decimal::ZERO || descuento > line_bruto {
-            anyhow::bail!("Descuento inválido para {}", nombre);
-        }
-        let line_subtotal = line_bruto - descuento;
-        let line_itbis = line_subtotal * itbis_rate(&itbis_tipo);
-
         let it = sqlx::query_as::<_, OrdenServicioItem>(
             r#"INSERT INTO orden_servicio_items
-                   (orden_servicio_id, producto_id, sku, nombre, tipo, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, tecnico_id, observaciones)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                   (orden_servicio_id, producto_id, sku, nombre, tipo, cantidad, tecnico_id, observaciones)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                RETURNING id, orden_servicio_id, producto_id, sku, nombre, tipo, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, tecnico_id, observaciones"#,
         )
         .bind(orden_id)
@@ -541,11 +491,6 @@ impl OrdenServicioService {
         .bind(&nombre)
         .bind(&tipo)
         .bind(item.cantidad)
-        .bind(precio_unitario)
-        .bind(descuento)
-        .bind(&itbis_tipo)
-        .bind(line_itbis)
-        .bind(line_subtotal)
         .bind(item.tecnico_id)
         .bind(&item.observaciones)
         .fetch_one(&mut *tx)
