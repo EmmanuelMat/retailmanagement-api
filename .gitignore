@@ -57,3 +57,6 @@ services/core/backups/
 
 # Miniaturas de producto subidas (ver image_service.rs) - contenido runtime, no fuente
 services/core/uploads/
+
+# Local git worktrees (see superpowers:using-git-worktrees)
+.worktrees/
