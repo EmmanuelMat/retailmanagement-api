@@ -266,6 +266,11 @@ async fn main() -> anyhow::Result<()> {
 
         ALTER TABLE venta_items ADD COLUMN IF NOT EXISTS descuento DECIMAL(12,2) NOT NULL DEFAULT 0;
 
+        -- Nota de línea libre (ver docs/superpowers/specs/2026-09-13-cotizacion-servicio-pricing-design.md)
+        -- - viaja desde cotizacion_items.descripcion cuando una cotización se
+        -- convierte en venta; ausente/NULL para una venta directa (POS).
+        ALTER TABLE venta_items ADD COLUMN IF NOT EXISTS descripcion TEXT;
+
         -- MODULO 9 (tabla creada aqui porque Ventas ya necesita registrar ingresos de caja)
         CREATE TABLE IF NOT EXISTS caja_movimientos (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -585,6 +590,10 @@ async fn main() -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_cotizaciones_tenant ON cotizaciones(tenant_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_cotizacion_items_cotizacion ON cotizacion_items(cotizacion_id);
 
+        -- Nota de línea libre, p.ej. "2 habitaciones, tratamiento inicial" - ver
+        -- docs/superpowers/specs/2026-09-13-cotizacion-servicio-pricing-design.md.
+        ALTER TABLE cotizacion_items ADD COLUMN IF NOT EXISTS descripcion TEXT;
+
         -- Conduces (guías de despacho / "Órdenes de Servicio" para tenants
         -- SERVICIOS): a diferencia del diseño anterior, un conduce ya NO es
         -- un documento con precio propio que luego se "convierte" en Venta.
@@ -889,6 +898,16 @@ async fn main() -> anyhow::Result<()> {
             observaciones TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_orden_servicio_items_orden ON orden_servicio_items(orden_servicio_id);
+
+        -- El precio ya no vive en la orden de servicio - se captura una sola vez,
+        -- al facturar (ver http_facturar_orden en main.rs). Las columnas se dejan
+        -- nullable en vez de eliminarse: las órdenes ya facturadas antes de este
+        -- cambio conservan su precio histórico. Ver
+        -- docs/superpowers/specs/2026-09-13-cotizacion-servicio-pricing-design.md.
+        ALTER TABLE orden_servicio_items ALTER COLUMN precio_unitario DROP NOT NULL;
+        ALTER TABLE orden_servicio_items ALTER COLUMN itbis_tipo DROP NOT NULL;
+        ALTER TABLE orden_servicio_items ALTER COLUMN itbis_monto DROP NOT NULL;
+        ALTER TABLE orden_servicio_items ALTER COLUMN subtotal DROP NOT NULL;
 
         CREATE TABLE IF NOT EXISTS orden_servicio_tecnicos (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
