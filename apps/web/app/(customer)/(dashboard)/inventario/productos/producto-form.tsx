@@ -79,6 +79,7 @@ export function ProductoForm({
   const [imagen, setImagen] = useState(imagenUrl || null);
   const [uploadingImagen, setUploadingImagen] = useState(false);
   const [imagenError, setImagenError] = useState("");
+  const [skuTocado, setSkuTocado] = useState(!!initial?.sku);
 
   async function handleImagenChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -100,6 +101,16 @@ export function ProductoForm({
     apiFetch<{ items: Categoria[] }>("/api/categorias?pageSize=1000&activo=true").then((d) => setCategorias(d.items)).catch(() => {});
     apiFetch<{ items: Proveedor[] }>("/api/proveedores?pageSize=1000&activo=true").then((d) => setProveedores(d.items)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (skuTocado || !values.nombre.trim()) return;
+    const handle = setTimeout(() => {
+      apiFetch<{ sku: string }>(`/api/productos/sugerir-codigo?nombre=${encodeURIComponent(values.nombre.trim())}`)
+        .then((d) => set("sku", d.sku))
+        .catch(() => {});
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [values.nombre, skuTocado]);
 
   function set<K extends keyof ProductoFormValues>(key: K, value: ProductoFormValues[K]) {
     setValues((v) => ({ ...v, [key]: value }));
@@ -170,7 +181,16 @@ export function ProductoForm({
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="sku">SKU *</Label>
-              <Input id="sku" required value={values.sku} onChange={(e) => set("sku", e.target.value)} placeholder="ARR-001" />
+              <Input
+                id="sku"
+                required
+                value={values.sku}
+                onChange={(e) => {
+                  setSkuTocado(true);
+                  set("sku", e.target.value);
+                }}
+                placeholder="Se sugiere automáticamente al escribir el nombre"
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="categoria">Categoría</Label>
