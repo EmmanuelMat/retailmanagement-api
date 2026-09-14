@@ -8,20 +8,11 @@
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::services::inventario_service::InventarioService;
-
-fn itbis_rate(tipo: &str) -> Decimal {
-    match tipo {
-        "GRAVADO_18" => dec!(0.18),
-        "GRAVADO_16" => dec!(0.16),
-        _ => dec!(0),
-    }
-}
 
 const PRIORIDADES: &[&str] = &["BAJA", "NORMAL", "ALTA", "URGENTE"];
 const ESTADOS_CANCELABLES: &[&str] = &["BORRADOR", "PROGRAMADA", "EN_PROCESO", "PAUSADA"];
