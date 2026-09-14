@@ -556,6 +556,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/categorias", get(http_list_categorias).post(http_create_categoria))
         .route("/v1/categorias/:id", axum::routing::put(http_update_categoria).delete(http_delete_categoria))
         .route("/v1/productos", get(http_list_productos).post(http_create_producto))
+        .route("/v1/productos/sugerir-codigo", get(http_sugerir_codigo_producto))
         .route("/v1/productos/:id", get(http_get_producto).put(http_update_producto).delete(http_delete_producto))
         .route("/v1/productos/:id/imagen", post(http_upload_producto_imagen))
         // MODULO 3: Inventario (kardex)
@@ -1845,6 +1846,22 @@ async fn http_delete_categoria(
     state.catalog_service.delete_categoria(&claims.tenant_id, id).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SugerirCodigoParams {
+    nombre: String,
+}
+
+async fn http_sugerir_codigo_producto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<SugerirCodigoParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let sku = state.catalog_service.sugerir_codigo(&claims.tenant_id, &params.nombre).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "sku": sku })))
 }
 
 #[derive(Debug, Deserialize)]
