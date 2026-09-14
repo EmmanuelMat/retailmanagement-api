@@ -3189,10 +3189,25 @@ async fn http_cancelar_orden(
 }
 
 #[derive(Debug, Deserialize)]
+struct ItemPrecioFactura {
+    producto_id: Uuid,
+    precio_unitario: Option<rust_decimal::Decimal>,
+    descuento: Option<rust_decimal::Decimal>,
+}
+
+#[derive(Debug, Deserialize)]
 struct FacturarOrdenRequest {
     metodo_pago: Option<String>,
     tipo_ecf: Option<i32>,
     aprobacion_admin: Option<AprobacionAdmin>,
+    /// Precio por línea, capturado una sola vez aquí - la orden ya no lo
+    /// guarda (ver docs/superpowers/specs/2026-09-13-cotizacion-servicio-pricing-design.md).
+    /// Solo hace falta una entrada por cada item de tipo SERVICIO; un
+    /// PRODUCTO en la orden usa su precio de catálogo sin importar lo que
+    /// venga aquí (ver ventas_service::create_venta, que ignora
+    /// precio_unitario para tipo PRODUCTO).
+    #[serde(default)]
+    items: Vec<ItemPrecioFactura>,
 }
 
 /// Convierte una Orden de Servicio COMPLETADA en Venta real reutilizando
@@ -3218,12 +3233,15 @@ async fn http_facturar_orden(
 
     let venta_req = services::ventas_service::CreateVentaRequest {
         cliente_id: orden_completa.orden.cliente_id,
-        items: orden_completa.items.iter().map(|it| services::ventas_service::CreateVentaItemRequest {
-            producto_id: it.producto_id,
-            cantidad: it.cantidad,
-            descuento: Some(it.descuento),
-            precio_unitario: it.precio_unitario,
-            descripcion: None,
+        items: orden_completa.items.iter().map(|it| {
+            let precio = req.items.iter().find(|p| p.producto_id == it.producto_id);
+            services::ventas_service::CreateVentaItemRequest {
+                producto_id: it.producto_id,
+                cantidad: it.cantidad,
+                descuento: precio.and_then(|p| p.descuento),
+                precio_unitario: precio.and_then(|p| p.precio_unitario),
+                descripcion: None,
+            }
         }).collect(),
         metodo_pago: req.metodo_pago,
         tipo_ecf: req.tipo_ecf,
@@ -3288,7 +3306,7 @@ async fn http_convertir_cotizacion_a_orden(
             producto_id: it.producto_id,
             cantidad: it.cantidad,
             tecnico_id: None,
-            observaciones: None,
+            observaciones: it.descripcion.clone(),
         }).collect(),
     };
 
