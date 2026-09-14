@@ -19,7 +19,7 @@ async fn create_empleado_named(session: &TenantSession, nombre: &str) -> serde_j
 }
 
 #[tokio::test]
-async fn crear_orden_con_servicio_y_producto_calcula_totales_correctamente() {
+async fn crear_orden_no_registra_precio_en_los_items() {
     let session = register_tenant().await;
     let servicio = create_servicio(&session).await;
     let producto = create_producto(&session, dec!(200), dec!(50)).await;
@@ -29,7 +29,7 @@ async fn crear_orden_con_servicio_y_producto_calcula_totales_correctamente() {
             "/v1/ordenes-servicio",
             json!({
                 "items": [
-                    { "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "1500" },
+                    { "producto_id": servicio["id"], "cantidad": "1" },
                     { "producto_id": producto["id"], "cantidad": "2" }
                 ]
             }),
@@ -37,20 +37,30 @@ async fn crear_orden_con_servicio_y_producto_calcula_totales_correctamente() {
         .await;
 
     assert_eq!(orden["estado"], "BORRADOR");
-    assert_decimal_eq(decimal_field(&orden, "subtotal"), dec!(1900.00), "subtotal");
-    assert_decimal_eq(decimal_field(&orden, "itbis_total"), dec!(342.00), "itbis");
-    assert_decimal_eq(decimal_field(&orden, "total"), dec!(2242.00), "total");
-    assert_eq!(orden["items"].as_array().unwrap().len(), 2);
+    assert_decimal_eq(decimal_field(&orden, "subtotal"), dec!(0), "una orden nunca lleva precio");
+    assert_decimal_eq(decimal_field(&orden, "itbis_total"), dec!(0), "una orden nunca lleva ITBIS");
+    assert_decimal_eq(decimal_field(&orden, "total"), dec!(0), "una orden nunca lleva total");
+    let items = orden["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(items[0]["precio_unitario"].is_null(), "un item de orden no guarda precio: {items:?}");
 }
 
 #[tokio::test]
-async fn servicio_sin_precio_unitario_es_rechazado() {
+async fn facturar_sin_precio_de_servicio_es_rechazado() {
     let session = register_tenant().await;
     let servicio = create_servicio(&session).await;
-    let (status, body) = session
-        .post_expect("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1" }] }))
+    let orden = session
+        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1" }] }))
         .await;
-    assert_eq!(status, 400, "{body}");
+    let orden_id = orden["id"].as_str().unwrap();
+
+    session.post(&format!("/v1/ordenes-servicio/{orden_id}/iniciar"), json!({})).await;
+    session.post(&format!("/v1/ordenes-servicio/{orden_id}/completar"), json!({})).await;
+    abrir_caja(&session, dec!(1000)).await;
+
+    // Sin "items" en el body de crear-factura, el SERVICIO no tiene precio.
+    let (status, body) = session.post_expect(&format!("/v1/ordenes-servicio/{orden_id}/crear-factura"), json!({})).await;
+    assert_eq!(status, 400, "facturar un SERVICIO sin precio debe rechazarse: {body}");
 }
 
 #[tokio::test]
@@ -58,7 +68,7 @@ async fn transiciones_de_estado_invalidas_son_rechazadas() {
     let session = register_tenant().await;
     let servicio = create_servicio(&session).await;
     let orden = session
-        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "500" }] }))
+        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1" }] }))
         .await;
     let id = orden["id"].as_str().unwrap();
 
@@ -89,7 +99,7 @@ async fn asignar_tecnico_y_agregar_nota() {
     let servicio = create_servicio(&session).await;
     let empleado = create_empleado_named(&session, "Carlos Técnico").await;
     let orden = session
-        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "500" }] }))
+        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1" }] }))
         .await;
     let id = orden["id"].as_str().unwrap();
 
@@ -115,7 +125,7 @@ async fn consumir_material_mueve_inventario_real_una_sola_vez() {
     let servicio = create_servicio(&session).await;
     let material = create_producto(&session, dec!(40), dec!(30)).await;
     let orden = session
-        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "500" }] }))
+        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1" }] }))
         .await;
     let orden_id = orden["id"].as_str().unwrap();
 
@@ -145,7 +155,7 @@ async fn no_se_puede_facturar_y_consumir_material_el_mismo_producto_en_la_misma_
         .post(
             "/v1/ordenes-servicio",
             json!({ "items": [
-                { "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "500" },
+                { "producto_id": servicio["id"], "cantidad": "1" },
                 { "producto_id": producto["id"], "cantidad": "1" }
             ] }),
         )
@@ -180,7 +190,7 @@ async fn orden_completada_se_factura_como_venta_real_y_no_se_puede_facturar_dos_
         .post(
             "/v1/ordenes-servicio",
             json!({ "items": [
-                { "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "1500" },
+                { "producto_id": servicio["id"], "cantidad": "1" },
                 { "producto_id": producto["id"], "cantidad": "2" }
             ] }),
         )
@@ -195,7 +205,12 @@ async fn orden_completada_se_factura_como_venta_real_y_no_se_puede_facturar_dos_
     session.post(&format!("/v1/ordenes-servicio/{orden_id}/completar"), json!({})).await;
     abrir_caja(&session, dec!(1000)).await;
 
-    let venta = session.post(&format!("/v1/ordenes-servicio/{orden_id}/crear-factura"), json!({})).await;
+    let venta = session
+        .post(
+            &format!("/v1/ordenes-servicio/{orden_id}/crear-factura"),
+            json!({ "items": [{ "producto_id": servicio["id"], "precio_unitario": "1500" }] }),
+        )
+        .await;
     assert_decimal_eq(decimal_field(&venta, "total"), dec!(2242.00), "total de la venta generada");
     assert_eq!(venta["items"].as_array().unwrap().len(), 2);
 
@@ -208,7 +223,7 @@ async fn orden_completada_se_factura_como_venta_real_y_no_se_puede_facturar_dos_
 }
 
 #[tokio::test]
-async fn cotizacion_se_convierte_en_orden_de_servicio_reusando_los_precios_ya_fijados() {
+async fn cotizacion_se_convierte_en_orden_de_servicio_sin_llevar_precio() {
     let session = register_tenant().await;
     let cliente = create_cliente(&session).await;
     let servicio = create_servicio(&session).await;
@@ -224,7 +239,7 @@ async fn cotizacion_se_convierte_en_orden_de_servicio_reusando_los_precios_ya_fi
     let orden = session.post(&format!("/v1/cotizaciones/{cot_id}/convertir-a-orden"), json!({})).await;
     assert_eq!(orden["cliente_id"], cliente["id"]);
     assert_eq!(orden["cotizacion_id"], cot_id);
-    assert_decimal_eq(decimal_field(&orden, "subtotal"), dec!(2000.00), "subtotal reusa el precio de la cotización");
+    assert_decimal_eq(decimal_field(&orden, "subtotal"), dec!(0), "la orden no lleva el precio de la cotización - se vuelve a pedir al facturar");
 
     let cotizacion_actualizada = session.get(&format!("/v1/cotizaciones/{cot_id}")).await;
     assert_eq!(cotizacion_actualizada["estado"], "CONVERTIDA");
@@ -241,7 +256,7 @@ async fn una_orden_de_servicio_no_es_visible_para_otro_tenant() {
     let session_b = register_tenant().await;
     let servicio = create_servicio(&session_a).await;
     let orden = session_a
-        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "500" }] }))
+        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1" }] }))
         .await;
     let orden_id = orden["id"].as_str().unwrap();
 
@@ -271,7 +286,7 @@ async fn rol_sin_el_permiso_ordenes_servicio_gestionar_es_rechazado() {
     let session = register_tenant().await;
     let servicio = create_servicio(&session).await;
     let orden = session
-        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "500" }] }))
+        .post("/v1/ordenes-servicio", json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1" }] }))
         .await;
     let orden_id = orden["id"].as_str().unwrap();
 
