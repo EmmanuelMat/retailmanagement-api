@@ -301,6 +301,32 @@ async fn cotizacion_se_convierte_en_orden_de_servicio_llevando_el_precio() {
     assert_eq!(status, 400);
 }
 
+/// El cliente que paga una cotización no siempre es quien recibe el
+/// servicio (p.ej. se paga por un familiar) - la dirección de la orden
+/// resultante se manda explícitamente al convertir, independiente de la
+/// dirección registrada del cliente.
+#[tokio::test]
+async fn convertir_cotizacion_a_orden_manda_una_direccion_propia() {
+    let session = register_tenant().await;
+    let servicio = create_servicio(&session).await;
+
+    let cotizacion = session
+        .post(
+            "/v1/cotizaciones",
+            json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "1", "precio_unitario": "1000" }] }),
+        )
+        .await;
+    let cot_id = cotizacion["id"].as_str().unwrap();
+
+    let orden = session
+        .post(
+            &format!("/v1/cotizaciones/{cot_id}/convertir-a-orden"),
+            json!({ "direccion": "Casa de mamá, Calle Duarte #12" }),
+        )
+        .await;
+    assert_eq!(orden["direccion"], "Casa de mamá, Calle Duarte #12");
+}
+
 #[tokio::test]
 async fn una_orden_de_servicio_no_es_visible_para_otro_tenant() {
     let session_a = register_tenant().await;

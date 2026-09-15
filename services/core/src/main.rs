@@ -3293,10 +3293,19 @@ async fn http_facturar_orden(
 /// Convierte una Cotización en Orden de Servicio (en vez de en Venta directa)
 /// reutilizando `orden_servicio_service::create_orden` - mismo patrón de
 /// orquestación que `http_convertir_cotizacion`.
+#[derive(Debug, Deserialize)]
+struct ConvertirCotizacionAOrdenRequest {
+    /// Dirección donde se hará el trabajo - independiente de la dirección
+    /// registrada del cliente (que paga la orden puede no ser quien recibe
+    /// el servicio, p.ej. un familiar).
+    direccion: Option<String>,
+}
+
 async fn http_convertir_cotizacion_a_orden(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
+    Json(req): Json<ConvertirCotizacionAOrdenRequest>,
 ) -> Result<Json<OrdenServicioCompletaResponse>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
@@ -3316,7 +3325,7 @@ async fn http_convertir_cotizacion_a_orden(
         condicion_id: None,
         prioridad: None,
         fecha_programada: None,
-        direccion: None,
+        direccion: req.direccion,
         descripcion: None,
         notas: None,
         items: cotizacion_completa.items.iter().map(|it| services::orden_servicio_service::CreateOrdenServicioItemRequest {

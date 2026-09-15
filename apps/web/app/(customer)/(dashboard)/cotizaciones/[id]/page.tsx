@@ -382,6 +382,10 @@ function ConversionTab({
   const [convirtiendo, setConvirtiendo] = useState(false);
   const [convertirError, setConvertirError] = useState("");
   const [convirtiendoOrden, setConvirtiendoOrden] = useState(false);
+  // El cliente que paga la orden no siempre es quien recibe el servicio
+  // (p.ej. se paga por un familiar) - se pide siempre, nunca se asume igual
+  // a la dirección registrada del cliente.
+  const [direccionOrden, setDireccionOrden] = useState("");
 
   const [mostrarAprobacion, setMostrarAprobacion] = useState(false);
   const [aprobacionMensaje, setAprobacionMensaje] = useState("");
@@ -389,10 +393,17 @@ function ConversionTab({
   const [adminPassword, setAdminPassword] = useState("");
 
   async function handleConvertirAOrden() {
+    if (!direccionOrden.trim()) {
+      setConvertirError("Escribe la dirección donde se realizará el servicio.");
+      return;
+    }
     setConvirtiendoOrden(true);
     setConvertirError("");
     try {
-      const orden = await apiFetch<{ id: string }>(`/api/cotizaciones/${cotizacion.id}/convertir-a-orden`, { method: "POST", body: JSON.stringify({}) });
+      const orden = await apiFetch<{ id: string }>(`/api/cotizaciones/${cotizacion.id}/convertir-a-orden`, {
+        method: "POST",
+        body: JSON.stringify({ direccion: direccionOrden }),
+      });
       onConvertida(`/ordenes-servicio/${orden.id}`);
     } catch (e: any) {
       setConvertirError(e.message);
@@ -450,6 +461,17 @@ function ConversionTab({
           <option value="FIADO">{esServicios ? "A crédito" : "Fiado"}</option>
         </Select>
       </div>
+      <div className="space-y-1.5 pt-1">
+        <Label htmlFor="direccionOrden">Dirección del servicio</Label>
+        <Input
+          id="direccionOrden"
+          value={direccionOrden}
+          onChange={(e) => setDireccionOrden(e.target.value)}
+          placeholder="Dirección donde se realizará el trabajo"
+        />
+        <p className="text-xs text-muted-foreground">Puede ser distinta a la dirección registrada del cliente — solo aplica al convertir a orden de servicio.</p>
+      </div>
+
       {convertirError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{convertirError}</div>}
       <Button className="w-full" onClick={() => handleConvertir()} disabled={convirtiendo}>
         {convirtiendo ? "Procesando..." : "Convertir a venta"}
