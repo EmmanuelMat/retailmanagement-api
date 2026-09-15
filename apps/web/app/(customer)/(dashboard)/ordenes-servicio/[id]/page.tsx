@@ -242,6 +242,7 @@ function ResumenTab({ orden }: { orden: OrdenDetalle }) {
           <TableRow>
             <TableHead>Servicio</TableHead>
             <TableHead className="text-right">Cant.</TableHead>
+            <TableHead className="text-right">Precio</TableHead>
             <TableHead>Descripción</TableHead>
           </TableRow>
         </TableHeader>
@@ -253,11 +254,19 @@ function ResumenTab({ orden }: { orden: OrdenDetalle }) {
                 {it.tipo === "SERVICIO" && <Badge variant="accent" className="ml-2">Servicio</Badge>}
               </TableCell>
               <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
+              <TableCell className="text-right tabular-nums">{it.precio_unitario ? formatDOP(it.precio_unitario) : "—"}</TableCell>
               <TableCell className="text-muted-foreground text-xs">{it.observaciones || "—"}</TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
+      {Number(orden.total) > 0 && (
+        <div className="text-sm space-y-1 max-w-xs ml-auto pt-1">
+          <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatDOP(orden.subtotal)}</span></div>
+          <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(orden.itbis_total)}</span></div>
+          <div className="flex justify-between font-bold text-base pt-1 border-t border-border mt-1"><span>Total</span><span className="tabular-nums">{formatDOP(orden.total)}</span></div>
+        </div>
+      )}
       {orden.descripcion && (
         <div className="text-sm text-muted-foreground bg-muted/40 rounded-md p-3">{orden.descripcion}</div>
       )}
@@ -268,6 +277,8 @@ function ResumenTab({ orden }: { orden: OrdenDetalle }) {
 function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; productos: Producto[]; onChanged: () => void }) {
   const [productoId, setProductoId] = useState("");
   const [cantidad, setCantidad] = useState("");
+  const [precioUnitario, setPrecioUnitario] = useState("");
+  const [descuento, setDescuento] = useState("");
   const [observaciones, setObservaciones] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -280,9 +291,15 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
     try {
       await apiFetch(`/api/ordenes-servicio/${orden.id}/items`, {
         method: "POST",
-        body: JSON.stringify({ producto_id: productoId, cantidad, observaciones: observaciones || undefined }),
+        body: JSON.stringify({
+          producto_id: productoId,
+          cantidad,
+          observaciones: observaciones || undefined,
+          precio_unitario: precioUnitario || undefined,
+          descuento: descuento || undefined,
+        }),
       });
-      setProductoId(""); setCantidad(""); setObservaciones("");
+      setProductoId(""); setCantidad(""); setPrecioUnitario(""); setDescuento(""); setObservaciones("");
       onChanged();
     } catch (e: any) {
       setError(e.message);
@@ -307,6 +324,7 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
           <TableRow>
             <TableHead>Servicio</TableHead>
             <TableHead className="text-right">Cant.</TableHead>
+            <TableHead className="text-right">Precio</TableHead>
             <TableHead>Descripción</TableHead>
             {!soloLectura && <TableHead className="w-10"></TableHead>}
           </TableRow>
@@ -316,6 +334,7 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
             <TableRow key={it.id}>
               <TableCell className="font-medium">{it.nombre}</TableCell>
               <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
+              <TableCell className="text-right tabular-nums">{it.precio_unitario ? formatDOP(it.precio_unitario) : "—"}</TableCell>
               <TableCell className="text-muted-foreground text-xs">{it.observaciones || "—"}</TableCell>
               {!soloLectura && (
                 <TableCell className="text-right">
@@ -328,9 +347,11 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
       </Table>
 
       {!soloLectura && (
-        <div className="grid gap-2 items-end grid-cols-[1fr_90px_1fr_auto]">
+        <div className="grid gap-2 items-end grid-cols-[1fr_90px_110px_110px_1fr_auto]">
           <ProductoPicker productos={productos} value={productoId} onChange={setProductoId} placeholder="Servicio…" />
           <Input type="number" step="0.01" placeholder="Cant." value={cantidad} onChange={(e) => setCantidad(e.target.value)} />
+          <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />
+          <Input type="number" step="0.01" placeholder="Descuento RD$" value={descuento} onChange={(e) => setDescuento(e.target.value)} />
           <Textarea
             placeholder="Descripción (opcional)"
             value={observaciones}

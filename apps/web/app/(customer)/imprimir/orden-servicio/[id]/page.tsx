@@ -6,6 +6,20 @@ import { apiFetch } from "@/lib/api";
 import { useCliente, useEmpresa } from "../../_components/hooks";
 import { BarraAcciones, BarraSeccion, CampoDato, EncabezadoDocumento, EstilosImpresion, PieDocumento } from "../../_components/DocumentoBase";
 
+interface OrdenItem {
+  id: string;
+  nombre: string;
+  tipo: "PRODUCTO" | "SERVICIO";
+  cantidad: string;
+  observaciones: string | null;
+}
+
+interface OrdenNota {
+  id: string;
+  tipo: string;
+  contenido: string;
+}
+
 interface OrdenDetalle {
   id: string;
   cliente_id: string | null;
@@ -17,6 +31,8 @@ interface OrdenDetalle {
   descripcion: string | null;
   notas: string | null;
   created_at: string;
+  items: OrdenItem[];
+  notas_registro: OrdenNota[];
 }
 
 interface Condicion {
@@ -65,10 +81,40 @@ export default function ImprimirOrdenServicioPage() {
           <CampoDato label="Teléfono" value={cliente?.telefono || ""} />
         </div>
 
+        <table className="w-full mt-3 text-[11.5px] border-collapse">
+          <thead>
+            <tr className="text-white" style={{ backgroundColor: "#8a5a1f" }}>
+              <th className="text-left font-bold py-1.5 px-2 w-16">Cant.</th>
+              <th className="text-left font-bold py-1.5 px-2">Servicio / Producto</th>
+              <th className="text-left font-bold py-1.5 px-2">Notas</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orden.items.map((it) => (
+              <tr key={it.id} className="border-b border-gray-200">
+                <td className="py-1.5 px-2 tabular-nums">{it.cantidad}</td>
+                <td className="py-1.5 px-2">{it.nombre}</td>
+                <td className="py-1.5 px-2 text-gray-600">{it.observaciones || ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
         {orden.descripcion && (
           <>
             <BarraSeccion tipo="ORDEN_SERVICIO">DESCRIPCIÓN DEL TRABAJO</BarraSeccion>
             <div className="min-h-[40px] bg-[#eaf6fc] mb-3 p-2 text-[11.5px]">{orden.descripcion}</div>
+          </>
+        )}
+
+        {orden.notas_registro.some((n) => n.tipo === "CLIENTE") && (
+          <>
+            <BarraSeccion tipo="ORDEN_SERVICIO">NOTAS</BarraSeccion>
+            <div className="min-h-[40px] bg-[#eaf6fc] mb-3 p-2 text-[11.5px] space-y-1">
+              {orden.notas_registro.filter((n) => n.tipo === "CLIENTE").map((n) => (
+                <p key={n.id}>{n.contenido}</p>
+              ))}
+            </div>
           </>
         )}
 

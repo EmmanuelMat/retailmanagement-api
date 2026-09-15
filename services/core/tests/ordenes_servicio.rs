@@ -268,7 +268,7 @@ async fn facturar_dos_lineas_del_mismo_servicio_usa_precio_correcto_por_linea() 
 }
 
 #[tokio::test]
-async fn cotizacion_se_convierte_en_orden_de_servicio_sin_llevar_precio() {
+async fn cotizacion_se_convierte_en_orden_de_servicio_llevando_el_precio() {
     let session = register_tenant().await;
     let cliente = create_cliente(&session).await;
     let servicio = create_servicio(&session).await;
@@ -284,7 +284,13 @@ async fn cotizacion_se_convierte_en_orden_de_servicio_sin_llevar_precio() {
     let orden = session.post(&format!("/v1/cotizaciones/{cot_id}/convertir-a-orden"), json!({})).await;
     assert_eq!(orden["cliente_id"], cliente["id"]);
     assert_eq!(orden["cotizacion_id"], cot_id);
-    assert_decimal_eq(decimal_field(&orden, "subtotal"), dec!(0), "la orden no lleva el precio de la cotización - se vuelve a pedir al facturar");
+    // El precio de la cotización se reusa en la orden - no hay que
+    // volver a escribirlo desde cero al facturar (queda editable ahí).
+    assert_decimal_eq(decimal_field(&orden, "subtotal"), dec!(2000.00), "la orden reusa el precio de la cotización");
+    assert_decimal_eq(decimal_field(&orden, "itbis_total"), dec!(360.00), "itbis");
+    assert_decimal_eq(decimal_field(&orden, "total"), dec!(2360.00), "total");
+    let items = orden["items"].as_array().unwrap();
+    assert_decimal_eq(decimal_field(&items[0], "precio_unitario"), dec!(2000.00), "el item de la orden trae el precio de la línea de la cotización");
 
     let cotizacion_actualizada = session.get(&format!("/v1/cotizaciones/{cot_id}")).await;
     assert_eq!(cotizacion_actualizada["estado"], "CONVERTIDA");
