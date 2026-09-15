@@ -223,7 +223,7 @@ export default function OrdenServicioDetallePage() {
           {tab === "materiales" && <MaterialesTab orden={orden} productos={productos} nombreProducto={nombreProducto} onChanged={load} />}
           {tab === "notas" && <NotasTab orden={orden} onChanged={load} />}
           {tab === "actividad" && <ActividadTab entradas={auditoria} />}
-          {tab === "facturacion" && <FacturacionTab orden={orden} onChanged={load} />}
+          {tab === "facturacion" && <FacturacionTab orden={orden} productos={productos} onChanged={load} />}
         </CardContent>
       </Card>
     </div>
@@ -560,16 +560,31 @@ function ActividadTab({ entradas }: { entradas: AuditoriaEntry[] }) {
   );
 }
 
-function FacturacionTab({ orden, onChanged }: { orden: OrdenDetalle; onChanged: () => void }) {
+function FacturacionTab({ orden, productos, onChanged }: { orden: OrdenDetalle; productos: Producto[]; onChanged: () => void }) {
   const [metodoPago, setMetodoPago] = useState("EFECTIVO");
+  const [precios, setPrecios] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   async function handleFacturar() {
+    const faltante = orden.items.find((it) => {
+      const prod = productos.find((p) => p.id === it.producto_id);
+      return prod?.tipo === "SERVICIO" && !(Number(precios[it.id]) > 0);
+    });
+    if (faltante) {
+      setError(`Escribe el precio de "${faltante.nombre}".`);
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const venta = await apiFetch<{ id: string }>(`/api/ordenes-servicio/${orden.id}/crear-factura`, { method: "POST", body: JSON.stringify({ metodo_pago: metodoPago }) });
+      const venta = await apiFetch<{ id: string }>(`/api/ordenes-servicio/${orden.id}/crear-factura`, {
+        method: "POST",
+        body: JSON.stringify({
+          metodo_pago: metodoPago,
+          items: orden.items.map((it) => ({ producto_id: it.producto_id, precio_unitario: precios[it.id] || undefined })),
+        }),
+      });
       onChanged();
       window.location.href = `/ventas/${venta.id}`;
     } catch (e: any) {
@@ -597,7 +612,41 @@ function FacturacionTab({ orden, onChanged }: { orden: OrdenDetalle; onChanged: 
   }
 
   return (
-    <div className="max-w-xs space-y-3">
+    <div className="max-w-md space-y-3">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Servicio</TableHead>
+            <TableHead className="text-right">Cant.</TableHead>
+            <TableHead className="text-right">Precio c/u</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {orden.items.map((it) => {
+            const prod = productos.find((p) => p.id === it.producto_id);
+            const esServicio = prod?.tipo === "SERVICIO";
+            return (
+              <TableRow key={it.id}>
+                <TableCell className="font-medium">{it.nombre}</TableCell>
+                <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
+                <TableCell className="text-right">
+                  {esServicio ? (
+                    <Input
+                      type="number"
+                      step="0.01"
+                      className="text-right"
+                      value={precios[it.id] || ""}
+                      onChange={(e) => setPrecios((p) => ({ ...p, [it.id]: e.target.value }))}
+                    />
+                  ) : (
+                    <span className="tabular-nums text-muted-foreground">{formatDOP(prod?.precio_venta || "0")}</span>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
       <div className="space-y-1.5">
         <Label htmlFor="metodo">Método de pago</Label>
         <Select id="metodo" value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
