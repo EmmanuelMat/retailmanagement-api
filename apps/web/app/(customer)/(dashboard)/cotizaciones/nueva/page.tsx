@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
-import { Button, Card, CardContent, Input, Label, Select, formatDOP } from "@repo/ui";
+import { Button, Card, CardContent, Input, Label, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { ClientePicker } from "../../cliente-picker";
 import { ProductoPicker } from "../../producto-picker";
@@ -127,22 +127,22 @@ export default function NuevaCotizacionPage() {
               <Label>Productos</Label>
               {lineas.map((l, i) => (
                 <div key={i} className="grid gap-2 items-end grid-cols-[1fr_90px_110px_110px_1fr_32px]">
-                    <ProductoPicker
-                      productos={productos}
-                      value={l.productoId}
-                      onChange={(id) => {
-                        const nuevo = productos.find((p) => p.id === id);
-                        updateLinea(i, { productoId: id, precioUnitario: nuevo?.tipo === "PRODUCTO" ? (nuevo.precio_venta || "") : "" });
-                      }}
-                    />
-                    <Input type="number" step="0.01" placeholder="Cant." value={l.cantidad} onChange={(e) => updateLinea(i, { cantidad: e.target.value })} />
-                    <Input type="number" step="0.01" placeholder="Precio c/u" value={l.precioUnitario} onChange={(e) => updateLinea(i, { precioUnitario: e.target.value })} />
-                    <Input type="number" step="0.01" placeholder="Descuento RD$" value={l.descuento} onChange={(e) => updateLinea(i, { descuento: e.target.value })} />
-                    <Input placeholder="Descripción (opcional)" value={l.descripcion} onChange={(e) => updateLinea(i, { descripcion: e.target.value })} />
-                    <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)} disabled={lineas.length === 1}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
+                  <ProductoPicker
+                    productos={productos}
+                    value={l.productoId}
+                    onChange={(id) => {
+                      const nuevo = productos.find((p) => p.id === id);
+                      updateLinea(i, { productoId: id, precioUnitario: nuevo?.tipo === "PRODUCTO" ? (nuevo.precio_venta || "") : "" });
+                    }}
+                  />
+                  <Input type="number" step="0.01" placeholder="Cant." value={l.cantidad} onChange={(e) => updateLinea(i, { cantidad: e.target.value })} />
+                  <Input type="number" step="0.01" placeholder="Precio c/u" value={l.precioUnitario} onChange={(e) => updateLinea(i, { precioUnitario: e.target.value })} />
+                  <Input type="number" step="0.01" placeholder="Descuento RD$" value={l.descuento} onChange={(e) => updateLinea(i, { descuento: e.target.value })} />
+                  <Input placeholder="Descripción (opcional)" value={l.descripcion} onChange={(e) => updateLinea(i, { descripcion: e.target.value })} />
+                  <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)} disabled={lineas.length === 1}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
               ))}
               <Button type="button" variant="secondary" size="sm" onClick={addLinea}>
                 <Plus className="h-4 w-4" />Agregar línea
