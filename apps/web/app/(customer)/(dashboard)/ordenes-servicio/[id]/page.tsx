@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { FileText, Plus, Trash2 } from "lucide-react";
-import { Badge, Button, Card, CardContent, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Badge, Button, Card, CardContent, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { ESTADO_VARIANT } from "../estado-variant";
 import { ProductoPicker } from "../../producto-picker";
@@ -17,6 +17,10 @@ interface OrdenItem {
   tipo: "PRODUCTO" | "SERVICIO";
   cantidad: string;
   observaciones: string | null;
+  // Solo tiene valor cuando la orden se creó directamente con precio (ver
+  // ordenes-servicio/nueva/page.tsx) - una orden convertida desde una
+  // cotización trae esto en null hasta que se factura.
+  precio_unitario: string | null;
 }
 
 interface OrdenTecnico {
@@ -327,7 +331,13 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
         <div className="grid gap-2 items-end grid-cols-[1fr_90px_1fr_auto]">
           <ProductoPicker productos={productos} value={productoId} onChange={setProductoId} placeholder="Servicio…" />
           <Input type="number" step="0.01" placeholder="Cant." value={cantidad} onChange={(e) => setCantidad(e.target.value)} />
-          <Input placeholder="Descripción (opcional)" value={observaciones} onChange={(e) => setObservaciones(e.target.value)} />
+          <Textarea
+            placeholder="Descripción (opcional)"
+            value={observaciones}
+            onChange={(e) => setObservaciones(e.target.value)}
+            rows={1}
+            className="min-h-10 py-2 resize-y"
+          />
           <Button type="button" size="sm" disabled={saving || !productoId || !cantidad} onClick={handleAdd}><Plus className="h-4 w-4" />Agregar</Button>
         </div>
       )}
@@ -562,7 +572,12 @@ function ActividadTab({ entradas }: { entradas: AuditoriaEntry[] }) {
 
 function FacturacionTab({ orden, productos, onChanged }: { orden: OrdenDetalle; productos: Producto[]; onChanged: () => void }) {
   const [metodoPago, setMetodoPago] = useState("EFECTIVO");
-  const [precios, setPrecios] = useState<Record<string, string>>({});
+  // Una orden creada directamente puede traer su propio precio por línea -
+  // se precarga aquí (editable) para no pedirlo dos veces; una orden
+  // convertida desde cotización llega sin precio, como siempre.
+  const [precios, setPrecios] = useState<Record<string, string>>(() =>
+    Object.fromEntries(orden.items.filter((it) => it.precio_unitario).map((it) => [it.id, it.precio_unitario as string]))
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 

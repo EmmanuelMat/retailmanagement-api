@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
-import { Button, Card, CardContent, Input, Label, Select } from "@repo/ui";
+import { Button, Card, CardContent, Input, Label, Select, Textarea, formatDOP } from "@repo/ui";
 import { ProductoPicker } from "../../producto-picker";
 import { apiFetch } from "@/lib/api";
 
@@ -30,9 +30,12 @@ interface Condicion {
 interface Linea {
   productoId: string;
   cantidad: string;
+  precioUnitario: string;
+  descuento: string;
   descripcion: string;
 }
 
+const ITBIS_RATE: Record<string, number> = { GRAVADO_18: 0.18, GRAVADO_16: 0.16, EXENTO: 0 };
 const PRIORIDADES = [
   { value: "BAJA", label: "Baja" },
   { value: "NORMAL", label: "Normal" },
@@ -52,7 +55,7 @@ export default function NuevaOrdenServicioPage() {
   const [fechaProgramada, setFechaProgramada] = useState("");
   const [direccion, setDireccion] = useState("");
   const [descripcion, setDescripcion] = useState("");
-  const [lineas, setLineas] = useState<Linea[]>([{ productoId: "", cantidad: "", descripcion: "" }]);
+  const [lineas, setLineas] = useState<Linea[]>([{ productoId: "", cantidad: "", precioUnitario: "", descuento: "", descripcion: "" }]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -76,13 +79,25 @@ export default function NuevaOrdenServicioPage() {
   }
 
   function addLinea() {
-    setLineas((ls) => [...ls, { productoId: "", cantidad: "", descripcion: "" }]);
+    setLineas((ls) => [...ls, { productoId: "", cantidad: "", precioUnitario: "", descuento: "", descripcion: "" }]);
   }
 
   function removeLinea(i: number) {
     setLineas((ls) => ls.filter((_, idx) => idx !== i));
   }
 
+  function precioLinea(l: Linea): number {
+    return Number(l.precioUnitario) || 0;
+  }
+
+  const total = lineas.reduce((sum, l) => {
+    const prod = productos.find((p) => p.id === l.productoId);
+    if (!prod) return sum;
+    const bruto = (Number(l.cantidad) || 0) * precioLinea(l);
+    const descuento = Math.min(Number(l.descuento) || 0, bruto);
+    const sub = bruto - descuento;
+    return sum + sub + sub * (ITBIS_RATE[prod.itbis_tipo] || 0);
+  }, 0);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -107,6 +122,8 @@ export default function NuevaOrdenServicioPage() {
             producto_id: l.productoId,
             cantidad: l.cantidad,
             observaciones: l.descripcion || undefined,
+            precio_unitario: l.precioUnitario || undefined,
+            descuento: l.descuento || undefined,
           })),
         }),
       });
@@ -159,18 +176,43 @@ export default function NuevaOrdenServicioPage() {
               </div>
               <div className="space-y-1.5 col-span-2">
                 <Label htmlFor="descripcion">Descripción del trabajo</Label>
-                <Input id="descripcion" value={descripcion} onChange={(e) => setDescripcion(e.target.value)} placeholder="Qué reporta o pide el cliente" />
+                <Textarea
+                  id="descripcion"
+                  value={descripcion}
+                  onChange={(e) => setDescripcion(e.target.value)}
+                  placeholder="Qué reporta o pide el cliente"
+                  rows={3}
+                />
               </div>
             </div>
 
             <div className="space-y-2">
               <Label>Productos / Servicios</Label>
+              <p className="text-xs text-muted-foreground">
+                El precio es opcional aquí — si ya lo sabes, escríbelo; si no, se pide una sola vez al facturar la orden completada.
+              </p>
               {lineas.map((l, i) => (
-                <div key={i} className="grid gap-2 items-end grid-cols-[1fr_90px_1fr_32px]">
-                  <ProductoPicker productos={productos} value={l.productoId} onChange={(id) => updateLinea(i, { productoId: id })} placeholder="Servicio…" />
+                <div key={i} className="grid gap-2 items-end grid-cols-[1fr_90px_110px_110px_1fr_32px]">
+                  <ProductoPicker
+                    productos={productos}
+                    value={l.productoId}
+                    onChange={(id) => {
+                      const nuevo = productos.find((p) => p.id === id);
+                      updateLinea(i, { productoId: id, precioUnitario: nuevo?.tipo === "PRODUCTO" ? (nuevo.precio_venta || "") : "" });
+                    }}
+                    placeholder="Servicio…"
+                  />
                   <Input type="number" step="0.01" placeholder="Cant." value={l.cantidad} onChange={(e) => updateLinea(i, { cantidad: e.target.value })} />
-                  <Input placeholder="Descripción (opcional)" value={l.descripcion} onChange={(e) => updateLinea(i, { descripcion: e.target.value })} />
-                  <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)} disabled={lineas.length === 1}>
+                  <Input type="number" step="0.01" placeholder="Precio c/u" value={l.precioUnitario} onChange={(e) => updateLinea(i, { precioUnitario: e.target.value })} />
+                  <Input type="number" step="0.01" placeholder="Descuento RD$" value={l.descuento} onChange={(e) => updateLinea(i, { descuento: e.target.value })} />
+                  <Textarea
+                    placeholder="Descripción (opcional)"
+                    value={l.descripcion}
+                    onChange={(e) => updateLinea(i, { descripcion: e.target.value })}
+                    rows={1}
+                    className="min-h-10 py-2 resize-y"
+                  />
+                  <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
@@ -179,6 +221,12 @@ export default function NuevaOrdenServicioPage() {
                 <Plus className="h-4 w-4" />Agregar línea
               </Button>
             </div>
+
+            {total > 0 && (
+              <div className="flex items-center justify-end">
+                <p className="text-lg font-bold">Total: {formatDOP(total)}</p>
+              </div>
+            )}
 
             {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm">{error}</div>}
 

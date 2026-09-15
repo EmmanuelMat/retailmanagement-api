@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
-import { Button, Card, CardContent, Input, Label, formatDOP } from "@repo/ui";
+import { Button, Card, CardContent, Input, Label, Textarea, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { ClientePicker } from "../../cliente-picker";
 import { ProductoPicker } from "../../producto-picker";
@@ -138,7 +138,13 @@ export default function NuevaCotizacionPage() {
                   <Input type="number" step="0.01" placeholder="Cant." value={l.cantidad} onChange={(e) => updateLinea(i, { cantidad: e.target.value })} />
                   <Input type="number" step="0.01" placeholder="Precio c/u" value={l.precioUnitario} onChange={(e) => updateLinea(i, { precioUnitario: e.target.value })} />
                   <Input type="number" step="0.01" placeholder="Descuento RD$" value={l.descuento} onChange={(e) => updateLinea(i, { descuento: e.target.value })} />
-                  <Input placeholder="Descripción (opcional)" value={l.descripcion} onChange={(e) => updateLinea(i, { descripcion: e.target.value })} />
+                  <Textarea
+                    placeholder="Descripción (opcional)"
+                    value={l.descripcion}
+                    onChange={(e) => updateLinea(i, { descripcion: e.target.value })}
+                    rows={1}
+                    className="min-h-10 py-2 resize-y"
+                  />
                   <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)}>
                     <Trash2 className="h-4 w-4" />
                   </Button>

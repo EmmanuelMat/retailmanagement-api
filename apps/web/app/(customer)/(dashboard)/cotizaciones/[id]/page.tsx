@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { FileText, Plus, Trash2 } from "lucide-react";
-import { Badge, Button, Card, CardContent, Dialog, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Badge, Button, Card, CardContent, Dialog, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea, formatDOP } from "@repo/ui";
 import { apiFetch, ApiError } from "@/lib/api";
 import { ClientePicker } from "../../cliente-picker";
 import { ProductoPicker } from "../../producto-picker";
@@ -347,7 +347,13 @@ function ResumenTab({
           <Input type="number" step="0.01" placeholder="Cant." value={cantidad} onChange={(e) => setCantidad(e.target.value)} />
           <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />
           <Input type="number" step="0.01" placeholder="Descuento RD$" value={descuento} onChange={(e) => setDescuento(e.target.value)} />
-          <Input placeholder="Descripción (opcional)" value={descripcionLinea} onChange={(e) => setDescripcionLinea(e.target.value)} />
+          <Textarea
+            placeholder="Descripción (opcional)"
+            value={descripcionLinea}
+            onChange={(e) => setDescripcionLinea(e.target.value)}
+            rows={1}
+            className="min-h-10 py-2 resize-y"
+          />
           <Button type="button" size="sm" disabled={agregando || !productoId || !cantidad} onClick={handleAdd}>
             <Plus className="h-4 w-4" />{agregando ? "..." : "Agregar"}
           </Button>
