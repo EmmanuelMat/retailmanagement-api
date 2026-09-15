@@ -139,7 +139,7 @@ export default function NuevaCotizacionPage() {
                   <Input type="number" step="0.01" placeholder="Precio c/u" value={l.precioUnitario} onChange={(e) => updateLinea(i, { precioUnitario: e.target.value })} />
                   <Input type="number" step="0.01" placeholder="Descuento RD$" value={l.descuento} onChange={(e) => updateLinea(i, { descuento: e.target.value })} />
                   <Input placeholder="Descripción (opcional)" value={l.descripcion} onChange={(e) => updateLinea(i, { descripcion: e.target.value })} />
-                  <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)} disabled={lineas.length === 1}>
+                  <Button type="button" size="icon" variant="ghost" onClick={() => removeLinea(i)}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>

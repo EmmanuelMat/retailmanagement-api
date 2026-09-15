@@ -3324,6 +3324,11 @@ async fn http_convertir_cotizacion_a_orden(
             cantidad: it.cantidad,
             tecnico_id: None,
             observaciones: it.descripcion.clone(),
+            // Una orden que viene de convertir una cotización sigue sin
+            // precio - se captura una sola vez, al facturar (ver
+            // ordenes-servicio_service::CreateOrdenServicioItemRequest).
+            precio_unitario: None,
+            descuento: None,
         }).collect(),
     };
 

@@ -365,3 +365,27 @@ async fn rol_sin_el_permiso_ordenes_servicio_gestionar_es_rechazado() {
         .expect("request failed");
     assert_eq!(resp.status(), 403, "CONTADOR no tiene ordenes_servicio.gestionar - el permission_guard debe rechazarlo");
 }
+
+/// Una orden creada directamente (sin cotización detrás) puede traer su
+/// propio precio por línea - a diferencia de una orden convertida desde una
+/// cotización, que sigue sin precio hasta facturar (ver
+/// `cotizacion_se_convierte_en_orden_de_servicio_sin_llevar_precio` arriba).
+#[tokio::test]
+async fn crear_orden_directa_con_precio_calcula_totales_reales() {
+    let session = register_tenant().await;
+    let servicio = create_servicio(&session).await;
+
+    let orden = session
+        .post(
+            "/v1/ordenes-servicio",
+            json!({ "items": [{ "producto_id": servicio["id"], "cantidad": "2", "precio_unitario": "750" }] }),
+        )
+        .await;
+
+    // 750 * 2 = 1500 subtotal; 18% = 270 itbis; total 1770.
+    assert_decimal_eq(decimal_field(&orden, "subtotal"), dec!(1500.00), "subtotal usa el precio de la línea");
+    assert_decimal_eq(decimal_field(&orden, "itbis_total"), dec!(270.00), "itbis");
+    assert_decimal_eq(decimal_field(&orden, "total"), dec!(1770.00), "total");
+    let items = orden["items"].as_array().unwrap();
+    assert_decimal_eq(decimal_field(&items[0], "precio_unitario"), dec!(750.00), "el item guarda el precio que trajo la orden directa");
+}
