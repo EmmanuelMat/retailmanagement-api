@@ -568,8 +568,7 @@ function FacturacionTab({ orden, productos, onChanged }: { orden: OrdenDetalle; 
 
   async function handleFacturar() {
     const faltante = orden.items.find((it) => {
-      const prod = productos.find((p) => p.id === it.producto_id);
-      return prod?.tipo === "SERVICIO" && !(Number(precios[it.id]) > 0);
+      return it.tipo === "SERVICIO" && !(Number(precios[it.id]) > 0);
     });
     if (faltante) {
       setError(`Escribe el precio de "${faltante.nombre}".`);
@@ -624,7 +623,7 @@ function FacturacionTab({ orden, productos, onChanged }: { orden: OrdenDetalle; 
         <TableBody>
           {orden.items.map((it) => {
             const prod = productos.find((p) => p.id === it.producto_id);
-            const esServicio = prod?.tipo === "SERVICIO";
+            const esServicio = it.tipo === "SERVICIO";
             return (
               <TableRow key={it.id}>
                 <TableCell className="font-medium">{it.nombre}</TableCell>
