@@ -196,6 +196,7 @@ async fn orden_completada_se_factura_como_venta_real_y_no_se_puede_facturar_dos_
         )
         .await;
     let orden_id = orden["id"].as_str().unwrap();
+    let servicio_item_id = orden["items"][0]["id"].as_str().unwrap();
 
     // No se puede facturar antes de completar.
     let (status, _) = session.post_expect(&format!("/v1/ordenes-servicio/{orden_id}/crear-factura"), json!({})).await;
@@ -208,7 +209,7 @@ async fn orden_completada_se_factura_como_venta_real_y_no_se_puede_facturar_dos_
     let venta = session
         .post(
             &format!("/v1/ordenes-servicio/{orden_id}/crear-factura"),
-            json!({ "items": [{ "producto_id": servicio["id"], "precio_unitario": "1500" }] }),
+            json!({ "items": [{ "item_id": servicio_item_id, "precio_unitario": "1500" }] }),
         )
         .await;
     assert_decimal_eq(decimal_field(&venta, "total"), dec!(2242.00), "total de la venta generada");
@@ -220,6 +221,50 @@ async fn orden_completada_se_factura_como_venta_real_y_no_se_puede_facturar_dos_
     // Ya facturada: un segundo intento debe rechazarse.
     let (status, body) = session.post_expect(&format!("/v1/ordenes-servicio/{orden_id}/crear-factura"), json!({})).await;
     assert_eq!(status, 400, "{body}");
+}
+
+#[tokio::test]
+async fn facturar_dos_lineas_del_mismo_servicio_usa_precio_correcto_por_linea() {
+    // Regresión: dos líneas de orden con el mismo producto_id (el mismo
+    // servicio, cobrado dos veces a precios distintos) deben conservar cada
+    // una su propio precio al facturar. Antes del fix, el matching por
+    // producto_id hacía que `.find()` devolviera siempre la primera entrada
+    // del request y ambas líneas terminaran facturadas al mismo precio.
+    let session = register_tenant().await;
+    let servicio = create_servicio(&session).await;
+    let orden = session
+        .post(
+            "/v1/ordenes-servicio",
+            json!({ "items": [
+                { "producto_id": servicio["id"], "cantidad": "1" },
+                { "producto_id": servicio["id"], "cantidad": "1" }
+            ] }),
+        )
+        .await;
+    let orden_id = orden["id"].as_str().unwrap();
+    let items = orden["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "la orden debe tener dos líneas separadas del mismo servicio: {items:?}");
+    let item0_id = items[0]["id"].as_str().unwrap();
+    let item1_id = items[1]["id"].as_str().unwrap();
+
+    session.post(&format!("/v1/ordenes-servicio/{orden_id}/iniciar"), json!({})).await;
+    session.post(&format!("/v1/ordenes-servicio/{orden_id}/completar"), json!({})).await;
+    abrir_caja(&session, dec!(1000)).await;
+
+    let venta = session
+        .post(
+            &format!("/v1/ordenes-servicio/{orden_id}/crear-factura"),
+            json!({ "items": [
+                { "item_id": item0_id, "precio_unitario": "1500" },
+                { "item_id": item1_id, "precio_unitario": "3000" }
+            ] }),
+        )
+        .await;
+
+    let venta_items = venta["items"].as_array().unwrap();
+    assert_eq!(venta_items.len(), 2, "{venta_items:?}");
+    assert_decimal_eq(decimal_field(&venta_items[0], "precio_unitario"), dec!(1500), "primera línea debe conservar su propio precio");
+    assert_decimal_eq(decimal_field(&venta_items[1], "precio_unitario"), dec!(3000), "segunda línea del mismo servicio no debe heredar el precio de la primera");
 }
 
 #[tokio::test]

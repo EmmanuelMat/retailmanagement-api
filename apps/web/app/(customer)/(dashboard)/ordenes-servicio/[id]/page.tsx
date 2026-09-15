@@ -581,7 +581,7 @@ function FacturacionTab({ orden, productos, onChanged }: { orden: OrdenDetalle; 
         method: "POST",
         body: JSON.stringify({
           metodo_pago: metodoPago,
-          items: orden.items.map((it) => ({ producto_id: it.producto_id, precio_unitario: precios[it.id] || undefined })),
+          items: orden.items.map((it) => ({ item_id: it.id, precio_unitario: precios[it.id] || undefined })),
         }),
       });
       onChanged();

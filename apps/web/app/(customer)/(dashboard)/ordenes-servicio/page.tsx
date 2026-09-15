@@ -6,7 +6,7 @@ import { Wrench, Plus, Printer, Search } from "lucide-react";
 import {
   Badge, Button, Input, Select,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
-  Pagination, ScrollableTableCard, formatDOP,
+  Pagination, ScrollableTableCard,
 } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { useServerTable } from "@/lib/use-server-table";
@@ -20,7 +20,6 @@ interface OrdenServicio {
   prioridad: string;
   condicion_nombre: string | null;
   fecha_programada: string | null;
-  total: string;
   created_at: string;
 }
 
@@ -142,7 +141,6 @@ function OrdenesServicioPageContent() {
               <SortableTableHead column="prioridad" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Prioridad</SortableTableHead>
               <SortableTableHead column="fecha_programada" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Programada</SortableTableHead>
               <SortableTableHead column="estado" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort}>Estado</SortableTableHead>
-              <SortableTableHead column="total" activeSort={state.sortBy} sortDir={state.sortDir} onSort={toggleSort} className="text-right">Total</SortableTableHead>
               <TableHead className="w-16 text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
@@ -157,7 +155,6 @@ function OrdenesServicioPageContent() {
                 <TableCell className="text-muted-foreground">{o.prioridad}</TableCell>
                 <TableCell className="text-muted-foreground">{o.fecha_programada ? new Date(o.fecha_programada).toLocaleDateString("es-DO") : "—"}</TableCell>
                 <TableCell><Badge variant={ESTADO_VARIANT[o.estado] || "default"}>{ESTADO_LABEL[o.estado] || o.estado}</Badge></TableCell>
-                <TableCell className="text-right font-mono tabular-nums font-medium">{formatDOP(o.total)}</TableCell>
                 <TableCell className="text-right">
                   <Link href={`/imprimir/orden-servicio/${o.id}` as any} target="_blank">
                     <Button size="icon" variant="ghost" title="Imprimir"><Printer className="h-4 w-4" /></Button>

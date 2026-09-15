@@ -454,7 +454,7 @@ impl VentasService {
         .ok_or_else(|| anyhow::anyhow!("Venta no encontrada"))?;
 
         let items = sqlx::query_as::<_, VentaItem>(
-            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario FROM venta_items WHERE venta_id = $1",
+            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario, descripcion FROM venta_items WHERE venta_id = $1",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -518,7 +518,7 @@ impl VentasService {
         }
 
         let items: Vec<VentaItem> = sqlx::query_as(
-            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario FROM venta_items WHERE venta_id = $1",
+            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario, descripcion FROM venta_items WHERE venta_id = $1",
         )
         .bind(venta_id)
         .fetch_all(&mut *tx)

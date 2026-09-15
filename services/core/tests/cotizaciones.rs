@@ -64,3 +64,30 @@ async fn convertir_cotizacion_a_venta_conserva_la_descripcion_de_linea() {
     let items = venta["items"].as_array().unwrap();
     assert_eq!(items[0]["descripcion"], "Urgente, entregar hoy", "la descripción de la cotización debe viajar a la venta: {venta}");
 }
+
+#[tokio::test]
+async fn obtener_venta_incluye_descripcion_de_linea() {
+    // Regresión: GET /v1/ventas/:id hacía un SELECT explícito de columnas de
+    // venta_items que no incluía `descripcion` (ni el usado por
+    // create_nota_credito) - sqlx::FromRow exige que toda columna del struct
+    // exista en el result set, así que esto fallaba en runtime con
+    // ColumnNotFound apenas VentaItem ganó ese campo. Esto rompía GET
+    // /v1/ventas/:id (a donde el frontend redirige justo tras facturar),
+    // la factura impresa, la emisión de e-CF y las notas de crédito - para
+    // TODA venta, no solo las que vienen de una cotización.
+    let session = register_tenant().await;
+    abrir_caja(&session, dec!(0)).await;
+    let producto = create_producto(&session, dec!(200), dec!(50)).await;
+
+    let venta = session
+        .post(
+            "/v1/ventas",
+            json!({ "items": [{ "producto_id": producto["id"], "cantidad": "1", "descripcion": "Entregar en la tarde" }] }),
+        )
+        .await;
+    let venta_id = venta["id"].as_str().unwrap();
+
+    let (status, body) = session.get_expect(&format!("/v1/ventas/{venta_id}")).await;
+    assert_eq!(status, 200, "GET /v1/ventas/:id debe funcionar tras agregar `descripcion` a VentaItem: {body}");
+    assert_eq!(body["items"][0]["descripcion"], "Entregar en la tarde", "la descripción de línea debe sobrevivir al GET: {body}");
+}

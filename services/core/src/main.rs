@@ -3207,7 +3207,7 @@ async fn http_cancelar_orden(
 
 #[derive(Debug, Deserialize)]
 struct ItemPrecioFactura {
-    producto_id: Uuid,
+    item_id: Uuid,
     precio_unitario: Option<rust_decimal::Decimal>,
     descuento: Option<rust_decimal::Decimal>,
 }
@@ -3251,13 +3251,13 @@ async fn http_facturar_orden(
     let venta_req = services::ventas_service::CreateVentaRequest {
         cliente_id: orden_completa.orden.cliente_id,
         items: orden_completa.items.iter().map(|it| {
-            let precio = req.items.iter().find(|p| p.producto_id == it.producto_id);
+            let precio = req.items.iter().find(|p| p.item_id == it.id);
             services::ventas_service::CreateVentaItemRequest {
                 producto_id: it.producto_id,
                 cantidad: it.cantidad,
                 descuento: precio.and_then(|p| p.descuento),
                 precio_unitario: precio.and_then(|p| p.precio_unitario),
-                descripcion: None,
+                descripcion: it.observaciones.clone(),
             }
         }).collect(),
         metodo_pago: req.metodo_pago,
