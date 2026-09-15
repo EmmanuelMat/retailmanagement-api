@@ -7,6 +7,7 @@ import { FileText, Plus, Trash2 } from "lucide-react";
 import { Badge, Button, Card, CardContent, Dialog, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch, ApiError } from "@/lib/api";
 import { ClientePicker } from "../../cliente-picker";
+import { ProductoPicker } from "../../producto-picker";
 
 interface CotizacionItem {
   id: string;
@@ -17,6 +18,7 @@ interface CotizacionItem {
   descuento: string;
   itbis_monto: string;
   subtotal: string;
+  descripcion: string | null;
 }
 
 interface Producto {
@@ -244,17 +246,15 @@ function ResumenTab({
   const [cantidad, setCantidad] = useState("");
   const [descuento, setDescuento] = useState("");
   const [precioUnitario, setPrecioUnitario] = useState("");
+  const [descripcionLinea, setDescripcionLinea] = useState("");
   const [agregando, setAgregando] = useState(false);
   const [quitandoId, setQuitandoId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
-  const prodSel = productos.find((p) => p.id === productoId);
-  const esServicio = prodSel?.tipo === "SERVICIO";
-
   async function handleAdd() {
     if (!productoId || !cantidad) return;
-    if (esServicio && !(Number(precioUnitario) > 0)) {
-      setError("Escribe el precio de este servicio.");
+    if (!(Number(precioUnitario) > 0)) {
+      setError("Escribe el precio de esta línea.");
       return;
     }
     setAgregando(true);
@@ -266,13 +266,15 @@ function ResumenTab({
           producto_id: productoId,
           cantidad,
           descuento: descuento || undefined,
-          precio_unitario: esServicio ? precioUnitario : undefined,
+          precio_unitario: precioUnitario,
+          descripcion: descripcionLinea || undefined,
         }),
       });
       setProductoId("");
       setCantidad("");
       setDescuento("");
       setPrecioUnitario("");
+      setDescripcionLinea("");
       onChanged();
     } catch (e: any) {
       setError(e.message);
@@ -301,6 +303,7 @@ function ResumenTab({
           <TableRow>
             <TableHead>SKU</TableHead>
             <TableHead>Producto</TableHead>
+            <TableHead>Descripción</TableHead>
             <TableHead className="text-right">Cant.</TableHead>
             <TableHead className="text-right">Precio</TableHead>
             <TableHead className="text-right">Descuento</TableHead>
@@ -313,6 +316,7 @@ function ResumenTab({
             <TableRow key={it.id}>
               <TableCell className="font-mono text-xs text-muted-foreground">{it.sku}</TableCell>
               <TableCell className="font-medium">{it.nombre}</TableCell>
+              <TableCell className="text-muted-foreground text-xs">{it.descripcion || "—"}</TableCell>
               <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
               <TableCell className="text-right tabular-nums">{formatDOP(it.precio_unitario)}</TableCell>
               <TableCell className="text-right tabular-nums">{formatDOP(it.descuento)}</TableCell>
@@ -330,20 +334,20 @@ function ResumenTab({
       </Table>
 
       {puedeEditar && (
-        <div className={`grid gap-2 items-end ${esServicio ? "grid-cols-[1fr_90px_110px_110px_auto]" : "grid-cols-[1fr_90px_110px_auto]"}`}>
-          <Select value={productoId} onChange={(e) => setProductoId(e.target.value)}>
-            <option value="">Producto…</option>
-            {productos.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.sku} · {p.nombre} {p.tipo === "SERVICIO" ? "(servicio)" : `(${formatDOP(p.precio_venta || "0")})`}
-              </option>
-            ))}
-          </Select>
+        <div className="grid gap-2 items-end grid-cols-[1fr_90px_110px_110px_1fr_auto]">
+          <ProductoPicker
+            productos={productos}
+            value={productoId}
+            onChange={(id) => {
+              setProductoId(id);
+              const nuevo = productos.find((p) => p.id === id);
+              setPrecioUnitario(nuevo?.tipo === "PRODUCTO" ? nuevo.precio_venta || "" : "");
+            }}
+          />
           <Input type="number" step="0.01" placeholder="Cant." value={cantidad} onChange={(e) => setCantidad(e.target.value)} />
-          {esServicio && (
-            <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />
-          )}
+          <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />
           <Input type="number" step="0.01" placeholder="Descuento RD$" value={descuento} onChange={(e) => setDescuento(e.target.value)} />
+          <Input placeholder="Descripción (opcional)" value={descripcionLinea} onChange={(e) => setDescripcionLinea(e.target.value)} />
           <Button type="button" size="sm" disabled={agregando || !productoId || !cantidad} onClick={handleAdd}>
             <Plus className="h-4 w-4" />{agregando ? "..." : "Agregar"}
           </Button>
