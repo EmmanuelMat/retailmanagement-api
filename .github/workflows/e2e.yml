@@ -117,7 +117,8 @@ jobs:
             --test caja_bancos \
             --test nomina_adelantos \
             --test nomina_run \
-            --test ledger_invariant
+            --test ledger_invariant \
+            --test chart_of_accounts
 
       - name: Build web app
         run: pnpm --filter web build
