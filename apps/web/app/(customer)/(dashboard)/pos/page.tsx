@@ -75,6 +75,8 @@ export default function PosPage() {
   const [facturaElectronicaActiva, setFacturaElectronicaActiva] = useState(true);
   const [tipoEcf, setTipoEcf] = useState("32");
   const [metodoPago, setMetodoPago] = useState("EFECTIVO");
+  // Solo informativo para el cajero (cambio a devolver): no se envía al backend ni bloquea el cobro.
+  const [efectivoRecibido, setEfectivoRecibido] = useState("");
   const [entregaDiferida, setEntregaDiferida] = useState(false);
   const [cobrando, setCobrando] = useState(false);
   const [error, setError] = useState("");
@@ -149,6 +151,9 @@ export default function PosPage() {
     }
     return { subtotal, itbis, total: subtotal + itbis };
   }, [carrito]);
+
+  // En centavos enteros para que el cambio no arrastre error de punto flotante.
+  const cambioCentavos = efectivoRecibido.trim() === "" ? null : Math.round(Number(efectivoRecibido) * 100) - Math.round(totals.total * 100);
 
   function addToCart(producto: Producto) {
     setCarrito((c) => {
@@ -320,6 +325,7 @@ export default function PosPage() {
       setPostVentaStatus(status);
       setVentaResult(venta);
       setCarrito([]);
+      setEfectivoRecibido("");
       apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true").then((d) => setProductos(d.items)).catch(() => {});
     } catch (e: any) {
       if (e instanceof ApiError && e.message.startsWith("CAJA_NO_ABIERTA")) {
@@ -359,6 +365,7 @@ export default function PosPage() {
           setVentaResult(null);
           setClienteId("");
           setTipoEcf("32");
+          setEfectivoRecibido("");
         }}
       />
     );
@@ -453,11 +460,11 @@ export default function PosPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-1">
-                      <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => updateQty(l.producto.id, -1)}><Minus className="h-3 w-3" /></Button>
+                      <Button size="icon" variant="ghost" className="h-9 w-9" onClick={() => updateQty(l.producto.id, -1)}><Minus className="h-4 w-4" /></Button>
                       <span className="text-sm w-6 text-center tabular-nums">{l.cantidad}</span>
-                      <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => updateQty(l.producto.id, 1)}><Plus className="h-3 w-3" /></Button>
+                      <Button size="icon" variant="ghost" className="h-9 w-9" onClick={() => updateQty(l.producto.id, 1)}><Plus className="h-4 w-4" /></Button>
                     </div>
-                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => removeLine(l.producto.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                    <Button size="icon" variant="ghost" className="h-9 w-9" onClick={() => removeLine(l.producto.id)}><Trash2 className="h-4 w-4" /></Button>
                   </div>
                   <div className="flex items-center gap-1.5 pl-0.5">
                     <span className="text-[11px] text-muted-foreground shrink-0">Descuento RD$</span>
@@ -562,7 +569,7 @@ export default function PosPage() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="metodo">Método de pago</Label>
-                <Select id="metodo" value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
+                <Select id="metodo" value={metodoPago} onChange={(e) => { setMetodoPago(e.target.value); setEfectivoRecibido(""); }}>
                   <option value="EFECTIVO">Efectivo</option>
                   <option value="TARJETA">Tarjeta</option>
                   <option value="TRANSFERENCIA">Transferencia</option>
@@ -617,6 +624,32 @@ export default function PosPage() {
               <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(totals.itbis)}</span></div>
               <div className="flex justify-between font-bold text-base pt-1 mt-1 border-t border-border"><span>Total</span><span className="tabular-nums" data-testid="pos-cart-total">{formatDOP(totals.total)}</span></div>
             </div>
+
+            {metodoPago === "EFECTIVO" && carrito.length > 0 && (
+              <div className="space-y-1.5">
+                <Label htmlFor="efectivoRecibido">Efectivo recibido (opcional)</Label>
+                <Input
+                  id="efectivoRecibido"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step="0.01"
+                  value={efectivoRecibido}
+                  onChange={(e) => setEfectivoRecibido(e.target.value)}
+                  placeholder="0.00"
+                  data-testid="pos-efectivo-recibido"
+                />
+                {cambioCentavos !== null && (
+                  <p
+                    className={`flex justify-between text-sm font-semibold tabular-nums ${cambioCentavos < 0 ? "text-destructive" : ""}`}
+                    data-testid="pos-cambio"
+                  >
+                    <span>{cambioCentavos < 0 ? "Faltan" : "Cambio"}</span>
+                    <span>{formatDOP(Math.abs(cambioCentavos) / 100)}</span>
+                  </p>
+                )}
+              </div>
+            )}
 
             {totals.total >= 250000 && !clienteId && (
               <div className="rounded-md border border-warning/20 bg-warning/10 text-warning p-2 text-xs">
