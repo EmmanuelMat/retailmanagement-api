@@ -189,6 +189,24 @@ async fn nota_credito_de_compra_reversa_stock_caja_y_ledger() {
     let producto_actualizado = session.get(&format!("/v1/productos/{producto_id}")).await;
     assert_decimal_eq(decimal_field(&producto_actualizado, "stock_actual"), dec!(23), "stock after NOTA_CREDITO must decrease, not increase");
 
+    // Weighted-average costo must be recomputed on the return so that
+    // inventory valuation (stock_actual * costo) keeps matching GL 1200.
+    // Before the NC: 20 @ 0.00 + 5 @ 40.00 => costo 8.00, valuation 25 * 8.00 = 200.00.
+    // After returning 2 @ 40.00: (25 * 8.00 - 2 * 40.00) / 23 = 120 / 23 = 5.2174,
+    // stored as DECIMAL(12,2) => 5.22.
+    let costo = decimal_field(&producto_actualizado, "costo");
+    assert_decimal_eq(costo, dec!(5.22), "costo after NOTA_CREDITO: weighted average recomputed (120 / 23, stored at 2 dp)");
+    // productos.costo is DECIMAL(12,2), so it is rounded to the cent: the
+    // valuation can differ from the exact 120.00 by at most half a cent per
+    // unit in stock (23 * 0.005 = 0.115).
+    let stock = decimal_field(&producto_actualizado, "stock_actual");
+    let valoracion = stock * costo;
+    let tolerancia = stock * dec!(0.005);
+    assert!(
+        (valoracion - dec!(120.00)).abs() <= tolerancia,
+        "inventory valuation {valoracion} (stock {stock} x costo {costo}) must stay within {tolerancia} of GL 1200 net 120.00"
+    );
+
     // Caja: the FACTURA paid out 236.00; the NOTA_CREDITO gets 94.40 back in cash.
     let resumen = caja_resumen(&session).await;
     assert_decimal_eq(decimal_field(&resumen, "egresos"), dec!(236.00), "caja egresos: only the original FACTURA");
@@ -209,6 +227,11 @@ async fn nota_credito_de_compra_reversa_stock_caja_y_ledger() {
     }
     let inventario = por_cuenta.get("1200 Inventario").expect("1200 Inventario line");
     assert_decimal_eq(inventario.0 - inventario.1, dec!(120.00), "net 1200 Inventario debe - haber (200.00 - 80.00)");
+    assert!(
+        (valoracion - (inventario.0 - inventario.1)).abs() <= tolerancia,
+        "inventory valuation {valoracion} must match net GL 1200 {} within {tolerancia}",
+        inventario.0 - inventario.1
+    );
     let itbis = por_cuenta.get("1150 ITBIS Adelantado").expect("1150 ITBIS Adelantado line");
     assert_decimal_eq(itbis.0 - itbis.1, dec!(21.60), "net 1150 ITBIS Adelantado debe - haber (36.00 - 14.40)");
     let caja = por_cuenta.get("1100 Caja y Bancos").expect("1100 Caja y Bancos line");

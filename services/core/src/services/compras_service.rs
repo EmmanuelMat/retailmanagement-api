@@ -214,13 +214,22 @@ impl ComprasService {
 
             if es_nota_credito {
                 // Devolución al proveedor: el stock sale, no entra. El costo
-                // promedio ponderado no se recalcula en una salida.
+                // promedio ponderado SÍ se recalcula (la compra en reversa):
+                // la nota acredita 1200 Inventario al precio devuelto, así que
+                // el costo debe bajar por ese mismo valor para que
+                // stock_actual * costo siga igualando el saldo de 1200.
                 if stock_actual < item.cantidad {
                     anyhow::bail!("Stock insuficiente para devolver {}: disponible {}, se intenta devolver {}", nombre, stock_actual, item.cantidad);
                 }
                 let nuevo_stock = stock_actual - item.cantidad;
-                sqlx::query("UPDATE productos SET stock_actual = $1, updated_at = NOW() WHERE id = $2")
+                let nuevo_costo = if nuevo_stock > Decimal::ZERO {
+                    ((costo_actual * stock_actual - item.costo_unitario * item.cantidad) / nuevo_stock).max(Decimal::ZERO)
+                } else {
+                    costo_actual
+                };
+                sqlx::query("UPDATE productos SET stock_actual = $1, costo = $2, updated_at = NOW() WHERE id = $3")
                     .bind(nuevo_stock)
+                    .bind(nuevo_costo)
                     .bind(item.producto_id)
                     .execute(&mut *tx)
                     .await?;
