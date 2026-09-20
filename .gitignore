@@ -57,3 +57,7 @@ services/core/backups/
 
 # Miniaturas de producto subidas (ver image_service.rs) - contenido runtime, no fuente
 services/core/uploads/
+
+# Agent scratch workspaces (never commit)
+.superpowers/
+.worktrees/

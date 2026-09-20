@@ -312,6 +312,8 @@ impl AuthService {
             ("2100", "ITBIS por Pagar", "PASIVO", "ACREEDORA"),
             ("2110", "Cuentas por Pagar", "PASIVO", "ACREEDORA"),
             ("2200", "Retenciones y Descuentos", "PASIVO", "ACREEDORA"),
+            ("3100", "Capital Social", "PATRIMONIO", "ACREEDORA"),
+            ("3200", "Resultados del Ejercicio", "PATRIMONIO", "ACREEDORA"),
             ("4100", "Ingresos por Ventas", "INGRESO", "ACREEDORA"),
             ("4200", "Otros Ingresos", "INGRESO", "ACREEDORA"),
             ("5050", "Costo de Ventas", "GASTO", "DEUDORA"),

@@ -50,7 +50,7 @@ const FEATURES = [
   {
     icon: FileBarChart,
     title: "Reportes DGII listos",
-    body: "606, 608, IT-1 generados automáticamente. Súbelos y ya — sin hojas de cálculo a última hora.",
+    body: "606 e IT-1 generados automáticamente. Súbelos y ya — sin hojas de cálculo a última hora.",
   },
   {
     icon: ShieldCheck,
@@ -111,7 +111,7 @@ const PLANS = [
 const FAQS = [
   {
     q: "¿Esto cumple con la Ley 32-23 de facturación electrónica?",
-    a: "Sí. Firmamos cada comprobante con XAdES-BES real (C14N, RSA-SHA256) siguiendo el estándar de la DGII, y generamos el QR de verificación en el momento del cobro. Los reportes 606, 608 e IT-1 salen del mismo dato, así que nunca hay descuadre.",
+    a: "Sí. Firmamos cada comprobante con XML-DSig real (C14N, RSA-SHA256) siguiendo la especificación de Firmado de e-CF de la DGII, y generamos el QR de verificación en el momento del cobro. El reporte 606 e IT-1 salen del mismo dato, así que nunca hay descuadre.",
   },
   {
     q: "¿Qué pasa si se va la internet en el colmado?",
@@ -264,10 +264,10 @@ export default function LandingPage() {
       {/* Trust bar */}
       <section className="border-y border-border bg-muted/30">
         <div className="mx-auto max-w-6xl px-5 py-6 flex flex-wrap items-center justify-center gap-x-10 gap-y-3 text-sm font-medium text-muted-foreground">
-          <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Firma XAdES-BES real</span>
+          <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Firma XML-DSig real (spec e-CF DGII)</span>
           <span className="flex items-center gap-2"><Landmark className="h-4 w-4" /> Contabilidad de doble entrada</span>
           <span className="flex items-center gap-2"><Lock className="h-4 w-4" /> Eventos encadenados con hash</span>
-          <span className="flex items-center gap-2"><FileBarChart className="h-4 w-4" /> Reportes 606 · 608 · IT-1</span>
+          <span className="flex items-center gap-2"><FileBarChart className="h-4 w-4" /> Reportes 606 · IT-1</span>
         </div>
       </section>
 

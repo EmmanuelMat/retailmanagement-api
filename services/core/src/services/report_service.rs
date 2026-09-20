@@ -34,8 +34,10 @@ pub struct It1Resumen {
     /// ITBIS trasladado (cobrado en ventas) del período, neto de notas de
     /// crédito emitidas en el mismo período.
     pub itbis_trasladado: Decimal,
-    /// ITBIS acreditable (pagado en compras) del período - misma cantidad
-    /// que 606 reporta por fila como `itbis_por_adelantar`, sumada.
+    /// ITBIS acreditable (pagado en compras) del período, neto de las
+    /// NOTA_CREDITO de compra (restan). El 606 lista cada nota de crédito
+    /// como su propia fila con `ncf_modificado`, así que la suma de su
+    /// columna `itbis_por_adelantar` puede diferir de este total.
     pub itbis_acreditable: Decimal,
     /// Excedente de ITBIS arrastrado de períodos anteriores (positivo =
     /// crédito a favor del contribuyente). Recalculado en vivo sobre todo
@@ -335,10 +337,15 @@ impl ReportService {
         .fetch_one(&self.pool)
         .await?;
 
-        // Misma cantidad que 606 reporta por fila como `itbis_por_adelantar`
-        // (itbis_total - itbis_costo), sumada sobre el rango.
+        // Base por fila: `itbis_por_adelantar` del 606 (itbis_total -
+        // itbis_costo), pero aquí las NOTA_CREDITO restan, mientras el 606 las
+        // lista como filas propias con `ncf_modificado`. Una NOTA_CREDITO de
+        // compra (devolución a proveedor) resta porque el ledger la acredita
+        // contra 1150 ITBIS Adelantado (ver contabilidad_service::sincronizar).
         let acreditable: Decimal = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(itbis_total - itbis_costo), 0) FROM compras
+            "SELECT COALESCE(SUM(CASE WHEN tipo_documento = 'NOTA_CREDITO'
+                                      THEN -(itbis_total - itbis_costo)
+                                      ELSE (itbis_total - itbis_costo) END), 0) FROM compras
              WHERE tenant_id = $1 AND estado = 'COMPLETADA' AND created_at >= $2 AND created_at < $3",
         )
         .bind(tenant_id)

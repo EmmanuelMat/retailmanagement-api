@@ -69,7 +69,8 @@ echo "--- running backend money e2e tests ---"
   --test caja_bancos \
   --test nomina_adelantos \
   --test nomina_run \
-  --test ledger_invariant)
+  --test ledger_invariant \
+  --test chart_of_accounts)
 
 echo "--- building + starting web app ---"
 pnpm --filter web build
