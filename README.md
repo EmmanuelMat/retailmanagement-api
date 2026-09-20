@@ -9,7 +9,7 @@
 ```
 apps/
   web/          -> Next.js 15 App Router + Tailwind + shadcn/ui (UI 100% español dominicano)
-                • Terminal POS • Inventario • Clientes • Contabilidad • Nómina y Adelantos • Reportes DGII 606/607
+                • Terminal POS • Inventario • Clientes • Contabilidad • Nómina y Adelantos • Reportes DGII 606
                 • API Routes que llaman al núcleo Rust vía gRPC/HTTP
   mobile/       -> Expo React Native (POS móvil + adelantos empleado)
 
@@ -79,7 +79,7 @@ Ver `docs/05-PAYROLL-ADVANCE.md`
 
 ## 🖥️ UI en Español Dominicano (Requisito)
 
-**Web POS:** Terminal con productos (Plátanos, Arroz Premium, Coca-Cola...), ITBIS desglosado, botón "Cobrar • Generar E32 • QR DGII", libro mayor en vivo, adelantos con motivo, registro eventos append-only, cumplimiento DGII 606/607.
+**Web POS:** Terminal con productos (Plátanos, Arroz Premium, Coca-Cola...), ITBIS desglosado, botón "Cobrar • Generar E32 • QR DGII", libro mayor en vivo, adelantos con motivo, registro eventos append-only, cumplimiento DGII 606.
 
 **Móvil:** Empleado ve "Ganado hoy RD$6,400 • Disponible RD$3,200 (50%)" + botón "Solicitar Adelanto RD$2,000" -> gRPC `PayrollService/RequestAdvance`
 
