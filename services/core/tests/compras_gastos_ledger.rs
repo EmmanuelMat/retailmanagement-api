@@ -216,3 +216,60 @@ async fn nota_credito_de_compra_reversa_stock_caja_y_ledger() {
 
     assert_ledger_balanced(&session).await;
 }
+
+#[tokio::test]
+async fn it1_acreditable_itbis_subtracts_a_purchase_nota_credito() {
+    let session = register_tenant().await;
+    let producto = create_producto(&session, dec!(0), dec!(20)).await;
+    let producto_id = producto["id"].as_str().unwrap().to_string();
+
+    // FACTURA: 5 @ 40.00 GRAVADO_18 => itbis 36.00.
+    let factura = session
+        .post(
+            "/v1/compras",
+            serde_json::json!({
+                "items": [{
+                    "producto_id": producto_id,
+                    "cantidad": "5",
+                    "costo_unitario": "40.00",
+                    "itbis_tipo": "GRAVADO_18",
+                }],
+                "metodo_pago": "EFECTIVO",
+            }),
+        )
+        .await;
+
+    // Partial NOTA_CREDITO: 2 @ 40.00 GRAVADO_18 => itbis 14.40.
+    let nota = session
+        .post(
+            "/v1/compras",
+            serde_json::json!({
+                "items": [{
+                    "producto_id": producto_id,
+                    "cantidad": "2",
+                    "costo_unitario": "40.00",
+                    "itbis_tipo": "GRAVADO_18",
+                }],
+                "metodo_pago": "EFECTIVO",
+                "tipo_documento": "NOTA_CREDITO",
+                "ncf_modificado": "B0100000001",
+            }),
+        )
+        .await;
+
+    // Derive the IT-1 period ("YYYYMM") from the purchases' own timestamps
+    // instead of the wall clock, so the test can't miss its own rows.
+    let period_of = |compra: &serde_json::Value| -> String {
+        let created_at = compra["created_at"].as_str().expect("compra.created_at");
+        format!("{}{}", &created_at[0..4], &created_at[5..7])
+    };
+    let period = period_of(&factura);
+    assert_eq!(period, period_of(&nota), "FACTURA and NOTA_CREDITO must fall in the same IT-1 period");
+
+    let it1 = session.get(&format!("/v1/reports/it1?period={period}")).await;
+    assert_decimal_eq(
+        decimal_field(&it1, "itbis_acreditable"),
+        dec!(21.60),
+        "IT-1 itbis_acreditable: FACTURA 36.00 minus NOTA_CREDITO 14.40, not plus",
+    );
+}

@@ -336,9 +336,13 @@ impl ReportService {
         .await?;
 
         // Misma cantidad que 606 reporta por fila como `itbis_por_adelantar`
-        // (itbis_total - itbis_costo), sumada sobre el rango.
+        // (itbis_total - itbis_costo), sumada sobre el rango. Una NOTA_CREDITO
+        // de compra (devolución a proveedor) resta: el ledger la acredita
+        // contra 1150 ITBIS Adelantado (ver contabilidad_service::sincronizar).
         let acreditable: Decimal = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(itbis_total - itbis_costo), 0) FROM compras
+            "SELECT COALESCE(SUM(CASE WHEN tipo_documento = 'NOTA_CREDITO'
+                                      THEN -(itbis_total - itbis_costo)
+                                      ELSE (itbis_total - itbis_costo) END), 0) FROM compras
              WHERE tenant_id = $1 AND estado = 'COMPLETADA' AND created_at >= $2 AND created_at < $3",
         )
         .bind(tenant_id)
