@@ -11,6 +11,7 @@ Read in order:
 7. **07-MONOREPO.md** - Monorepo structure, conventions, scripts
 8. **08-DATABASE.md** - EventStore + Read Models schema - ⚠️ ledger sections superseded, see doc banner
 9. **12-LIBRO-DIARIO-LIBRO-MAYOR-PLAN.md** - Implementation plan for a correct Libro Diario / Libro Mayor on the existing Postgres ledger
+10. **14-COMPLIANCE-WORKFLOW-UIUX-AUDIT.md** - Cross-cutting investigation audit (2026-09-18): DGII compliance, retail/service workflows, accounting, UI/UX — punch list of gaps and bugs found
 
 ## Quick Links
 
