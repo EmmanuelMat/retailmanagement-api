@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { FileText, Plus, Trash2 } from "lucide-react";
-import { Badge, Button, Card, CardContent, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Badge, Button, Card, CardContent, ConfirmDialog, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { ESTADO_VARIANT } from "../estado-variant";
 
@@ -95,6 +95,7 @@ export default function OrdenServicioDetallePage() {
   const [orden, setOrden] = useState<OrdenDetalle | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [cancelando, setCancelando] = useState(false);
   const [tab, setTab] = useState("resumen");
 
   const [clientes, setClientes] = useState<Cliente[]>([]);
@@ -151,6 +152,11 @@ export default function OrdenServicioDetallePage() {
     }
   }
 
+  async function confirmarCancelar() {
+    await runAction("/cancelar");
+    setCancelando(false);
+  }
+
   if (error && !orden) return <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm max-w-xl">{error}</div>;
   if (!orden) return <p className="text-sm text-muted-foreground">Cargando...</p>;
 
@@ -179,12 +185,28 @@ export default function OrdenServicioDetallePage() {
             </>
           )}
           {puedeCancelar && (
-            <Button size="sm" variant="destructive" disabled={busy} onClick={() => runAction("/cancelar")}>Cancelar</Button>
+            <Button size="sm" variant="destructive" disabled={busy} onClick={() => setCancelando(true)} data-testid="orden-cancelar">Cancelar</Button>
           )}
         </div>
       </div>
 
       {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{error}</div>}
+
+      <ConfirmDialog
+        open={cancelando}
+        onClose={() => setCancelando(false)}
+        onConfirm={confirmarCancelar}
+        busy={busy}
+        destructive
+        title={`¿Cancelar la orden ${codigo}?`}
+        confirmLabel="Cancelar orden"
+        description={
+          <>
+            <p>La orden queda como cancelada y ya no se podrá editar, agregar ni quitar renglones, consumir materiales ni facturar. No se puede reabrir.</p>
+            <p>Cancelar no devuelve al inventario los materiales que ya se hayan consumido en esta orden.</p>
+          </>
+        }
+      />
 
       <Card>
         <CardContent className="pt-5 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">

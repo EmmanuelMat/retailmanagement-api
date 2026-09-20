@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { Plus, Check, X, HandCoins, Search } from "lucide-react";
 import {
-  Badge, Button, Card, CardHeader, CardTitle, CardContent, Label, Select, Input, AsyncCombobox,
+  Badge, Button, Card, CardHeader, CardTitle, CardContent, ConfirmDialog, Label, Select, Input, AsyncCombobox,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
   Pagination, ScrollableTableCard, formatDOP,
 } from "@repo/ui";
@@ -121,21 +121,22 @@ function AdelantosPageContent() {
     }
   }
 
-  async function handleAprobar(id: string) {
-    try {
-      await apiFetch(`/api/nomina/adelantos/${id}/aprobar`, { method: "POST" });
-      refresh();
-    } catch (e: any) {
-      setFormError(e.message);
-    }
-  }
+  // Aprobar mueve efectivo de caja al instante y rechazar cierra la solicitud,
+  // así que ambos piden confirmación antes de llamar al backend.
+  const [accion, setAccion] = useState<{ tipo: "aprobar" | "rechazar"; adelanto: Adelanto } | null>(null);
+  const [accionando, setAccionando] = useState(false);
 
-  async function handleRechazar(id: string) {
+  async function handleConfirmarAccion() {
+    if (!accion) return;
+    setAccionando(true);
     try {
-      await apiFetch(`/api/nomina/adelantos/${id}/rechazar`, { method: "POST" });
+      await apiFetch(`/api/nomina/adelantos/${accion.adelanto.id}/${accion.tipo === "aprobar" ? "aprobar" : "rechazar"}`, { method: "POST" });
       refresh();
     } catch (e: any) {
       setFormError(e.message);
+    } finally {
+      setAccionando(false);
+      setAccion(null);
     }
   }
 
@@ -250,8 +251,8 @@ function AdelantosPageContent() {
                 <TableCell className="text-right">
                   {a.estado === "PENDIENTE" && (
                     <div className="flex justify-end gap-1">
-                      <Button size="icon" variant="ghost" onClick={() => handleAprobar(a.id)} data-testid="adelanto-aprobar"><Check className="h-4 w-4" /></Button>
-                      <Button size="icon" variant="ghost" onClick={() => handleRechazar(a.id)} data-testid="adelanto-rechazar"><X className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="ghost" onClick={() => setAccion({ tipo: "aprobar", adelanto: a })} data-testid="adelanto-aprobar"><Check className="h-4 w-4" /></Button>
+                      <Button size="icon" variant="ghost" onClick={() => setAccion({ tipo: "rechazar", adelanto: a })} data-testid="adelanto-rechazar"><X className="h-4 w-4" /></Button>
                     </div>
                   )}
                 </TableCell>
@@ -260,6 +261,31 @@ function AdelantosPageContent() {
           </TableBody>
         </Table>
       </ScrollableTableCard>
+
+      <ConfirmDialog
+        open={accion !== null}
+        onClose={() => setAccion(null)}
+        onConfirm={handleConfirmarAccion}
+        busy={accionando}
+        destructive={accion?.tipo === "rechazar"}
+        title={accion?.tipo === "aprobar" ? "¿Aprobar este adelanto?" : "¿Rechazar este adelanto?"}
+        confirmLabel={accion?.tipo === "aprobar" ? "Aprobar adelanto" : "Rechazar adelanto"}
+        description={
+          accion && (
+            <>
+              <p>
+                <strong>{accion.adelanto.empleado_nombre}</strong> · {formatDOP(accion.adelanto.monto)}
+                {accion.adelanto.motivo ? ` · ${accion.adelanto.motivo}` : ""}
+              </p>
+              {accion.tipo === "aprobar" ? (
+                <p>El dinero sale de caja de inmediato y se descontará de la próxima nómina del empleado.</p>
+              ) : (
+                <p>La solicitud queda rechazada y no se entrega dinero.</p>
+              )}
+            </>
+          )
+        }
+      />
     </div>
   );
 }
