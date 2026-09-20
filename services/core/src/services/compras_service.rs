@@ -182,6 +182,8 @@ impl ComprasService {
             anyhow::bail!("Una Nota de Crédito/Débito debe indicar el NCF o Documento Modificado");
         }
 
+        let es_nota_credito = tipo_documento == "NOTA_CREDITO";
+
         let mut tx = self.pool.begin().await?;
 
         let mut subtotal_total = Decimal::ZERO;
@@ -210,20 +212,34 @@ impl ComprasService {
             subtotal_total += line_subtotal;
             itbis_total += line_itbis;
 
-            // Costo promedio ponderado
-            let nuevo_stock = stock_actual + item.cantidad;
-            let nuevo_costo = if nuevo_stock > Decimal::ZERO {
-                (costo_actual * stock_actual + item.costo_unitario * item.cantidad) / nuevo_stock
+            if es_nota_credito {
+                // Devolución al proveedor: el stock sale, no entra. El costo
+                // promedio ponderado no se recalcula en una salida.
+                if stock_actual < item.cantidad {
+                    anyhow::bail!("Stock insuficiente para devolver {}: disponible {}, se intenta devolver {}", nombre, stock_actual, item.cantidad);
+                }
+                let nuevo_stock = stock_actual - item.cantidad;
+                sqlx::query("UPDATE productos SET stock_actual = $1, updated_at = NOW() WHERE id = $2")
+                    .bind(nuevo_stock)
+                    .bind(item.producto_id)
+                    .execute(&mut *tx)
+                    .await?;
             } else {
-                item.costo_unitario
-            };
+                // Costo promedio ponderado
+                let nuevo_stock = stock_actual + item.cantidad;
+                let nuevo_costo = if nuevo_stock > Decimal::ZERO {
+                    (costo_actual * stock_actual + item.costo_unitario * item.cantidad) / nuevo_stock
+                } else {
+                    item.costo_unitario
+                };
 
-            sqlx::query("UPDATE productos SET stock_actual = $1, costo = $2, updated_at = NOW() WHERE id = $3")
-                .bind(nuevo_stock)
-                .bind(nuevo_costo)
-                .bind(item.producto_id)
-                .execute(&mut *tx)
-                .await?;
+                sqlx::query("UPDATE productos SET stock_actual = $1, costo = $2, updated_at = NOW() WHERE id = $3")
+                    .bind(nuevo_stock)
+                    .bind(nuevo_costo)
+                    .bind(item.producto_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
 
             lineas.push((item.producto_id, sku, nombre, item.cantidad, item.costo_unitario, line_itbis, line_subtotal));
         }
@@ -293,15 +309,21 @@ impl ComprasService {
             .await?;
             items.push(ci);
 
+            let (tipo_movimiento, cantidad_movimiento, costo_movimiento, motivo_movimiento) = if es_nota_credito {
+                ("SALIDA", -cantidad, None, "Devolución a proveedor".to_string())
+            } else {
+                ("ENTRADA", cantidad, Some(costo_unitario), "Compra a proveedor".to_string())
+            };
+
             crate::services::inventario_service::InventarioService::insert_movimiento_tx(
                 &mut tx,
                 tenant_id,
                 Some(usuario_id),
                 producto_id,
-                "ENTRADA",
-                cantidad,
-                Some(costo_unitario),
-                Some("Compra a proveedor".to_string()),
+                tipo_movimiento,
+                cantidad_movimiento,
+                costo_movimiento,
+                Some(motivo_movimiento),
                 Some("COMPRA"),
                 Some(compra.id),
             )
@@ -312,11 +334,18 @@ impl ComprasService {
         // Pagar en su lugar (ver contabilidad_service::sincronizar), igual
         // que ventas_service salta el ingreso de caja para una venta FIADO.
         if metodo_pago != "FIADO" {
+            let (tipo_caja, concepto_caja) = if es_nota_credito {
+                ("INGRESO", "Devolución de compra a proveedor")
+            } else {
+                ("EGRESO", "Compra a proveedor")
+            };
             sqlx::query(
                 r#"INSERT INTO caja_movimientos (tenant_id, tipo, concepto, monto, metodo_pago, referencia_tipo, referencia_id, usuario_id)
-                   VALUES ($1, 'EGRESO', 'Compra a proveedor', $2, $3, 'COMPRA', $4, $5)"#,
+                   VALUES ($1, $2, $3, $4, $5, 'COMPRA', $6, $7)"#,
             )
             .bind(tenant_id)
+            .bind(tipo_caja)
+            .bind(concepto_caja)
             .bind(total)
             .bind(&metodo_pago)
             .bind(compra.id)

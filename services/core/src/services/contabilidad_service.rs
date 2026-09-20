@@ -589,8 +589,8 @@ impl ContabilidadService {
 
         // --- Compras: de contado (Caja) o FIADO (Cuentas por Pagar) - mismo
         // patrón que Ventas arriba, en espejo (por pagar en vez de por cobrar).
-        let compras: Vec<(Uuid, Decimal, Decimal, Decimal, String, DateTime<Utc>)> = sqlx::query_as(
-            r#"SELECT c.id, c.subtotal, c.itbis_total, c.total, c.metodo_pago, c.created_at
+        let compras: Vec<(Uuid, Decimal, Decimal, Decimal, String, String, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT c.id, c.subtotal, c.itbis_total, c.total, c.metodo_pago, c.tipo_documento, c.created_at
                FROM compras c
                WHERE c.tenant_id = $1
                  AND NOT EXISTS (SELECT 1 FROM asientos a WHERE a.tenant_id = c.tenant_id AND a.referencia_tipo = 'COMPRA' AND a.referencia_id = c.id)"#,
@@ -599,15 +599,28 @@ impl ContabilidadService {
         .fetch_all(&mut *tx)
         .await?;
         let mut compras_count = 0i64;
-        for (id, subtotal, itbis, total, metodo_pago, created_at) in compras {
+        for (id, subtotal, itbis, total, metodo_pago, tipo_documento, created_at) in compras {
             let fecha = created_at.date_naive();
-            let mut lineas = vec![("1200 Inventario".to_string(), subtotal, Decimal::ZERO)];
-            if itbis > Decimal::ZERO {
-                lineas.push(("1150 ITBIS Adelantado".to_string(), itbis, Decimal::ZERO));
-            }
             let cuenta_pago = if metodo_pago == "FIADO" { "2110 Cuentas por Pagar" } else { "1100 Caja y Bancos" };
-            lineas.push((cuenta_pago.to_string(), Decimal::ZERO, total));
-            if self.create_entry(&mut tx, tenant_id, fecha, "Compra a proveedor", "AUTOMATICO", "COMPRA", Some(id), None, None, &lineas).await?.is_some() {
+            let (lineas, concepto) = if tipo_documento == "NOTA_CREDITO" {
+                // Devolución a proveedor: mismas cuentas que una compra
+                // normal, debe/haber invertidos, usando los montos propios
+                // de esta nota (sus compra_items ya traen lo devuelto).
+                let mut l = vec![("1200 Inventario".to_string(), Decimal::ZERO, subtotal)];
+                if itbis > Decimal::ZERO {
+                    l.push(("1150 ITBIS Adelantado".to_string(), Decimal::ZERO, itbis));
+                }
+                l.push((cuenta_pago.to_string(), total, Decimal::ZERO));
+                (l, "Devolución a proveedor")
+            } else {
+                let mut l = vec![("1200 Inventario".to_string(), subtotal, Decimal::ZERO)];
+                if itbis > Decimal::ZERO {
+                    l.push(("1150 ITBIS Adelantado".to_string(), itbis, Decimal::ZERO));
+                }
+                l.push((cuenta_pago.to_string(), Decimal::ZERO, total));
+                (l, "Compra a proveedor")
+            };
+            if self.create_entry(&mut tx, tenant_id, fecha, concepto, "AUTOMATICO", "COMPRA", Some(id), None, None, &lineas).await?.is_some() {
                 compras_count += 1;
             }
         }
