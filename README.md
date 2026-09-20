@@ -2,7 +2,7 @@
 
 **Sistema POS banco-grado para PYMES Dominicanas. 100% en Español. Cumple DGII Facturación Electrónica e-CF.**
 
-> No es un POS CRUD. Es un núcleo bancario con contabilidad de doble entrada, nómina con adelantos 50% y firma XAdES-BES real.
+> No es un POS CRUD. Es un núcleo bancario con contabilidad de doble entrada, nómina con adelantos 50% y firma XML-DSig real según especificación e-CF de la DGII.
 
 ## 🚀 Stack Monorepo
 
@@ -17,7 +17,7 @@ services/
   core/         -> Núcleo fiscal-core en Rust (bank-grade)
                 • EventStore Postgres append-only hash-encadenado
                 • Contabilidad de doble entrada plana en Postgres (asientos_contables)
-                • Firma XAdES-BES real per DGII spec (C14N, RSA-SHA256, DigestValue, QR)
+                • Firma XML-DSig real per DGII e-CF spec (C14N, RSA-SHA256, DigestValue, QR)
                 • Motor de Adelantos 50% (Earned Wage Access)
                 • HTTP :3001 + gRPC :50051
 
@@ -32,12 +32,12 @@ docs/           -> Documentación primero (9 docs)
 
 - **Ley 32-23 e-CF obligatorio** desde 15 Nov 2026 para pequeños/micros
 - Tipos: E31 (Crédito Fiscal B2B), E32 (Consumo B2C <250k con RFCE resumen diario), E33/E34 Notas Débito/Crédito, E41-E47
-- Firma: XAdES-BES real implementada en Rust
+- Firma: XML-DSig (enveloped signature) real implementada en Rust, según especificación "Firmado de e-CF" de la DGII
   - CanonicalizationMethod: `http://www.w3.org/TR/2001/REC-xml-c14n-20010315`
   - SignatureMethod: `rsa-sha256`, DigestMethod: `sha256`
   - Transform: `enveloped-signature`, Reference URI=""
   - Flujo: c14n(original) -> SHA256 digest -> build SignedInfo -> c14n(SignedInfo) -> RSA-SHA256 sign -> SignatureValue -> QR con codigo_seguridad (6 chars)
-- Reportes: 606 Compras, 607 Ventas, 608 Anulados, 609 Pagos exterior, IT-1
+- Reportes: 606 Compras, IT-1 (607 y 608 no aplican — un emisor 100% electrónico está exento por Norma 07-2018 Art. 4/8; 609 Pagos al Exterior aún no implementado)
 - ITBIS: 18% general, 16% reducida (yogurt, café, azúcar...), Exento (carne, leche, pan...)
 
 Ver `docs/02-DGII-COMPLIANCE.md` (15k palabras investigación)
@@ -85,7 +85,7 @@ Ver `docs/05-PAYROLL-ADVANCE.md`
 
 Archivo: `apps/web/app/page.tsx` y `apps/mobile/src/index.tsx` - 100% español.
 
-## 🔐 Firma XAdES-BES Real en Rust
+## 🔐 Firma XML-DSig Real en Rust (especificación e-CF DGII)
 
 Ubicación: `services/core/src/services/ecfl_service.rs` + `xml_c14n.rs`
 
@@ -138,4 +138,4 @@ docker-compose up -d
 - [ ] Prisma read models en web
 - [ ] Tauri wrapper para POS offline en colmados sin internet
 
-Hecho en 🇩🇴 Santo Domingo, listo para certificación PSFE DGII.
+Hecho en 🇩🇴 Santo Domingo. En preparación para certificación PSFE DGII (aún no certificado).
