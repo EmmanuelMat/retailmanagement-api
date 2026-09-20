@@ -4,9 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { FileText, Plus, Trash2 } from "lucide-react";
-import { Badge, Button, Card, CardContent, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Badge, Button, Card, CardContent, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { ESTADO_VARIANT } from "../estado-variant";
+import { ProductoPicker } from "../../producto-picker";
 
 interface OrdenItem {
   id: string;
@@ -15,10 +16,11 @@ interface OrdenItem {
   nombre: string;
   tipo: "PRODUCTO" | "SERVICIO";
   cantidad: string;
-  precio_unitario: string;
-  descuento: string;
-  itbis_monto: string;
-  subtotal: string;
+  observaciones: string | null;
+  // Solo tiene valor cuando la orden se creó directamente con precio (ver
+  // ordenes-servicio/nueva/page.tsx) - una orden convertida desde una
+  // cotización trae esto en null hasta que se factura.
+  precio_unitario: string | null;
 }
 
 interface OrdenTecnico {
@@ -225,20 +227,9 @@ export default function OrdenServicioDetallePage() {
           {tab === "materiales" && <MaterialesTab orden={orden} productos={productos} nombreProducto={nombreProducto} onChanged={load} />}
           {tab === "notas" && <NotasTab orden={orden} onChanged={load} />}
           {tab === "actividad" && <ActividadTab entradas={auditoria} />}
-          {tab === "facturacion" && <FacturacionTab orden={orden} onChanged={load} />}
+          {tab === "facturacion" && <FacturacionTab orden={orden} productos={productos} onChanged={load} />}
         </CardContent>
       </Card>
-    </div>
-  );
-}
-
-function TotalsBox({ orden }: { orden: OrdenDetalle }) {
-  return (
-    <div className="text-sm space-y-1 max-w-xs ml-auto pt-3">
-      <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatDOP(orden.subtotal)}</span></div>
-      <div className="flex justify-between text-muted-foreground"><span>Descuento</span><span className="tabular-nums">{formatDOP(orden.descuento)}</span></div>
-      <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(orden.itbis_total)}</span></div>
-      <div className="flex justify-between font-bold text-base pt-1 border-t border-border mt-1"><span>Total</span><span className="tabular-nums">{formatDOP(orden.total)}</span></div>
     </div>
   );
 }
@@ -249,11 +240,10 @@ function ResumenTab({ orden }: { orden: OrdenDetalle }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Producto</TableHead>
+            <TableHead>Servicio</TableHead>
             <TableHead className="text-right">Cant.</TableHead>
             <TableHead className="text-right">Precio</TableHead>
-            <TableHead className="text-right">ITBIS</TableHead>
-            <TableHead className="text-right">Subtotal</TableHead>
+            <TableHead>Descripción</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -264,14 +254,19 @@ function ResumenTab({ orden }: { orden: OrdenDetalle }) {
                 {it.tipo === "SERVICIO" && <Badge variant="accent" className="ml-2">Servicio</Badge>}
               </TableCell>
               <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
-              <TableCell className="text-right tabular-nums">{formatDOP(it.precio_unitario)}</TableCell>
-              <TableCell className="text-right tabular-nums">{formatDOP(it.itbis_monto)}</TableCell>
-              <TableCell className="text-right tabular-nums font-medium">{formatDOP(it.subtotal)}</TableCell>
+              <TableCell className="text-right tabular-nums">{it.precio_unitario ? formatDOP(it.precio_unitario) : "—"}</TableCell>
+              <TableCell className="text-muted-foreground text-xs">{it.observaciones || "—"}</TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
-      <TotalsBox orden={orden} />
+      {Number(orden.total) > 0 && (
+        <div className="text-sm space-y-1 max-w-xs ml-auto pt-1">
+          <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatDOP(orden.subtotal)}</span></div>
+          <div className="flex justify-between text-muted-foreground"><span>ITBIS</span><span className="tabular-nums">{formatDOP(orden.itbis_total)}</span></div>
+          <div className="flex justify-between font-bold text-base pt-1 border-t border-border mt-1"><span>Total</span><span className="tabular-nums">{formatDOP(orden.total)}</span></div>
+        </div>
+      )}
       {orden.descripcion && (
         <div className="text-sm text-muted-foreground bg-muted/40 rounded-md p-3">{orden.descripcion}</div>
       )}
@@ -284,11 +279,10 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
   const [cantidad, setCantidad] = useState("");
   const [precioUnitario, setPrecioUnitario] = useState("");
   const [descuento, setDescuento] = useState("");
+  const [observaciones, setObservaciones] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const soloLectura = ["COMPLETADA", "CANCELADA"].includes(orden.estado);
-  const prod = productos.find((p) => p.id === productoId);
-  const esServicio = prod?.tipo === "SERVICIO";
 
   async function handleAdd() {
     if (!productoId || !cantidad) return;
@@ -300,11 +294,12 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
         body: JSON.stringify({
           producto_id: productoId,
           cantidad,
+          observaciones: observaciones || undefined,
+          precio_unitario: precioUnitario || undefined,
           descuento: descuento || undefined,
-          precio_unitario: esServicio ? precioUnitario : undefined,
         }),
       });
-      setProductoId(""); setCantidad(""); setPrecioUnitario(""); setDescuento("");
+      setProductoId(""); setCantidad(""); setPrecioUnitario(""); setDescuento(""); setObservaciones("");
       onChanged();
     } catch (e: any) {
       setError(e.message);
@@ -327,11 +322,10 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Producto</TableHead>
+            <TableHead>Servicio</TableHead>
             <TableHead className="text-right">Cant.</TableHead>
-            <TableHead className="text-right">Precio c/u</TableHead>
-            <TableHead className="text-right">Descuento</TableHead>
-            <TableHead className="text-right">Subtotal</TableHead>
+            <TableHead className="text-right">Precio</TableHead>
+            <TableHead>Descripción</TableHead>
             {!soloLectura && <TableHead className="w-10"></TableHead>}
           </TableRow>
         </TableHeader>
@@ -340,9 +334,8 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
             <TableRow key={it.id}>
               <TableCell className="font-medium">{it.nombre}</TableCell>
               <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
-              <TableCell className="text-right tabular-nums">{formatDOP(it.precio_unitario)}</TableCell>
-              <TableCell className="text-right tabular-nums">{formatDOP(it.descuento)}</TableCell>
-              <TableCell className="text-right tabular-nums font-medium">{formatDOP(it.subtotal)}</TableCell>
+              <TableCell className="text-right tabular-nums">{it.precio_unitario ? formatDOP(it.precio_unitario) : "—"}</TableCell>
+              <TableCell className="text-muted-foreground text-xs">{it.observaciones || "—"}</TableCell>
               {!soloLectura && (
                 <TableCell className="text-right">
                   <Button size="icon" variant="ghost" onClick={() => handleRemove(it.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
@@ -354,19 +347,22 @@ function ItemsTab({ orden, productos, onChanged }: { orden: OrdenDetalle; produc
       </Table>
 
       {!soloLectura && (
-        <div className={`grid gap-2 items-end ${esServicio ? "grid-cols-[1fr_90px_110px_110px_auto]" : "grid-cols-[1fr_90px_110px_auto]"}`}>
-          <Select value={productoId} onChange={(e) => setProductoId(e.target.value)}>
-            <option value="">Producto o servicio…</option>
-            {productos.map((p) => <option key={p.id} value={p.id}>{p.sku} · {p.nombre}</option>)}
-          </Select>
+        <div className="grid gap-2 items-end grid-cols-[1fr_90px_110px_110px_1fr_auto]">
+          <ProductoPicker productos={productos} value={productoId} onChange={setProductoId} placeholder="Servicio…" />
           <Input type="number" step="0.01" placeholder="Cant." value={cantidad} onChange={(e) => setCantidad(e.target.value)} />
-          {esServicio && <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />}
+          <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />
           <Input type="number" step="0.01" placeholder="Descuento RD$" value={descuento} onChange={(e) => setDescuento(e.target.value)} />
+          <Textarea
+            placeholder="Descripción (opcional)"
+            value={observaciones}
+            onChange={(e) => setObservaciones(e.target.value)}
+            rows={1}
+            className="min-h-10 py-2 resize-y"
+          />
           <Button type="button" size="sm" disabled={saving || !productoId || !cantidad} onClick={handleAdd}><Plus className="h-4 w-4" />Agregar</Button>
         </div>
       )}
       {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{error}</div>}
-      <TotalsBox orden={orden} />
     </div>
   );
 }
@@ -595,16 +591,35 @@ function ActividadTab({ entradas }: { entradas: AuditoriaEntry[] }) {
   );
 }
 
-function FacturacionTab({ orden, onChanged }: { orden: OrdenDetalle; onChanged: () => void }) {
+function FacturacionTab({ orden, productos, onChanged }: { orden: OrdenDetalle; productos: Producto[]; onChanged: () => void }) {
   const [metodoPago, setMetodoPago] = useState("EFECTIVO");
+  // Una orden creada directamente puede traer su propio precio por línea -
+  // se precarga aquí (editable) para no pedirlo dos veces; una orden
+  // convertida desde cotización llega sin precio, como siempre.
+  const [precios, setPrecios] = useState<Record<string, string>>(() =>
+    Object.fromEntries(orden.items.filter((it) => it.precio_unitario).map((it) => [it.id, it.precio_unitario as string]))
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   async function handleFacturar() {
+    const faltante = orden.items.find((it) => {
+      return it.tipo === "SERVICIO" && !(Number(precios[it.id]) > 0);
+    });
+    if (faltante) {
+      setError(`Escribe el precio de "${faltante.nombre}".`);
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const venta = await apiFetch<{ id: string }>(`/api/ordenes-servicio/${orden.id}/crear-factura`, { method: "POST", body: JSON.stringify({ metodo_pago: metodoPago }) });
+      const venta = await apiFetch<{ id: string }>(`/api/ordenes-servicio/${orden.id}/crear-factura`, {
+        method: "POST",
+        body: JSON.stringify({
+          metodo_pago: metodoPago,
+          items: orden.items.map((it) => ({ item_id: it.id, precio_unitario: precios[it.id] || undefined })),
+        }),
+      });
       onChanged();
       window.location.href = `/ventas/${venta.id}`;
     } catch (e: any) {
@@ -632,7 +647,41 @@ function FacturacionTab({ orden, onChanged }: { orden: OrdenDetalle; onChanged: 
   }
 
   return (
-    <div className="max-w-xs space-y-3">
+    <div className="max-w-md space-y-3">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Servicio</TableHead>
+            <TableHead className="text-right">Cant.</TableHead>
+            <TableHead className="text-right">Precio c/u</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {orden.items.map((it) => {
+            const prod = productos.find((p) => p.id === it.producto_id);
+            const esServicio = it.tipo === "SERVICIO";
+            return (
+              <TableRow key={it.id}>
+                <TableCell className="font-medium">{it.nombre}</TableCell>
+                <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
+                <TableCell className="text-right">
+                  {esServicio ? (
+                    <Input
+                      type="number"
+                      step="0.01"
+                      className="text-right"
+                      value={precios[it.id] || ""}
+                      onChange={(e) => setPrecios((p) => ({ ...p, [it.id]: e.target.value }))}
+                    />
+                  ) : (
+                    <span className="tabular-nums text-muted-foreground">{formatDOP(prod?.precio_venta || "0")}</span>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
       <div className="space-y-1.5">
         <Label htmlFor="metodo">Método de pago</Label>
         <Select id="metodo" value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>

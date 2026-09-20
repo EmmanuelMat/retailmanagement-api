@@ -4,9 +4,10 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { FileText, Plus, Trash2 } from "lucide-react";
-import { Badge, Button, Card, CardContent, Dialog, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Badge, Button, Card, CardContent, Dialog, Input, Label, Select, Tabs, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea, formatDOP } from "@repo/ui";
 import { apiFetch, ApiError } from "@/lib/api";
 import { ClientePicker } from "../../cliente-picker";
+import { ProductoPicker } from "../../producto-picker";
 
 interface CotizacionItem {
   id: string;
@@ -17,6 +18,7 @@ interface CotizacionItem {
   descuento: string;
   itbis_monto: string;
   subtotal: string;
+  descripcion: string | null;
 }
 
 interface Producto {
@@ -244,17 +246,15 @@ function ResumenTab({
   const [cantidad, setCantidad] = useState("");
   const [descuento, setDescuento] = useState("");
   const [precioUnitario, setPrecioUnitario] = useState("");
+  const [descripcionLinea, setDescripcionLinea] = useState("");
   const [agregando, setAgregando] = useState(false);
   const [quitandoId, setQuitandoId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
-  const prodSel = productos.find((p) => p.id === productoId);
-  const esServicio = prodSel?.tipo === "SERVICIO";
-
   async function handleAdd() {
     if (!productoId || !cantidad) return;
-    if (esServicio && !(Number(precioUnitario) > 0)) {
-      setError("Escribe el precio de este servicio.");
+    if (!(Number(precioUnitario) > 0)) {
+      setError("Escribe el precio de esta línea.");
       return;
     }
     setAgregando(true);
@@ -266,13 +266,15 @@ function ResumenTab({
           producto_id: productoId,
           cantidad,
           descuento: descuento || undefined,
-          precio_unitario: esServicio ? precioUnitario : undefined,
+          precio_unitario: precioUnitario,
+          descripcion: descripcionLinea || undefined,
         }),
       });
       setProductoId("");
       setCantidad("");
       setDescuento("");
       setPrecioUnitario("");
+      setDescripcionLinea("");
       onChanged();
     } catch (e: any) {
       setError(e.message);
@@ -301,6 +303,7 @@ function ResumenTab({
           <TableRow>
             <TableHead>SKU</TableHead>
             <TableHead>Producto</TableHead>
+            <TableHead>Descripción</TableHead>
             <TableHead className="text-right">Cant.</TableHead>
             <TableHead className="text-right">Precio</TableHead>
             <TableHead className="text-right">Descuento</TableHead>
@@ -313,6 +316,7 @@ function ResumenTab({
             <TableRow key={it.id}>
               <TableCell className="font-mono text-xs text-muted-foreground">{it.sku}</TableCell>
               <TableCell className="font-medium">{it.nombre}</TableCell>
+              <TableCell className="text-muted-foreground text-xs">{it.descripcion || "—"}</TableCell>
               <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
               <TableCell className="text-right tabular-nums">{formatDOP(it.precio_unitario)}</TableCell>
               <TableCell className="text-right tabular-nums">{formatDOP(it.descuento)}</TableCell>
@@ -330,20 +334,26 @@ function ResumenTab({
       </Table>
 
       {puedeEditar && (
-        <div className={`grid gap-2 items-end ${esServicio ? "grid-cols-[1fr_90px_110px_110px_auto]" : "grid-cols-[1fr_90px_110px_auto]"}`}>
-          <Select value={productoId} onChange={(e) => setProductoId(e.target.value)}>
-            <option value="">Producto…</option>
-            {productos.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.sku} · {p.nombre} {p.tipo === "SERVICIO" ? "(servicio)" : `(${formatDOP(p.precio_venta || "0")})`}
-              </option>
-            ))}
-          </Select>
+        <div className="grid gap-2 items-end grid-cols-[1fr_90px_110px_110px_1fr_auto]">
+          <ProductoPicker
+            productos={productos}
+            value={productoId}
+            onChange={(id) => {
+              setProductoId(id);
+              const nuevo = productos.find((p) => p.id === id);
+              setPrecioUnitario(nuevo?.tipo === "PRODUCTO" ? nuevo.precio_venta || "" : "");
+            }}
+          />
           <Input type="number" step="0.01" placeholder="Cant." value={cantidad} onChange={(e) => setCantidad(e.target.value)} />
-          {esServicio && (
-            <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />
-          )}
+          <Input type="number" step="0.01" placeholder="Precio c/u" value={precioUnitario} onChange={(e) => setPrecioUnitario(e.target.value)} />
           <Input type="number" step="0.01" placeholder="Descuento RD$" value={descuento} onChange={(e) => setDescuento(e.target.value)} />
+          <Textarea
+            placeholder="Descripción (opcional)"
+            value={descripcionLinea}
+            onChange={(e) => setDescripcionLinea(e.target.value)}
+            rows={1}
+            className="min-h-10 py-2 resize-y"
+          />
           <Button type="button" size="sm" disabled={agregando || !productoId || !cantidad} onClick={handleAdd}>
             <Plus className="h-4 w-4" />{agregando ? "..." : "Agregar"}
           </Button>
@@ -372,6 +382,10 @@ function ConversionTab({
   const [convirtiendo, setConvirtiendo] = useState(false);
   const [convertirError, setConvertirError] = useState("");
   const [convirtiendoOrden, setConvirtiendoOrden] = useState(false);
+  // El cliente que paga la orden no siempre es quien recibe el servicio
+  // (p.ej. se paga por un familiar) - se pide siempre, nunca se asume igual
+  // a la dirección registrada del cliente.
+  const [direccionOrden, setDireccionOrden] = useState("");
 
   const [mostrarAprobacion, setMostrarAprobacion] = useState(false);
   const [aprobacionMensaje, setAprobacionMensaje] = useState("");
@@ -379,10 +393,17 @@ function ConversionTab({
   const [adminPassword, setAdminPassword] = useState("");
 
   async function handleConvertirAOrden() {
+    if (!direccionOrden.trim()) {
+      setConvertirError("Escribe la dirección donde se realizará el servicio.");
+      return;
+    }
     setConvirtiendoOrden(true);
     setConvertirError("");
     try {
-      const orden = await apiFetch<{ id: string }>(`/api/cotizaciones/${cotizacion.id}/convertir-a-orden`, { method: "POST", body: JSON.stringify({}) });
+      const orden = await apiFetch<{ id: string }>(`/api/cotizaciones/${cotizacion.id}/convertir-a-orden`, {
+        method: "POST",
+        body: JSON.stringify({ direccion: direccionOrden }),
+      });
       onConvertida(`/ordenes-servicio/${orden.id}`);
     } catch (e: any) {
       setConvertirError(e.message);
@@ -440,6 +461,17 @@ function ConversionTab({
           <option value="FIADO">{esServicios ? "A crédito" : "Fiado"}</option>
         </Select>
       </div>
+      <div className="space-y-1.5 pt-1">
+        <Label htmlFor="direccionOrden">Dirección del servicio</Label>
+        <Input
+          id="direccionOrden"
+          value={direccionOrden}
+          onChange={(e) => setDireccionOrden(e.target.value)}
+          placeholder="Dirección donde se realizará el trabajo"
+        />
+        <p className="text-xs text-muted-foreground">Puede ser distinta a la dirección registrada del cliente — solo aplica al convertir a orden de servicio.</p>
+      </div>
+
       {convertirError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{convertirError}</div>}
       <Button className="w-full" onClick={() => handleConvertir()} disabled={convirtiendo}>
         {convirtiendo ? "Procesando..." : "Convertir a venta"}

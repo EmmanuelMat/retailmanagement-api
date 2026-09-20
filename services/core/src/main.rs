@@ -556,6 +556,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/categorias", get(http_list_categorias).post(http_create_categoria))
         .route("/v1/categorias/:id", axum::routing::put(http_update_categoria).delete(http_delete_categoria))
         .route("/v1/productos", get(http_list_productos).post(http_create_producto))
+        .route("/v1/productos/sugerir-codigo", get(http_sugerir_codigo_producto))
         .route("/v1/productos/:id", get(http_get_producto).put(http_update_producto).delete(http_delete_producto))
         .route("/v1/productos/:id/imagen", post(http_upload_producto_imagen))
         // MODULO 3: Inventario (kardex)
@@ -1848,6 +1849,22 @@ async fn http_delete_categoria(
 }
 
 #[derive(Debug, Deserialize)]
+struct SugerirCodigoParams {
+    nombre: String,
+}
+
+async fn http_sugerir_codigo_producto(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<SugerirCodigoParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let sku = state.catalog_service.sugerir_codigo(&claims.tenant_id, &params.nombre).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "sku": sku })))
+}
+
+#[derive(Debug, Deserialize)]
 struct ListProductosParams {
     #[serde(rename = "categoriaId")] categoria_id: Option<Uuid>,
     search: Option<String>,
@@ -2720,6 +2737,7 @@ async fn http_convertir_cotizacion(
             // un Servicio sin precio de catálogo) - se reusa tal cual, no se
             // vuelve a pedir en la conversión.
             precio_unitario: Some(it.precio_unitario),
+            descripcion: it.descripcion.clone(),
         }).collect(),
         metodo_pago: req.metodo_pago,
         tipo_ecf: req.tipo_ecf,
@@ -3188,10 +3206,25 @@ async fn http_cancelar_orden(
 }
 
 #[derive(Debug, Deserialize)]
+struct ItemPrecioFactura {
+    item_id: Uuid,
+    precio_unitario: Option<rust_decimal::Decimal>,
+    descuento: Option<rust_decimal::Decimal>,
+}
+
+#[derive(Debug, Deserialize)]
 struct FacturarOrdenRequest {
     metodo_pago: Option<String>,
     tipo_ecf: Option<i32>,
     aprobacion_admin: Option<AprobacionAdmin>,
+    /// Precio por línea, capturado una sola vez aquí - la orden ya no lo
+    /// guarda (ver docs/superpowers/specs/2026-09-13-cotizacion-servicio-pricing-design.md).
+    /// Solo hace falta una entrada por cada item de tipo SERVICIO; un
+    /// PRODUCTO en la orden usa su precio de catálogo sin importar lo que
+    /// venga aquí (ver ventas_service::create_venta, que ignora
+    /// precio_unitario para tipo PRODUCTO).
+    #[serde(default)]
+    items: Vec<ItemPrecioFactura>,
 }
 
 /// Convierte una Orden de Servicio COMPLETADA en Venta real reutilizando
@@ -3217,11 +3250,15 @@ async fn http_facturar_orden(
 
     let venta_req = services::ventas_service::CreateVentaRequest {
         cliente_id: orden_completa.orden.cliente_id,
-        items: orden_completa.items.iter().map(|it| services::ventas_service::CreateVentaItemRequest {
-            producto_id: it.producto_id,
-            cantidad: it.cantidad,
-            descuento: Some(it.descuento),
-            precio_unitario: Some(it.precio_unitario),
+        items: orden_completa.items.iter().map(|it| {
+            let precio = req.items.iter().find(|p| p.item_id == it.id);
+            services::ventas_service::CreateVentaItemRequest {
+                producto_id: it.producto_id,
+                cantidad: it.cantidad,
+                descuento: precio.and_then(|p| p.descuento),
+                precio_unitario: precio.and_then(|p| p.precio_unitario),
+                descripcion: it.observaciones.clone(),
+            }
         }).collect(),
         metodo_pago: req.metodo_pago,
         tipo_ecf: req.tipo_ecf,
@@ -3256,10 +3293,19 @@ async fn http_facturar_orden(
 /// Convierte una Cotización en Orden de Servicio (en vez de en Venta directa)
 /// reutilizando `orden_servicio_service::create_orden` - mismo patrón de
 /// orquestación que `http_convertir_cotizacion`.
+#[derive(Debug, Deserialize)]
+struct ConvertirCotizacionAOrdenRequest {
+    /// Dirección donde se hará el trabajo - independiente de la dirección
+    /// registrada del cliente (que paga la orden puede no ser quien recibe
+    /// el servicio, p.ej. un familiar).
+    direccion: Option<String>,
+}
+
 async fn http_convertir_cotizacion_a_orden(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
+    Json(req): Json<ConvertirCotizacionAOrdenRequest>,
 ) -> Result<Json<OrdenServicioCompletaResponse>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
@@ -3279,16 +3325,19 @@ async fn http_convertir_cotizacion_a_orden(
         condicion_id: None,
         prioridad: None,
         fecha_programada: None,
-        direccion: None,
+        direccion: req.direccion,
         descripcion: None,
         notas: None,
         items: cotizacion_completa.items.iter().map(|it| services::orden_servicio_service::CreateOrdenServicioItemRequest {
             producto_id: it.producto_id,
             cantidad: it.cantidad,
-            descuento: Some(it.descuento),
-            precio_unitario: Some(it.precio_unitario),
             tecnico_id: None,
-            observaciones: None,
+            observaciones: it.descripcion.clone(),
+            // La cotización ya fijó el precio de la línea - se reusa en la
+            // orden (queda editable en FacturacionTab, no hay que volver a
+            // escribirlo desde cero al facturar).
+            precio_unitario: Some(it.precio_unitario),
+            descuento: Some(it.descuento),
         }).collect(),
     };
 

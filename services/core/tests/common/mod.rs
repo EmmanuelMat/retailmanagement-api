@@ -69,6 +69,31 @@ impl TenantSession {
 
     /// Like `get`, but returns the raw status alongside the body instead of
     /// asserting success - for tests that expect (and must verify) a
+    /// rejection, e.g. a name that doesn't have enough letters for a code suggestion.
+    ///
+    /// Handlers here return errors as axum's `(StatusCode, String)`, which
+    /// renders as a plain-text body, not JSON - unlike every success
+    /// response. So the body is read as text first and only parsed as JSON
+    /// if it actually looks like JSON; otherwise it's wrapped as a JSON
+    /// string so callers can still inspect the error message uniformly via
+    /// `payload.as_str()` (success) or `payload["..."]` (error, rarely
+    /// needed) without the helper panicking on a plain-text error body.
+    pub async fn get_expect(&self, path: &str) -> (reqwest::StatusCode, Value) {
+        let resp = self
+            .client
+            .get(format!("{}{}", base_url(), path))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET {path} failed: {e}"));
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_else(|e| panic!("GET {path} response body unreadable: {e}"));
+        let payload = serde_json::from_str(&text).unwrap_or(Value::String(text));
+        (status, payload)
+    }
+
+    /// Like `get`, but returns the raw status alongside the body instead of
+    /// asserting success - for tests that expect (and must verify) a
     /// rejection, e.g. an over-cap payroll advance request.
     ///
     /// Handlers here return errors as axum's `(StatusCode, String)`, which

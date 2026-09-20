@@ -354,6 +354,50 @@ impl CatalogService {
         Ok(producto)
     }
 
+    /// Deriva un código a partir del nombre: primeras 3 letras (sin acentos,
+    /// sin espacios/puntuación), en mayúsculas, seguidas de la siguiente
+    /// secuencia de 4 dígitos para ese prefijo en este tenant. No hay tabla
+    /// de contadores - la secuencia se calcula de los SKUs existentes, así
+    /// que se autocorrige si se borra un producto. Ver
+    /// docs/superpowers/specs/2026-09-13-cotizacion-servicio-pricing-design.md.
+    pub async fn sugerir_codigo(&self, tenant_id: &str, nombre: &str) -> anyhow::Result<String> {
+        let prefijo = Self::prefijo_desde_nombre(nombre)?;
+        let like_pattern = format!("{}-%", prefijo);
+        let skus: Vec<(String,)> = sqlx::query_as("SELECT sku FROM productos WHERE tenant_id = $1 AND sku LIKE $2")
+            .bind(tenant_id)
+            .bind(&like_pattern)
+            .fetch_all(&self.pool)
+            .await?;
+        let siguiente = skus
+            .iter()
+            .filter_map(|(sku,)| sku.rsplit('-').next())
+            .filter_map(|n| n.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        Ok(format!("{}-{:04}", prefijo, siguiente))
+    }
+
+    fn prefijo_desde_nombre(nombre: &str) -> anyhow::Result<String> {
+        fn quitar_acentos(c: char) -> char {
+            match c {
+                'á' | 'Á' => 'a',
+                'é' | 'É' => 'e',
+                'í' | 'Í' => 'i',
+                'ó' | 'Ó' => 'o',
+                'ú' | 'Ú' | 'ü' | 'Ü' => 'u',
+                'ñ' | 'Ñ' => 'n',
+                other => other,
+            }
+        }
+        let letras: String = nombre.chars().filter(|c| c.is_alphabetic()).map(quitar_acentos).collect();
+        let prefijo: String = letras.chars().take(3).collect::<String>().to_uppercase();
+        if prefijo.chars().count() < 3 {
+            anyhow::bail!("El nombre necesita al menos 3 letras para generar un código");
+        }
+        Ok(prefijo)
+    }
+
     pub async fn update_producto(&self, tenant_id: &str, id: Uuid, req: UpdateProductoRequest) -> anyhow::Result<Producto> {
         let existing = self.get_producto(tenant_id, id).await?;
         let itbis_tipo = req.itbis_tipo.unwrap_or(existing.itbis_tipo);
