@@ -593,6 +593,9 @@ async fn main() -> anyhow::Result<()> {
         // MODULO 15: Órdenes de Servicio (Work Orders) + Órdenes de Compra + Adjuntos
         .route("/v1/condiciones-orden", get(http_list_condiciones_orden))
         .route("/v1/ordenes-servicio", get(http_list_ordenes_servicio).post(http_create_orden_servicio))
+        // El segmento estático `agenda` convive con `/:id` (matchit prioriza
+        // el estático) - mismo patrón que /v1/tenants/:rnc + /v1/tenants/me/modulos.
+        .route("/v1/ordenes-servicio/agenda", get(http_agenda_ordenes_servicio))
         .route("/v1/ordenes-servicio/:id", get(http_get_orden_servicio).patch(http_update_orden_servicio))
         .route("/v1/ordenes-servicio/:id/items", post(http_add_orden_servicio_item))
         .route("/v1/ordenes-servicio/:id/items/:item_id", axum::routing::delete(http_remove_orden_servicio_item))
@@ -3040,17 +3043,96 @@ async fn http_get_orden_servicio(
     Ok(Json(completa.into()))
 }
 
+/// Fase E - las dos rutas que programan trabajo (`PATCH /:id` y
+/// `POST /:id/tecnicos`) son las únicas del módulo que responden con un
+/// cuerpo JSON en el camino de error, porque un 409 de agenda tiene que
+/// listar las órdenes que chocan para que la pantalla las muestre. El resto
+/// del módulo sigue devolviendo texto plano como siempre; el proxy del web
+/// (`lib/core-proxy.ts`) ya maneja las dos formas.
+fn schedule_error_response(e: services::orden_servicio_service::ScheduleError) -> (StatusCode, Json<serde_json::Value>) {
+    use services::orden_servicio_service::ScheduleError;
+    match e {
+        ScheduleError::Conflicto { mensaje, conflictos } => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": mensaje, "conflictos": conflictos })),
+        ),
+        ScheduleError::Otro(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
+/// Deja rastro de cada vez que alguien pasa por encima de un conflicto de
+/// agenda: la regla es blanda a propósito, pero nunca silenciosa.
+async fn audit_conflicto_omitido(
+    state: &HttpState,
+    claims: &services::auth_service::Claims,
+    orden_id: Uuid,
+    conflictos: &[services::orden_servicio_service::ConflictoAgenda],
+) {
+    if conflictos.is_empty() {
+        return;
+    }
+    state
+        .audit_service
+        .log(
+            &claims.tenant_id,
+            Uuid::parse_str(&claims.sub).ok(),
+            "ORDEN_SERVICIO_CONFLICTO_AGENDA_OMITIDO",
+            "orden_servicio",
+            Some(orden_id),
+            serde_json::json!({ "conflictos": conflictos }),
+        )
+        .await;
+}
+
 async fn http_update_orden_servicio(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<services::orden_servicio_service::UpdateOrdenServicioRequest>,
-) -> Result<Json<services::orden_servicio_service::OrdenServicio>, (StatusCode, String)> {
-    let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let orden = state.orden_servicio_service.update_orden(&claims.tenant_id, id, req).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)
+        .map_err(|(s, m)| (s, Json(serde_json::json!({ "error": m }))))?;
+    let programada = state.orden_servicio_service.update_orden(&claims.tenant_id, id, req).await
+        .map_err(schedule_error_response)?;
+    audit_conflicto_omitido(&state, &claims, id, &programada.conflictos_omitidos).await;
     state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "ORDEN_SERVICIO_ACTUALIZADA", "orden_servicio", Some(id), serde_json::json!({})).await;
-    Ok(Json(orden))
+    let mut body = serde_json::to_value(&programada.orden).unwrap_or_else(|_| serde_json::json!({}));
+    body["avisos"] = serde_json::json!(programada.avisos);
+    Ok(Json(body))
+}
+
+#[derive(Debug, Deserialize)]
+struct AgendaParams {
+    desde: chrono::NaiveDate,
+    hasta: chrono::NaiveDate,
+    empleado_id: Option<Uuid>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+/// Agenda de trabajo por rango de fechas (Fase E). Hereda el permiso
+/// `ordenes_servicio.gestionar` del prefijo `/v1/ordenes-servicio` - no hay
+/// permiso nuevo ni cambio en `required_permiso`.
+async fn http_agenda_ordenes_servicio(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    params: Result<Query<AgendaParams>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<pagination::Page<services::orden_servicio_service::AgendaOrden>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    // `desde`/`hasta` son obligatorias: sin ellas esto sería un listado de
+    // toda la tabla, no una agenda. El rechazo por defecto de axum sería un
+    // 400 en inglés, así que se reemplaza por uno en español.
+    let Query(params) = params.map_err(|_| (StatusCode::BAD_REQUEST, "La agenda necesita 'desde' y 'hasta' en formato AAAA-MM-DD".to_string()))?;
+    let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    let (rows, total) = state.orden_servicio_service
+        .agenda(&claims.tenant_id, params.desde, params.hasta, params.empleado_id, &page, &sort)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let page_size = page.limit(50);
+    Ok(Json(pagination::Page::new(rows, page.page_number(), page_size, total)))
 }
 
 async fn http_add_orden_servicio_item(
@@ -3081,13 +3163,17 @@ async fn http_asignar_tecnico(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<services::orden_servicio_service::AsignarTecnicoRequest>,
-) -> Result<Json<services::orden_servicio_service::OrdenServicioTecnico>, (StatusCode, String)> {
-    let claims = claims_from_headers(&state.auth_service, &headers)?;
-    let tecnico = state.orden_servicio_service.asignar_tecnico(&claims.tenant_id, id, req).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)
+        .map_err(|(s, m)| (s, Json(serde_json::json!({ "error": m }))))?;
+    let resultado = state.orden_servicio_service.asignar_tecnico(&claims.tenant_id, id, req).await
+        .map_err(schedule_error_response)?;
+    audit_conflicto_omitido(&state, &claims, id, &resultado.conflictos_omitidos).await;
     state.audit_service.log(&claims.tenant_id, Uuid::parse_str(&claims.sub).ok(), "ORDEN_SERVICIO_TECNICO_ASIGNADO", "orden_servicio", Some(id),
-        serde_json::json!({ "empleado_id": tecnico.empleado_id })).await;
-    Ok(Json(tecnico))
+        serde_json::json!({ "empleado_id": resultado.asignacion.empleado_id })).await;
+    let mut body = serde_json::to_value(&resultado.asignacion).unwrap_or_else(|_| serde_json::json!({}));
+    body["avisos"] = serde_json::json!(resultado.avisos);
+    Ok(Json(body))
 }
 
 async fn http_quitar_tecnico(
@@ -3279,6 +3365,8 @@ async fn http_convertir_cotizacion_a_orden(
         condicion_id: None,
         prioridad: None,
         fecha_programada: None,
+        hora_inicio: None,
+        hora_fin: None,
         direccion: None,
         descripcion: None,
         notas: None,
