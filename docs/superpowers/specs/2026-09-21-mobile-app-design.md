@@ -42,7 +42,7 @@ component. **This project cannot start**; it is a screenshot rendered as JSX, no
 
 ### 1.2 Wiring into the monorepo
 
-- **pnpm workspace: yes.** `pnpm-workspace.yaml:2` globs `apps/*`, and `pnpm-lock.yaml:22-52` has a real
+- **pnpm workspace: yes.** `pnpm-workspace.yaml:2` globs `apps/*`, and `pnpm-lock.yaml:22-51` has a real
   `apps/mobile` importer with resolved versions: `expo@52.0.49`, `react-native@0.76.5`, `react@18.3.1`,
   `react-native-paper@5.15.3`, `expo-secure-store@14.0.1`. So every `pnpm install --frozen-lockfile` — including
   CI at `.github/workflows/e2e.yml:51` — downloads the full Expo/Metro/Babel toolchain for a dead app.
@@ -52,8 +52,8 @@ component. **This project cannot start**; it is a screenshot rendered as JSX, no
 - **CI: no.** `.github/workflows/e2e.yml` builds only `pnpm --filter web build` (`:124`) and runs Cypress
   against web (`:141`). `deploy-cloud-run.yml` deploys the Rust core. Mobile is never built, typechecked,
   linted, or tested anywhere.
-- **Version hazard.** Root `package.json:35-37` pins `pnpm.overrides["@types/react"]: "^19.0.3"`, which
-  resolves `@types/react@19.2.17` into `apps/mobile` (`pnpm-lock.yaml:47-49`) while `react` there is `18.3.1`.
+- **Version hazard.** Root `package.json:36` pins `pnpm.overrides["@types/react"]: "^19.0.3"`, which
+  resolves `@types/react@19.2.17` into `apps/mobile` (`pnpm-lock.yaml:46-48`) while `react` there is `18.3.1`.
   Anyone who adds a `tsc` step will hit that mismatch on day one.
 - **Expo SDK 52 is stale.** Expo's own version table now lists SDK 54–57 as current
   ([docs.expo.dev/versions/latest](https://docs.expo.dev/versions/latest/)); SDK 55 shipped 2026-02-25 with
@@ -87,9 +87,10 @@ It also never sends an `Authorization` header, so even the one real route would 
 
 ### 1.4 `packages/ui` — web-only, not reusable on React Native
 
-All 15 components are DOM + Tailwind: `packages/ui/src/button.tsx:1-20` builds `className` strings via
+Every component is DOM + Tailwind: `packages/ui/src/button.tsx:1-20` builds `className` strings via
 `class-variance-authority` and renders `<button>`; `packages/ui/src/utils.ts` is `clsx` + `tailwind-merge`;
-`package.json:11-16` depends on `react-dom` and `lucide-react`. **None of it runs on React Native.** Only
+`packages/ui/package.json:11-16` depends on `react-dom` and `lucide-react`. **None of it runs on React
+Native.** Only
 `formatDOP` (`utils.ts:6-9`, pure `Intl`) is portable. The *design tokens* (CSS variables in
 `apps/web/app/(customer)/globals.css`) are reusable as values, but the components are not.
 
@@ -122,7 +123,7 @@ codes (`services/core/src/bin/migrate.rs:1148-1174`) mapped to routes by `requir
 (`main.rs:382-422`).
 
 **A. Employee self-service (view earnings, request/track advances).** This is what the README and landing
-page promise. Two blockers, both structural:
+page promise. Three problems — the first two structural, the third a truth-in-advertising one:
 1. **Employees are not users.** `empleados` (`migrate.rs:370-380`) has *no* `usuario_id`, and `usuarios`
    (`migrate.rs:77-88`, + `ALTER`s at `:90`, `:1144-1145`) has no `empleado_id`. An employee literally cannot
    log in as themselves. This needs a new link column, an invite/onboarding flow, and a new `EMPLEADO` role.
@@ -147,8 +148,9 @@ lowest technical reuse.
 slice despite the endpoints existing.
 
 **C. Owner dashboard (sales / caja / alerts).** `GET /v1/reports/dashboard` (`main.rs:647`) and
-`GET /v1/ai/digest` (`main.rs:648`) are already `None` in `required_permiso` (any authenticated user) or
-owner-level; `GET /v1/caja/resumen` (`main.rs:617`) needs `caja.gestionar`; approving advances needs
+`GET /v1/ai/digest` (`main.rs:648`) fall through `required_permiso` to `None` (`main.rs:420`), i.e. any
+authenticated user; `GET /v1/caja/resumen` (`main.rs:617`) needs `caja.gestionar` (`main.rs:399`); approving
+advances needs
 `nomina.gestionar` (`main.rs:628`). **An owner already has all of this today** — an ADMIN's `es_admin`
 bypasses every permission check (`roles_service.rs:146`). So role C is a *presentation* problem, not an
 API problem: it is read-mostly plus two one-tap writes (aprobar/rechazar adelanto), and it needs zero core
@@ -227,7 +229,7 @@ no QA; estimates are build-to-first-real-user, excluding store review latency; "
 | **What it is** | Delete `apps/mobile` and `packages/api-client`, apply the copy changes in §1.5, note in `README.md` that the product is browser-based and mobile-responsive. |
 | **Effort** | **0.5–1 person-week**, entirely copy + deletion + one regression run. |
 | **Reuses** | n/a. |
-| **Risks** | Sales loses a talking point ("app móvil"). If any prospect was sold on it, that has to be walked back. Deleting `apps/mobile` also removes ~2 minutes of `pnpm install` from every CI run and every developer's first checkout. |
+| **Risks** | Sales loses a talking point ("app móvil"). If any prospect was sold on it, that has to be walked back. Deleting `apps/mobile` also drops the whole Expo/Metro/Babel dependency tree from every `pnpm install` — CI and every new checkout (time saved not measured). |
 | **Maintenance** | Negative — removes maintenance. |
 
 ---
@@ -242,7 +244,7 @@ Reasoning:
    marketing claims (`docs/14-...:136`) for exactly this reason; the mobile and offline claims are the same
    class of problem and are still live in `README.md:14,84` and `apps/web/app/(customer)/page.tsx:48,118,122,126,312,313`.
    Copy fixes cost days and stop the bleeding regardless of which build option is chosen later.
-2. **The phone use case is already 80% served.** The dashboard and POS are responsive (§4b). What is missing
+2. **The phone use case is already largely served.** The dashboard and POS are responsive (§4b). What is missing
    is installability, a home-screen icon, and a mobile-first *dashboard*, not a second app.
 3. **A native app buys almost nothing here.** The certificate stays on the server (§3.1), sequence allocation
    stays on the server (§3.2), offline is out of scope for both options (§3.3), and printing is already
@@ -297,9 +299,9 @@ on the device.
    the punch list (`docs/14-...:147`).
 6. **Is offline selling a real requirement for Dominican colmados, or a story?** It is the single most
    expensive item discussed here and it is orthogonal to native-vs-web.
-7. **Delete or archive `apps/mobile`?** Deleting removes a misleading artifact and CI weight; archiving under
-   `docs/` keeps the visual reference. Recommendation: delete the code, keep the screenshot in this doc's
-   description.
+7. **Delete or archive `apps/mobile`?** Deleting removes a misleading artifact and install weight; keeping it
+   preserves the visual reference someone once liked. Recommendation: delete it — §1.1 above records what it
+   contained, and `git log` keeps the file itself recoverable.
 
 ## 7. Risk if the answer is "keep the claims as they are"
 
