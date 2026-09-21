@@ -739,8 +739,14 @@ impl ContabilidadService {
         // original fue FIADO y si tuvo Costo de Ventas. Si la venta
         // original todavía no tiene asiento, se salta y se reintenta en el
         // próximo sincronizar.
-        let notas: Vec<(Uuid, Uuid, DateTime<Utc>)> = sqlx::query_as(
-            r#"SELECT nc.id, nc.venta_id, nc.created_at
+        //
+        // Una nota PARCIAL (`es_parcial`, ver ventas_service) no puede
+        // reversar el asiento entero: su asiento se construye desde las
+        // líneas de la propia nota (ingresos e ITBIS por lo acreditado, costo
+        // e inventario por cantidad devuelta * costo de la línea vendida), con
+        // las mismas cuentas que habría usado el espejo.
+        let notas: Vec<(Uuid, Uuid, bool, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT nc.id, nc.venta_id, nc.es_parcial, nc.created_at
                FROM notas_credito nc
                WHERE nc.tenant_id = $1
                  AND NOT EXISTS (SELECT 1 FROM asientos a WHERE a.tenant_id = nc.tenant_id AND a.referencia_tipo = 'NOTA_CREDITO' AND a.referencia_id = nc.id)"#,
@@ -749,22 +755,58 @@ impl ContabilidadService {
         .fetch_all(&mut *tx)
         .await?;
         let mut notas_count = 0i64;
-        for (id, venta_id, created_at) in notas {
+        for (id, venta_id, es_parcial, created_at) in notas {
             let original: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM asientos WHERE tenant_id = $1 AND referencia_tipo = 'VENTA' AND referencia_id = $2")
                 .bind(tenant_id)
                 .bind(venta_id)
                 .fetch_optional(&mut *tx)
                 .await?;
             let Some((orig_asiento_id,)) = original else { continue };
-            let lineas_originales: Vec<(String, Decimal, Decimal)> =
-                sqlx::query_as("SELECT cuenta, debe, haber FROM asientos_contables WHERE asiento_id = $1")
-                    .bind(orig_asiento_id)
-                    .fetch_all(&mut *tx)
-                    .await?;
-            let lineas_reversa: Vec<(String, Decimal, Decimal)> = lineas_originales.into_iter().map(|(cuenta, debe, haber)| (cuenta, haber, debe)).collect();
+            let lineas_reversa: Vec<(String, Decimal, Decimal)> = if es_parcial {
+                let (subtotal, itbis, total): (Decimal, Decimal, Decimal) =
+                    sqlx::query_as("SELECT subtotal, itbis_total, total FROM notas_credito WHERE id = $1")
+                        .bind(id)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                let cogs: Decimal = sqlx::query_scalar(
+                    "SELECT COALESCE(SUM(cantidad * costo_unitario), 0) FROM nota_credito_items WHERE nota_credito_id = $1 AND costo_unitario IS NOT NULL",
+                )
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let metodo_pago: String = sqlx::query_scalar("SELECT metodo_pago FROM ventas WHERE id = $1").bind(venta_id).fetch_one(&mut *tx).await?;
+                let cuenta_pago = if metodo_pago == "FIADO" { "1110 Cuentas por Cobrar" } else { "1100 Caja y Bancos" };
+                let mut l = vec![("4100 Ingresos por Ventas".to_string(), subtotal, Decimal::ZERO)];
+                if itbis > Decimal::ZERO {
+                    l.push(("2100 ITBIS por Pagar".to_string(), itbis, Decimal::ZERO));
+                }
+                l.push((cuenta_pago.to_string(), Decimal::ZERO, total));
+                if cogs > Decimal::ZERO {
+                    l.push(("1200 Inventario".to_string(), cogs, Decimal::ZERO));
+                    l.push(("5050 Costo de Ventas".to_string(), Decimal::ZERO, cogs));
+                }
+                l
+            } else {
+                let lineas_originales: Vec<(String, Decimal, Decimal)> =
+                    sqlx::query_as("SELECT cuenta, debe, haber FROM asientos_contables WHERE asiento_id = $1")
+                        .bind(orig_asiento_id)
+                        .fetch_all(&mut *tx)
+                        .await?;
+                lineas_originales.into_iter().map(|(cuenta, debe, haber)| (cuenta, haber, debe)).collect()
+            };
             let fecha = created_at.date_naive();
+            // Una nota parcial no "reversa" el asiento de la venta: son
+            // varias, y la venta sigue viva. Solo la total se enlaza con
+            // `reversa_de`/origen REVERSION, como hasta ahora - si no, la
+            // primera devolución parcial dejaría el asiento de la venta
+            // marcado como ya reversado para `reversar_asiento`.
+            let (descripcion, origen, reversa_de) = if es_parcial {
+                ("Nota de Crédito (devolución parcial)", "AUTOMATICO", None)
+            } else {
+                ("Nota de Crédito", "REVERSION", Some(orig_asiento_id))
+            };
             if self
-                .create_entry(&mut tx, tenant_id, fecha, "Nota de Crédito", "REVERSION", "NOTA_CREDITO", Some(id), Some(orig_asiento_id), None, &lineas_reversa)
+                .create_entry(&mut tx, tenant_id, fecha, descripcion, origen, "NOTA_CREDITO", Some(id), reversa_de, None, &lineas_reversa)
                 .await?
                 .is_some()
             {
