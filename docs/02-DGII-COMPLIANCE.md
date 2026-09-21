@@ -98,7 +98,7 @@ This is the official flow from DGII documentation [10](https://dgii.gov.do/ciclo
    Structure: Encabezado (Version, IdDoc, Emisor, Comprador, Totales),
               DetallesItems (Item[]), Totals, Firma placeholder
 
-2. Sign XML with XAdES-BES using private key (RSA-SHA256). 
+2. Sign XML with an XML-DSig enveloped signature using private key (RSA-SHA256). 
    Generate Codigo Seguridad = first 6 digits of signature hash.
 
 3. Authenticate to DGII: 
@@ -209,7 +209,7 @@ Your app should have wizard that guides them.
 ### 8. Checklist para Dev Compliance
 
 - [ ] Implement all e-CF types E31-E47 in XML schema v1.0 (latest Informe Técnico updated 06/04/2026 [10])
-- [ ] Sign XML with XAdES-BES, canonicalization C14N
+- [ ] Sign XML with XML-DSig enveloped signature, canonicalization C14N
 - [ ] Generate QR per DGII spec (not custom)
 - [ ] 10-year storage, immutable
 - [ ] IndicadorEnvioDiferido for contingency
