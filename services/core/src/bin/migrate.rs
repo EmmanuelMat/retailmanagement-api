@@ -1215,6 +1215,35 @@ async fn main() -> anyhow::Result<()> {
         CROSS JOIN modulos_catalogo m
         WHERE NOT EXISTS (SELECT 1 FROM tenant_modulos tm WHERE tm.tenant_id = t.rnc)
         ON CONFLICT DO NOTHING;
+
+        -- Devoluciones parciales (Fase D): que linea y cuanto se devolvio en
+        -- cada Nota de Credito. Los montos se copian de la linea vendida
+        -- (venta_items) al momento de la devolucion, NUNCA del precio actual
+        -- del producto - ver ventas_service::create_nota_credito.
+        CREATE TABLE IF NOT EXISTS nota_credito_items (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            nota_credito_id UUID NOT NULL REFERENCES notas_credito(id) ON DELETE CASCADE,
+            venta_item_id UUID NOT NULL REFERENCES venta_items(id),
+            producto_id UUID NOT NULL REFERENCES productos(id),
+            sku TEXT NOT NULL,
+            nombre TEXT NOT NULL,
+            cantidad DECIMAL(12,2) NOT NULL,
+            precio_unitario DECIMAL(12,2) NOT NULL,
+            descuento DECIMAL(12,2) NOT NULL DEFAULT 0,
+            itbis_tipo TEXT NOT NULL,
+            itbis_monto DECIMAL(12,2) NOT NULL,
+            subtotal DECIMAL(12,2) NOT NULL,
+            costo_unitario DECIMAL(12,2),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_nota_credito_items_nota ON nota_credito_items(nota_credito_id);
+        CREATE INDEX IF NOT EXISTS idx_nota_credito_items_venta_item ON nota_credito_items(venta_item_id);
+
+        -- Discriminador para contabilidad_service::sincronizar: false (que es
+        -- lo que queda en toda fila historica) = devolucion total = espejo del
+        -- asiento de la venta, exactamente como antes de esta fase.
+        ALTER TABLE notas_credito ADD COLUMN IF NOT EXISTS es_parcial BOOLEAN NOT NULL DEFAULT false;
         "#
     )
     .execute(&pool)

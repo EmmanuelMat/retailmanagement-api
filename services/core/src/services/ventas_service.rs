@@ -7,7 +7,7 @@
 
 use crate::services::ecf_service::requiere_identificacion;
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -489,11 +489,28 @@ impl VentasService {
     }
 
     /// Emite una Nota de Crédito (e-CF Tipo 34) para una venta ya COMPLETADA,
-    /// referenciándola en vez de editarla/anularla en sitio. V1: solo
-    /// devolución total (revierte el 100% del stock y de la caja); la venta
-    /// original queda marcada ANULADA pero su e-NCF permanece intacto en el
-    /// historial - la Nota de Crédito es el documento que corrige.
-    pub async fn create_nota_credito(&self, tenant_id: &str, usuario_id: Uuid, venta_id: Uuid, motivo: &str) -> anyhow::Result<(NotaCredito, Vec<VentaItem>)> {
+    /// referenciándola en vez de editarla/anularla en sitio. El e-NCF de la
+    /// venta original permanece intacto en el historial - la Nota de Crédito
+    /// es el documento que corrige.
+    ///
+    /// `items` ausente = devolución TOTAL, idéntica a la de siempre: revierte
+    /// el 100% de lo entregado y del dinero y la venta queda ANULADA.
+    /// `items` presente = devolución PARCIAL por línea: solo se acredita,
+    /// reingresa al inventario y se devuelve de caja lo que trae cada línea, y
+    /// la venta sigue COMPLETADA hasta que no quede nada por devolver.
+    ///
+    /// Los montos acreditados salen SIEMPRE de la línea vendida
+    /// (`venta_items.precio_unitario/descuento/itbis_monto`), nunca del precio
+    /// actual del producto: devolver mañana un producto que subió de precio no
+    /// puede devolver más dinero del que entró.
+    pub async fn create_nota_credito(
+        &self,
+        tenant_id: &str,
+        usuario_id: Uuid,
+        venta_id: Uuid,
+        motivo: &str,
+        items_req: Option<Vec<DevolucionItemRequest>>,
+    ) -> anyhow::Result<(NotaCredito, Vec<NotaCreditoItem>)> {
         let mut tx = self.pool.begin().await?;
 
         let venta: Venta = sqlx::query_as(
@@ -508,28 +525,162 @@ impl VentasService {
         .ok_or_else(|| anyhow::anyhow!("Venta no encontrada"))?;
 
         if venta.estado == "ANULADA" {
-            anyhow::bail!("Esta venta ya tiene una Nota de Crédito emitida");
+            anyhow::bail!("Esta venta ya fue devuelta por completo");
         }
 
         let items: Vec<VentaItem> = sqlx::query_as(
-            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario FROM venta_items WHERE venta_id = $1",
+            "SELECT id, venta_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, cantidad_entregada, costo_unitario FROM venta_items WHERE venta_id = $1 ORDER BY id",
         )
         .bind(venta_id)
         .fetch_all(&mut *tx)
         .await?;
 
-        // Revierte por `cantidad_entregada`, no por `cantidad`: en una venta
-        // con entrega_diferida solo lo que realmente salió (vía conduces)
-        // está descontado del stock. Para una venta normal cantidad_entregada
-        // == cantidad, así que esto es idéntico al comportamiento anterior.
-        // Un ítem SERVICIO siempre queda con cantidad_entregada == cantidad
-        // (ver create_venta) pero nunca movió stock - no hay nada que revertir.
-        for item in &items {
-            if item.cantidad_entregada <= Decimal::ZERO {
+        // (venta_item, cantidad a devolver ahora). `None` = todo lo que quede
+        // por devolver de esa línea, que es lo que significa una petición sin
+        // `items`: devolución total.
+        let solicitado: Vec<(&VentaItem, Option<Decimal>)> = match &items_req {
+            None => items.iter().map(|it| (it, None)).collect(),
+            Some(reqs) => {
+                if reqs.is_empty() {
+                    anyhow::bail!("Selecciona al menos un producto para devolver");
+                }
+                let mut vistos = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for r in reqs {
+                    if !vistos.insert(r.venta_item_id) {
+                        anyhow::bail!("Una misma línea aparece dos veces en la devolución");
+                    }
+                    if r.cantidad <= Decimal::ZERO {
+                        anyhow::bail!("La cantidad a devolver debe ser mayor a cero");
+                    }
+                    let item = items
+                        .iter()
+                        .find(|it| it.id == r.venta_item_id)
+                        .ok_or_else(|| anyhow::anyhow!("Esa línea no pertenece a esta venta"))?;
+                    out.push((item, Some(r.cantidad)));
+                }
+                out
+            }
+        };
+
+        let mut lineas: Vec<NuevaLineaDevolucion> = Vec::new();
+        let mut subtotal_nota = Decimal::ZERO;
+        let mut itbis_nota = Decimal::ZERO;
+        // Una devolución es "total y primera" (el caso que existía antes de
+        // las devoluciones parciales) solo si nadie devolvió nada antes y esta
+        // se lleva cada línea completa: ahí los montos de la nota se copian
+        // tal cual de la venta, sin prorrateo ni redondeo de por medio.
+        let mut es_total_y_primera = solicitado.len() == items.len();
+
+        for (item, cantidad_pedida) in &solicitado {
+            // El FOR UPDATE sobre la línea es lo que hace segura la carrera
+            // "dos cajeros devuelven la misma línea a la vez": el segundo
+            // espera aquí y recién entonces lee el acumulado real.
+            let bloqueada: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM venta_items WHERE id = $1 AND venta_id = $2 FOR UPDATE")
+                .bind(item.id)
+                .bind(venta_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if bloqueada.is_none() {
+                anyhow::bail!("Esa línea no pertenece a esta venta");
+            }
+
+            let (ya_devuelto, ya_subtotal, ya_itbis): (Decimal, Decimal, Decimal) = sqlx::query_as(
+                "SELECT COALESCE(SUM(cantidad), 0), COALESCE(SUM(subtotal), 0), COALESCE(SUM(itbis_monto), 0)
+                 FROM nota_credito_items WHERE venta_item_id = $1",
+            )
+            .bind(item.id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            if ya_devuelto > Decimal::ZERO {
+                es_total_y_primera = false;
+            }
+            let pendiente = item.cantidad - ya_devuelto;
+            let cantidad = match cantidad_pedida {
+                Some(c) => *c,
+                // Devolución total sobre una venta que ya tuvo devoluciones
+                // parciales: se acredita el resto, no la línea completa.
+                None => pendiente,
+            };
+            if cantidad > pendiente {
+                anyhow::bail!(
+                    "De {} solo quedan {} por devolver (solicitaste {})",
+                    item.nombre,
+                    pendiente,
+                    cantidad
+                );
+            }
+            if cantidad <= Decimal::ZERO {
                 continue;
             }
+            if cantidad < item.cantidad {
+                es_total_y_primera = false;
+            }
+
+            // Prorrateo con el resto asignado a la ÚLTIMA devolución: mientras
+            // quede algo pendiente se prorratea y se redondea al centavo; la
+            // devolución que agota la línea se lleva exactamente lo que falta
+            // para completarla. Así la suma de las devoluciones de una línea
+            // es igual al monto original de la línea, al centavo, siempre.
+            let agota_linea = ya_devuelto + cantidad == item.cantidad;
+            let (subtotal_linea, itbis_linea) = if agota_linea {
+                (item.subtotal - ya_subtotal, item.itbis_monto - ya_itbis)
+            } else {
+                (
+                    redondear_centavos(item.subtotal * cantidad / item.cantidad),
+                    redondear_centavos(item.itbis_monto * cantidad / item.cantidad),
+                )
+            };
+            // El descuento acreditado es lo que sobra entre el precio de lista
+            // devuelto y el subtotal acreditado, de modo que el renglón del
+            // e-CF cumpla MontoItem = Cantidad * Precio - Descuento exacto.
+            let descuento_linea = (item.precio_unitario * cantidad - subtotal_linea).max(Decimal::ZERO);
+
+            subtotal_nota += subtotal_linea;
+            itbis_nota += itbis_linea;
+
+            // Solo vuelve al inventario lo que realmente salió del negocio:
+            // en una venta de entrega diferida el stock baja conduce a
+            // conduce (ver conduce_service), así que lo no entregado nunca se
+            // descontó y no hay nada que reingresar. En una venta normal
+            // cantidad_entregada == cantidad y esto es la cantidad devuelta.
+            let entregada = item.cantidad_entregada;
+            let restock = (ya_devuelto + cantidad).min(entregada) - ya_devuelto.min(entregada);
+
+            lineas.push(NuevaLineaDevolucion {
+                venta_item_id: item.id,
+                producto_id: item.producto_id,
+                sku: item.sku.clone(),
+                nombre: item.nombre.clone(),
+                cantidad,
+                precio_unitario: item.precio_unitario,
+                descuento: descuento_linea,
+                itbis_tipo: item.itbis_tipo.clone(),
+                itbis_monto: itbis_linea,
+                subtotal: subtotal_linea,
+                costo_unitario: item.costo_unitario,
+                restock,
+            });
+        }
+
+        let (subtotal_nota, itbis_nota, total_nota) = if es_total_y_primera {
+            (venta.subtotal, venta.itbis_total, venta.total)
+        } else {
+            (subtotal_nota, itbis_nota, subtotal_nota + itbis_nota)
+        };
+        if total_nota <= Decimal::ZERO {
+            anyhow::bail!("La devolución no acredita ningún monto");
+        }
+
+        for linea in &lineas {
+            if linea.restock <= Decimal::ZERO {
+                continue;
+            }
+            // Un ítem SERVICIO queda con cantidad_entregada == cantidad (ver
+            // create_venta) pero nunca movió stock - no hay nada que revertir.
             let tipo: String = sqlx::query_scalar("SELECT tipo FROM productos WHERE id = $1")
-                .bind(item.producto_id)
+                .bind(linea.producto_id)
                 .fetch_one(&mut *tx)
                 .await?;
             if tipo == "SERVICIO" {
@@ -539,10 +690,10 @@ impl VentasService {
                 &mut tx,
                 tenant_id,
                 Some(usuario_id),
-                item.producto_id,
+                linea.producto_id,
                 "ENTRADA",
-                item.cantidad_entregada,
-                None,
+                linea.restock,
+                linea.costo_unitario,
                 Some("Nota de Crédito".to_string()),
                 Some("NOTA_CREDITO"),
                 Some(venta_id),
@@ -550,37 +701,174 @@ impl VentasService {
             .await?;
         }
 
-        sqlx::query(
-            r#"INSERT INTO caja_movimientos (tenant_id, tipo, concepto, monto, metodo_pago, referencia_tipo, referencia_id, usuario_id)
-               VALUES ($1, 'EGRESO', 'Nota de Crédito', $2, $3, 'NOTA_CREDITO', $4, $5)"#,
-        )
-        .bind(tenant_id)
-        .bind(venta.total)
-        .bind(&venta.metodo_pago)
-        .bind(venta_id)
-        .bind(usuario_id)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query("UPDATE ventas SET estado = 'ANULADA' WHERE id = $1").bind(venta_id).execute(&mut *tx).await?;
+        // Una venta FIADO nunca ingresó efectivo (ver create_venta): devolverlo
+        // por caja sacaría dinero que jamás entró y dejaría intacta la deuda
+        // del cliente. Se baja el saldo pendiente, que es lo que el asiento de
+        // la nota ya venía acreditando contra 1110 Cuentas por Cobrar.
+        if venta.metodo_pago == "FIADO" && venta.cliente_id.is_some() {
+            sqlx::query("UPDATE clientes SET saldo_pendiente = saldo_pendiente - $1 WHERE id = $2 AND tenant_id = $3")
+                .bind(total_nota)
+                .bind(venta.cliente_id)
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query(
+                r#"INSERT INTO caja_movimientos (tenant_id, tipo, concepto, monto, metodo_pago, referencia_tipo, referencia_id, usuario_id)
+                   VALUES ($1, 'EGRESO', 'Nota de Crédito', $2, $3, 'NOTA_CREDITO', $4, $5)"#,
+            )
+            .bind(tenant_id)
+            .bind(total_nota)
+            .bind(&venta.metodo_pago)
+            .bind(venta_id)
+            .bind(usuario_id)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         let nota = sqlx::query_as::<_, NotaCredito>(
-            r#"INSERT INTO notas_credito (tenant_id, venta_id, usuario_id, motivo, subtotal, itbis_total, total)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
-               RETURNING id, tenant_id, venta_id, motivo, subtotal, itbis_total, total, e_ncf, estado_dgii, codigo_seguridad, qr_url, created_at"#,
+            r#"INSERT INTO notas_credito (tenant_id, venta_id, usuario_id, motivo, subtotal, itbis_total, total, es_parcial)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               RETURNING id, tenant_id, venta_id, motivo, subtotal, itbis_total, total, es_parcial, e_ncf, estado_dgii, codigo_seguridad, qr_url, created_at"#,
         )
         .bind(tenant_id)
         .bind(venta_id)
         .bind(usuario_id)
         .bind(motivo)
-        .bind(venta.subtotal)
-        .bind(venta.itbis_total)
-        .bind(venta.total)
+        .bind(subtotal_nota)
+        .bind(itbis_nota)
+        .bind(total_nota)
+        .bind(!es_total_y_primera)
         .fetch_one(&mut *tx)
         .await?;
 
+        let mut nota_items = Vec::new();
+        for linea in lineas {
+            let ni = sqlx::query_as::<_, NotaCreditoItem>(
+                r#"INSERT INTO nota_credito_items (nota_credito_id, venta_item_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, costo_unitario)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                   RETURNING id, nota_credito_id, venta_item_id, producto_id, sku, nombre, cantidad, precio_unitario, descuento, itbis_tipo, itbis_monto, subtotal, costo_unitario"#,
+            )
+            .bind(nota.id)
+            .bind(linea.venta_item_id)
+            .bind(linea.producto_id)
+            .bind(&linea.sku)
+            .bind(&linea.nombre)
+            .bind(linea.cantidad)
+            .bind(linea.precio_unitario)
+            .bind(linea.descuento)
+            .bind(&linea.itbis_tipo)
+            .bind(linea.itbis_monto)
+            .bind(linea.subtotal)
+            .bind(linea.costo_unitario)
+            .fetch_one(&mut *tx)
+            .await?;
+            nota_items.push(ni);
+        }
+
+        // La venta solo se ANULA cuando ya no queda nada por devolver; una
+        // devolución parcial la deja COMPLETADA (y con su e-NCF y su estado
+        // DGII sin tocar, que es lo que la nota de crédito viene a corregir).
+        let pendiente_total: Decimal = sqlx::query_scalar(
+            r#"SELECT COALESCE(SUM(vi.cantidad), 0) - COALESCE((
+                   SELECT SUM(nci.cantidad) FROM nota_credito_items nci
+                   JOIN venta_items vi2 ON vi2.id = nci.venta_item_id
+                   WHERE vi2.venta_id = $1
+               ), 0)
+               FROM venta_items vi WHERE vi.venta_id = $1"#,
+        )
+        .bind(venta_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if pendiente_total <= Decimal::ZERO {
+            sqlx::query("UPDATE ventas SET estado = 'ANULADA' WHERE id = $1").bind(venta_id).execute(&mut *tx).await?;
+        }
+
         tx.commit().await?;
-        Ok((nota, items))
+        Ok((nota, nota_items))
+    }
+
+    /// Notas de crédito de una venta + cuánto se ha devuelto de cada línea.
+    /// Endpoint propio en vez de un campo nuevo en `VentaItem` para no tocar
+    /// el camino caliente de `create_venta`/`get_venta`.
+    pub async fn devoluciones_de_venta(
+        &self,
+        tenant_id: &str,
+        venta_id: Uuid,
+    ) -> anyhow::Result<(Vec<NotaCredito>, Vec<LineaDevuelta>)> {
+        let notas = sqlx::query_as::<_, NotaCredito>(
+            r#"SELECT id, tenant_id, venta_id, motivo, subtotal, itbis_total, total, es_parcial, e_ncf, estado_dgii, codigo_seguridad, qr_url, created_at
+               FROM notas_credito WHERE tenant_id = $1 AND venta_id = $2 ORDER BY created_at"#,
+        )
+        .bind(tenant_id)
+        .bind(venta_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let lineas = sqlx::query_as::<_, LineaDevuelta>(
+            r#"SELECT vi.id AS venta_item_id,
+                      COALESCE(SUM(nci.cantidad), 0) AS cantidad_devuelta
+               FROM venta_items vi
+               LEFT JOIN nota_credito_items nci ON nci.venta_item_id = vi.id
+               WHERE vi.venta_id = $1
+               GROUP BY vi.id"#,
+        )
+        .bind(venta_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok((notas, lineas))
+    }
+
+    const NOTAS_SORTABLE: &'static [(&'static str, &'static str)] = &[
+        ("created_at", "nc.created_at"),
+        ("total", "nc.total"),
+    ];
+
+    pub async fn list_notas_credito(
+        &self,
+        tenant_id: &str,
+        venta_id: Option<Uuid>,
+        fecha_desde: Option<chrono::NaiveDate>,
+        fecha_hasta: Option<chrono::NaiveDate>,
+        page: &crate::pagination::PageParams,
+        sort: &crate::pagination::SortParams,
+    ) -> anyhow::Result<(Vec<NotaCreditoConVenta>, i64)> {
+        const WHERE_CLAUSE: &str = "WHERE nc.tenant_id = $1
+               AND ($2::uuid IS NULL OR nc.venta_id = $2)
+               AND ($3::date IS NULL OR nc.created_at::date >= $3)
+               AND ($4::date IS NULL OR nc.created_at::date <= $4)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM notas_credito nc {WHERE_CLAUSE}"))
+            .bind(tenant_id)
+            .bind(venta_id)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let order_by = sort.resolve(Self::NOTAS_SORTABLE, "nc.created_at DESC");
+        let limit = page.limit(20);
+        let query = format!(
+            r#"SELECT nc.id, nc.venta_id, v.e_ncf AS venta_e_ncf, c.nombre AS cliente_nombre,
+                      nc.motivo, nc.total, nc.es_parcial, nc.e_ncf, nc.estado_dgii, nc.created_at
+               FROM notas_credito nc
+               JOIN ventas v ON v.id = nc.venta_id
+               LEFT JOIN clientes c ON c.id = v.cliente_id
+               {WHERE_CLAUSE}
+               ORDER BY {order_by}
+               LIMIT $5 OFFSET $6"#
+        );
+        let rows = sqlx::query_as::<_, NotaCreditoConVenta>(&query)
+            .bind(tenant_id)
+            .bind(venta_id)
+            .bind(fecha_desde)
+            .bind(fecha_hasta)
+            .bind(limit)
+            .bind(page.offset(20))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((rows, total))
     }
 
     pub async fn set_nota_credito_ecf_result(
@@ -595,7 +883,7 @@ impl VentasService {
         let nota = sqlx::query_as::<_, NotaCredito>(
             r#"UPDATE notas_credito SET e_ncf = $1, estado_dgii = $2, codigo_seguridad = $3, qr_url = $4
                WHERE id = $5 AND tenant_id = $6
-               RETURNING id, tenant_id, venta_id, motivo, subtotal, itbis_total, total, e_ncf, estado_dgii, codigo_seguridad, qr_url, created_at"#,
+               RETURNING id, tenant_id, venta_id, motivo, subtotal, itbis_total, total, es_parcial, e_ncf, estado_dgii, codigo_seguridad, qr_url, created_at"#,
         )
         .bind(e_ncf)
         .bind(estado_dgii)
@@ -610,7 +898,7 @@ impl VentasService {
 
     pub async fn get_nota_credito(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<NotaCredito> {
         let nota = sqlx::query_as::<_, NotaCredito>(
-            r#"SELECT id, tenant_id, venta_id, motivo, subtotal, itbis_total, total, e_ncf, estado_dgii, codigo_seguridad, qr_url, created_at
+            r#"SELECT id, tenant_id, venta_id, motivo, subtotal, itbis_total, total, es_parcial, e_ncf, estado_dgii, codigo_seguridad, qr_url, created_at
                FROM notas_credito WHERE id = $1 AND tenant_id = $2"#,
         )
         .bind(id)
@@ -619,6 +907,18 @@ impl VentasService {
         .await?
         .ok_or_else(|| anyhow::anyhow!("Nota de Crédito no encontrada"))?;
         Ok(nota)
+    }
+
+    pub async fn get_nota_credito_items(&self, nota_id: Uuid) -> anyhow::Result<Vec<NotaCreditoItem>> {
+        let items = sqlx::query_as::<_, NotaCreditoItem>(
+            r#"SELECT id, nota_credito_id, venta_item_id, producto_id, sku, nombre, cantidad, precio_unitario,
+                      descuento, itbis_tipo, itbis_monto, subtotal, costo_unitario
+               FROM nota_credito_items WHERE nota_credito_id = $1 ORDER BY created_at"#,
+        )
+        .bind(nota_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(items)
     }
 }
 
@@ -631,9 +931,86 @@ pub struct NotaCredito {
     pub subtotal: Decimal,
     pub itbis_total: Decimal,
     pub total: Decimal,
+    /// false = devolución total (y primera) de la venta: la nota acredita los
+    /// montos de la venta tal cual. Es lo que queda en toda fila anterior a
+    /// las devoluciones parciales, y lo que `contabilidad_service::sincronizar`
+    /// usa para decidir entre el espejo del asiento original y el asiento
+    /// proporcional construido desde las líneas de la nota.
+    pub es_parcial: bool,
     pub e_ncf: Option<String>,
     pub estado_dgii: Option<String>,
     pub codigo_seguridad: Option<String>,
     pub qr_url: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// Una línea de la Nota de Crédito: qué se devolvió y por cuánto se acreditó.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct NotaCreditoItem {
+    pub id: Uuid,
+    pub nota_credito_id: Uuid,
+    pub venta_item_id: Uuid,
+    pub producto_id: Uuid,
+    pub sku: String,
+    pub nombre: String,
+    pub cantidad: Decimal,
+    pub precio_unitario: Decimal,
+    pub descuento: Decimal,
+    pub itbis_tipo: String,
+    pub itbis_monto: Decimal,
+    pub subtotal: Decimal,
+    pub costo_unitario: Option<Decimal>,
+}
+
+/// Una línea a devolver, tal como la pide el cliente HTTP.
+#[derive(Debug, Deserialize)]
+pub struct DevolucionItemRequest {
+    pub venta_item_id: Uuid,
+    pub cantidad: Decimal,
+}
+
+/// Cuánto se ha devuelto de una línea de venta, sumando todas sus notas.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct LineaDevuelta {
+    pub venta_item_id: Uuid,
+    pub cantidad_devuelta: Decimal,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct NotaCreditoConVenta {
+    pub id: Uuid,
+    pub venta_id: Uuid,
+    pub venta_e_ncf: Option<String>,
+    pub cliente_nombre: Option<String>,
+    pub motivo: String,
+    pub total: Decimal,
+    pub es_parcial: bool,
+    pub e_ncf: Option<String>,
+    pub estado_dgii: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Línea ya calculada, lista para insertarse y para armar el e-CF.
+struct NuevaLineaDevolucion {
+    venta_item_id: Uuid,
+    producto_id: Uuid,
+    sku: String,
+    nombre: String,
+    cantidad: Decimal,
+    precio_unitario: Decimal,
+    descuento: Decimal,
+    itbis_tipo: String,
+    itbis_monto: Decimal,
+    subtotal: Decimal,
+    costo_unitario: Option<Decimal>,
+    /// Cuánto de `cantidad` vuelve al inventario (≤ cantidad: lo no entregado
+    /// de una venta de entrega diferida nunca se descontó).
+    restock: Decimal,
+}
+
+/// Redondeo comercial al centavo (medio centavo se aleja del cero), no el
+/// "banker's rounding" que `Decimal::round_dp` usa por defecto: un colmado
+/// espera que 0.125 se cobre como 0.13, no como 0.12.
+fn redondear_centavos(v: Decimal) -> Decimal {
+    v.round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero)
 }

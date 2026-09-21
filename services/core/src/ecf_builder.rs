@@ -400,6 +400,13 @@ pub fn build_ecf_xml(ecf: &ECF) -> String {
             xml.push_str(&format!("<UnidadMedida>{}</UnidadMedida>", escape_xml(um)));
         }
         xml.push_str(&format!("<PrecioUnitarioItem>{:.2}</PrecioUnitarioItem>", item.PrecioUnitarioItem));
+        // DGII valida MontoItem = CantidadItem * PrecioUnitarioItem -
+        // DescuentoMonto, así que un renglón con descuento tiene que declarar
+        // el descuento además del monto neto (antes nunca se emitía, porque
+        // build_simple_pos_ecf no conocía descuentos de línea).
+        if let Some(d) = item.DescuentoMonto.filter(|d| *d > Decimal::ZERO) {
+            xml.push_str(&format!("<DescuentoMonto>{:.2}</DescuentoMonto>", d));
+        }
         xml.push_str(&format!("<MontoItem>{:.2}</MontoItem>", item.MontoItem));
         xml.push_str("</Item>");
     }
@@ -477,6 +484,21 @@ fn itbis_rate_for(itbis_tipo: &str) -> Decimal {
     }
 }
 
+/// Referencia al comprobante que una Nota de Crédito/Débito (E33/E34) corrige.
+/// `codigo_modificacion` sigue el catálogo DGII (*Formato Comprobante Fiscal
+/// Electrónico (e-CF) v1.0*; ficha CA4275 de la Comunidad de Ayuda DGII,
+/// consultada 2026-09-21): 1 = anula totalmente el e-CF modificado (el monto
+/// de la nota debe igualar el del comprobante), 2 = corrige texto (monto 0),
+/// 3 = corrige montos — devoluciones, descuentos o bonificaciones parciales,
+/// 4 = reemplaza un e-CF emitido en contingencia.
+pub struct ReferenciaNcf<'a> {
+    pub ncf_modificado: &'a str,
+    pub razon: &'a str,
+    /// Fecha de emisión del comprobante modificado, DD-MM-YYYY.
+    pub fecha_ncf_modificado: Option<&'a str>,
+    pub codigo_modificacion: &'a str,
+}
+
 pub fn build_simple_pos_ecf(
     tenant_rnc: &str,
     razon_social: &str,
@@ -492,6 +514,43 @@ pub fn build_simple_pos_ecf(
     indicador_envio_diferido: i32, // 0=normal, 1=contingencia (sin conexión a DGII al momento de firmar)
     referencia_ncf: Option<(&str, &str)>, // (NCFModificado, RazonModificacion) - requerido para Tipo 34 (Nota de Crédito)
 ) -> ECF {
+    // Ningún renglón de este camino tiene descuento de línea: el POS reparte
+    // el descuento en el precio efectivo antes de llegar aquí.
+    let items = items.into_iter().map(|(n, q, p, t)| (n, q, p, t, Decimal::ZERO)).collect();
+    let referencia = referencia_ncf.map(|(ncf, razon)| ReferenciaNcf {
+        ncf_modificado: ncf,
+        razon,
+        fecha_ncf_modificado: None,
+        codigo_modificacion: "1",
+    });
+    build_pos_ecf_con_descuento(
+        tenant_rnc, razon_social, direccion, e_ncf, tipo_ecf, cliente_rnc, cliente_nombre, items,
+        fecha_emision, fecha_vencimiento, cliente_direccion, indicador_envio_diferido, referencia,
+    )
+}
+
+/// Igual que `build_simple_pos_ecf`, pero cada renglón puede traer un
+/// descuento en RD$ (quinto elemento de la tupla): `MontoItem` queda neto y el
+/// XML declara `<DescuentoMonto>`, que es lo que DGII exige para que
+/// `MontoItem = Cantidad * Precio - Descuento` cuadre. Lo usa la Nota de
+/// Crédito, donde el renglón devuelto arrastra el descuento de la venta
+/// original y el total de la nota no puede pasarse del de la factura.
+#[allow(clippy::too_many_arguments)]
+pub fn build_pos_ecf_con_descuento(
+    tenant_rnc: &str,
+    razon_social: &str,
+    direccion: &str,
+    e_ncf: &str,
+    tipo_ecf: i32,
+    cliente_rnc: &str,
+    cliente_nombre: &str,
+    items: Vec<(String, Decimal, Decimal, String, Decimal)>, // (nombre, qty, precio_unitario, itbis_tipo, descuento)
+    fecha_emision: &str, // DD-MM-YYYY
+    fecha_vencimiento: &str,
+    cliente_direccion: Option<&str>, // requerido para Tipo 31 (Crédito Fiscal)
+    indicador_envio_diferido: i32, // 0=normal, 1=contingencia (sin conexión a DGII al momento de firmar)
+    referencia: Option<ReferenciaNcf<'_>>, // requerido para Tipo 33/34
+) -> ECF {
     let mut total_gravado_18 = Decimal::ZERO;
     let mut total_gravado_16 = Decimal::ZERO;
     let mut total_itbis_18 = Decimal::ZERO;
@@ -499,8 +558,8 @@ pub fn build_simple_pos_ecf(
     let mut total_exento = Decimal::ZERO;
     let mut ecf_items = Vec::new();
 
-    for (idx, (nombre, qty, precio, itbis_tipo)) in items.into_iter().enumerate() {
-        let monto = qty * precio;
+    for (idx, (nombre, qty, precio, itbis_tipo, descuento)) in items.into_iter().enumerate() {
+        let monto = qty * precio - descuento;
         let itbis = monto * itbis_rate_for(&itbis_tipo);
         match itbis_tipo.as_str() {
             "GRAVADO_16" => {
@@ -526,7 +585,7 @@ pub fn build_simple_pos_ecf(
             UnidadMedida: Some("43".to_string()), // 43=unidad
             PrecioUnitarioItem: precio,
             DescuentoPorcentaje: None,
-            DescuentoMonto: None,
+            DescuentoMonto: if descuento > Decimal::ZERO { Some(descuento) } else { None },
             TablaSubDescuento: None,
             TablaSubRecargo: None,
             TablaSubItemImpuestoAdicional: None,
@@ -639,11 +698,11 @@ pub fn build_simple_pos_ecf(
                 SubtotalMontoNoFacturablePagina: None,
             }],
         }),
-        InformacionReferencia: referencia_ncf.map(|(ncf, razon)| InformacionReferencia {
-            NCFModificado: ncf.to_string(),
-            FechaNCFModificado: None,
-            CodigoModificacion: Some("1".to_string()),
-            RazonModificacion: Some(razon.to_string()),
+        InformacionReferencia: referencia.map(|r| InformacionReferencia {
+            NCFModificado: r.ncf_modificado.to_string(),
+            FechaNCFModificado: r.fecha_ncf_modificado.map(|f| f.to_string()),
+            CodigoModificacion: Some(r.codigo_modificacion.to_string()),
+            RazonModificacion: Some(r.razon.to_string()),
         }),
         DescuentosORecargos: None,
         OtraMoneda: None,

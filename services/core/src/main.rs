@@ -572,7 +572,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/ventas/:id/emitir-ecf", post(http_emitir_ecf_venta))
         .route("/v1/ventas/:id/imprimir", post(http_imprimir_venta))
         .route("/v1/ventas/:id/nota-credito", post(http_crear_nota_credito))
+        .route("/v1/ventas/:id/devoluciones", get(http_devoluciones_de_venta))
         .route("/v1/ventas/:id/conduce-retroactivo", post(http_crear_conduce_retroactivo))
+        .route("/v1/notas-credito", get(http_list_notas_credito))
         .route("/v1/notas-credito/:id", get(http_get_nota_credito))
         .route("/v1/cotizaciones", get(http_list_cotizaciones).post(http_create_cotizacion))
         .route("/v1/cotizaciones/:id", get(http_get_cotizacion))
@@ -2452,6 +2454,9 @@ async fn http_reintentar_pendientes(
 #[derive(Debug, Deserialize)]
 struct CrearNotaCreditoRequest {
     motivo: String,
+    /// Devolución PARCIAL: qué línea de la venta y cuánto de ella vuelve.
+    /// Ausente = devolución total (comportamiento de siempre).
+    items: Option<Vec<services::ventas_service::DevolucionItemRequest>>,
     #[serde(rename = "p12Base64")] p12_base64: Option<String>,
     #[serde(rename = "p12Password")] p12_password: Option<String>,
     environment: Option<String>,
@@ -2459,9 +2464,11 @@ struct CrearNotaCreditoRequest {
 }
 
 /// Emite una Nota de Crédito (e-CF Tipo 34) para una venta ya facturada:
-/// revierte stock y caja, referencia el e-NCF original vía
+/// revierte stock y caja de lo devuelto, referencia el e-NCF original vía
 /// InformacionReferencia (nunca edita/anula la venta en sitio), y sigue el
 /// mismo pipeline real de firma + envío + retención que una venta.
+/// Con `items` la devolución es parcial: la venta sigue COMPLETADA y el E34
+/// lleva solo los renglones devueltos.
 async fn http_crear_nota_credito(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -2473,16 +2480,47 @@ async fn http_crear_nota_credito(
 
     let venta_original = state.ventas_service.get_venta(&claims.tenant_id, venta_id).await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
-    let e_ncf_original = venta_original.venta.e_ncf.clone()
-        .ok_or((StatusCode::BAD_REQUEST, "La venta original no tiene un e-CF emitido — no se puede emitir una Nota de Crédito".to_string()))?;
-
-    let (nota, _items) = state.ventas_service.create_nota_credito(&claims.tenant_id, usuario_id, venta_id, &req.motivo).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "NOTA_CREDITO_EMITIDA", "venta", Some(venta_id),
-        serde_json::json!({ "motivo": req.motivo, "total": nota.total })).await;
-
     let tenant = state.auth_service.get_tenant(&claims.tenant_id).await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    // Un negocio sin factura electrónica activa igual necesita poder aceptar
+    // una devolución: se registra la nota (stock, caja, contabilidad) sin
+    // documento fiscal. Con e-CF activa el requisito de siempre se mantiene:
+    // sin e-NCF original no hay nada que referenciar en el E34.
+    let e_ncf_original = if tenant.factura_electronica_activa {
+        Some(venta_original.venta.e_ncf.clone().ok_or((
+            StatusCode::BAD_REQUEST,
+            "La venta original no tiene un e-CF emitido — no se puede emitir una Nota de Crédito".to_string(),
+        ))?)
+    } else {
+        None
+    };
+
+    let (nota, nota_items) = state.ventas_service
+        .create_nota_credito(&claims.tenant_id, usuario_id, venta_id, &req.motivo, req.items)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let detalle_lineas: Vec<serde_json::Value> = nota_items.iter().map(|it| serde_json::json!({
+        "venta_item_id": it.venta_item_id,
+        "sku": it.sku,
+        "nombre": it.nombre,
+        "cantidad": it.cantidad,
+        "subtotal": it.subtotal,
+        "itbis_monto": it.itbis_monto,
+    })).collect();
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "NOTA_CREDITO_EMITIDA", "venta", Some(venta_id),
+        serde_json::json!({
+            "motivo": req.motivo,
+            "total": nota.total,
+            "nota_credito_id": nota.id,
+            "es_parcial": nota.es_parcial,
+            "lineas": detalle_lineas,
+        })).await;
+
+    let Some(e_ncf_original) = e_ncf_original else {
+        return Ok(Json(nota));
+    };
+
     let (cliente_rnc, cliente_nombre, cliente_direccion) = match venta_original.venta.cliente_id {
         Some(cid) => match state.partner_service.get_cliente(&claims.tenant_id, cid).await {
             Ok(c) => (c.rnc_cedula.unwrap_or_else(|| "000000000".to_string()), c.nombre, c.direccion),
@@ -2499,14 +2537,29 @@ async fn http_crear_nota_credito(
     let fecha_emision = now.format("%d-%m-%Y").to_string();
     let fecha_vencimiento = fecha_vencimiento_secuencia.format("%d-%m-%Y").to_string();
 
-    let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String)> = venta_original.items.iter()
-        .map(|it| (it.nombre.clone(), it.cantidad, it.precio_unitario, it.itbis_tipo.clone()))
+    // Solo los renglones devueltos, con la cantidad devuelta y el descuento
+    // que arrastra la línea original: así los totales del E34 nunca superan
+    // los de la factura que modifica.
+    let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String, rust_decimal::Decimal)> = nota_items.iter()
+        .map(|it| (it.nombre.clone(), it.cantidad, it.precio_unitario, it.itbis_tipo.clone(), it.descuento))
         .collect();
 
-    let ecf = build_simple_pos_ecf(
+    // Catálogo DGII de CodigoModificacion (ver ecf_builder::ReferenciaNcf):
+    // 1 anula el comprobante completo, 3 corrige montos (devoluciones y
+    // descuentos parciales). Usar 1 en una devolución parcial le diría a DGII
+    // que la factura entera quedó sin efecto.
+    let codigo_modificacion = if nota.es_parcial { "3" } else { "1" };
+    let fecha_venta_original = venta_original.venta.created_at.with_timezone(&chrono::Local).format("%d-%m-%Y").to_string();
+
+    let ecf = ecf_builder::build_pos_ecf_con_descuento(
         &claims.tenant_id, &tenant.razon_social, &tenant.direccion, &e_ncf, tipo_ecf, &cliente_rnc, &cliente_nombre,
         items, &fecha_emision, &fecha_vencimiento, cliente_direccion.as_deref(), 0,
-        Some((&e_ncf_original, &req.motivo)),
+        Some(ecf_builder::ReferenciaNcf {
+            ncf_modificado: &e_ncf_original,
+            razon: &req.motivo,
+            fecha_ncf_modificado: Some(&fecha_venta_original),
+            codigo_modificacion,
+        }),
     );
     let xml_built = build_ecf_xml(&ecf);
 
@@ -2559,15 +2612,72 @@ async fn http_crear_nota_credito(
     Ok(Json(nota))
 }
 
+#[derive(Debug, Serialize)]
+struct NotaCreditoCompletaResponse {
+    #[serde(flatten)]
+    nota: services::ventas_service::NotaCredito,
+    items: Vec<services::ventas_service::NotaCreditoItem>,
+}
+
 async fn http_get_nota_credito(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<services::ventas_service::NotaCredito>, (StatusCode, String)> {
+) -> Result<Json<NotaCreditoCompletaResponse>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    state.ventas_service.get_nota_credito(&claims.tenant_id, id).await
-        .map(Json)
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+    let nota = state.ventas_service.get_nota_credito(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let items = state.ventas_service.get_nota_credito_items(nota.id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(NotaCreditoCompletaResponse { nota, items }))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListNotasCreditoQuery {
+    #[serde(rename = "ventaId")] venta_id: Option<Uuid>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+/// Listado de devoluciones (Notas de Crédito) del tenant - alimenta
+/// `ventas/devoluciones` en la app.
+async fn http_list_notas_credito(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(q): Query<ListNotasCreditoQuery>,
+) -> Result<Json<pagination::Page<services::ventas_service::NotaCreditoConVenta>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: q.page, page_size: q.page_size };
+    let sort = pagination::SortParams { sort_by: q.sort_by, sort_dir: q.sort_dir };
+    let (notas, total) = state.ventas_service
+        .list_notas_credito(&claims.tenant_id, q.venta_id, q.fecha_desde, q.fecha_hasta, &page, &sort)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(notas, page.page_number(), page_size, total)))
+}
+
+#[derive(Debug, Serialize)]
+struct DevolucionesDeVentaResponse {
+    notas: Vec<services::ventas_service::NotaCredito>,
+    /// Cuánto se ha devuelto ya de cada línea de la venta, sumando todas sus
+    /// notas - es el tope que la UI usa para el selector de cantidad.
+    lineas: Vec<services::ventas_service::LineaDevuelta>,
+}
+
+async fn http_devoluciones_de_venta(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(venta_id): Path<Uuid>,
+) -> Result<Json<DevolucionesDeVentaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let (notas, lineas) = state.ventas_service.devoluciones_de_venta(&claims.tenant_id, venta_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(DevolucionesDeVentaResponse { notas, lineas }))
 }
 
 // ------------------ MODULO 5b: Cotizaciones ------------------
