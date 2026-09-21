@@ -3538,6 +3538,8 @@ async fn http_create_compra(
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
     let completa = state.compras_service.create_compra(&claims.tenant_id, usuario_id, req).await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "COMPRA_REGISTRADA", "compra", Some(completa.compra.id),
+        serde_json::json!({ "total": completa.compra.total, "metodo_pago": completa.compra.metodo_pago, "tipo_documento": completa.compra.tipo_documento })).await;
     Ok(Json(CompraCompletaResponse { compra: completa.compra, items: completa.items }))
 }
 
@@ -3603,9 +3605,11 @@ async fn http_create_gasto(
 ) -> Result<Json<services::compras_service::Gasto>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
-    state.compras_service.create_gasto(&claims.tenant_id, usuario_id, req).await
-        .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+    let gasto = state.compras_service.create_gasto(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "GASTO_REGISTRADO", "gasto", Some(gasto.id),
+        serde_json::json!({ "monto": gasto.monto, "categoria": gasto.categoria, "concepto": gasto.concepto })).await;
+    Ok(Json(gasto))
 }
 
 // ------------------ MODULO 9: Caja y Bancos ------------------
@@ -3754,9 +3758,11 @@ async fn http_create_banco_movimiento(
 ) -> Result<Json<services::caja_service::BancoMovimiento>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
-    state.bancos_service.create_movimiento(&claims.tenant_id, id, usuario_id, req).await
-        .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+    let movimiento = state.bancos_service.create_movimiento(&claims.tenant_id, id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "BANCO_MOVIMIENTO_REGISTRADO", "banco", Some(id),
+        serde_json::json!({ "movimiento_id": movimiento.id, "tipo": movimiento.tipo, "monto": movimiento.monto })).await;
+    Ok(Json(movimiento))
 }
 
 // ------------------ MODULO 8: Nomina y Adelantos ------------------
@@ -3980,6 +3986,16 @@ async fn http_create_asiento(
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
     let asientos = state.contabilidad_service.create_asiento_manual(&claims.tenant_id, usuario_id, req).await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    // La vía de escritura de dinero más riesgosa del sistema: un asiento
+    // manual puede tocar cualquier cuenta sin pasar por ningún módulo de
+    // negocio. Se audita el asiento completo (cuentas y montos), no solo el id.
+    let asiento_id = asientos.first().and_then(|a| a.asiento_id);
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ASIENTO_MANUAL_CREADO", "asiento", asiento_id,
+        serde_json::json!({
+            "descripcion": asientos.first().map(|a| a.descripcion.clone()),
+            "fecha": asientos.first().map(|a| a.fecha),
+            "lineas": asientos.iter().map(|a| serde_json::json!({ "cuenta": a.cuenta, "debe": a.debe, "haber": a.haber })).collect::<Vec<_>>(),
+        })).await;
     Ok(Json(serde_json::json!({ "asientos": asientos })))
 }
 
@@ -4011,9 +4027,14 @@ async fn http_sincronizar_contabilidad(
     headers: HeaderMap,
 ) -> Result<Json<services::contabilidad_service::SincronizarResultado>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    state.contabilidad_service.sincronizar(&claims.tenant_id).await
-        .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    let usuario_id = Uuid::parse_str(&claims.sub).ok();
+    let resultado = state.contabilidad_service.sincronizar(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Quién la corrió y qué generó: sin esto no hay forma de saber de dónde
+    // salió un asiento automático fechado en un día viejo.
+    state.audit_service.log(&claims.tenant_id, usuario_id, "CONTABILIDAD_SINCRONIZADA", "contabilidad", None,
+        serde_json::json!(resultado)).await;
+    Ok(Json(resultado))
 }
 
 #[derive(Debug, Deserialize)]
