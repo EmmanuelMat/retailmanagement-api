@@ -5,13 +5,32 @@ Every tax/legal value below is sourced; the sources are listed at the bottom and
 
 ## Scope slice
 
-| # | Item | Delivered as |
-|---|------|--------------|
-| B1 | Price-only supplier credit note | `ajuste_solo_precio` flag on `CreateCompraRequest` + new path in `compras_service` |
-| B2 | Drop the stale "XAdES-BES" label | Comment/copy-only edits, no signing logic touched |
-| B3 | ISR withholding in payroll | New `services/isr_escala.rs` (versioned scale) wired into `nomina_service::run_payroll` |
-| B4 | Format 609 (Pagos al Exterior) | New `pagos_exterior` table + `pago_exterior_service.rs` + `report_service::generate_609{,_csv}` + routes + web proxy/page |
-| B5 | `codigo_seguridad` verification | Dead-variable removal + black-box self-consistency test + documented ambiguity |
+**This phase was cut short by an infrastructure budget limit. B1, B2 and the
+documentation half of B5 shipped; B3 and B4 did not — see "Not delivered" below
+and the gap analyses in the PR body.** The B3/B4 designs are kept here because
+the research behind them was done and sourced; they are a plan, not code.
+
+| # | Item | Status |
+|---|------|--------|
+| B1 | Price-only supplier credit note | **Delivered** — `ajuste_solo_precio` flag on `CreateCompraRequest` + new path in `compras_service` |
+| B2 | Drop the stale "XAdES-BES" label | **Delivered** — comment/copy-only edits, no signing logic touched |
+| B3 | ISR withholding in payroll | **Not delivered** — scale sourced (below), no code |
+| B4 | Format 609 (Pagos al Exterior) | **Not delivered** — layout sourced (below), no code |
+| B5 | `codigo_seguridad` verification | **Partially delivered** — dead variable removed + ambiguity documented in code; no test |
+
+### Not delivered (and why)
+
+* **B3 (ISR).** The 2026 scale *is* sourced (DGII CA687 / Resolución
+  DDG-AR1-2026-00001, below) and the design below is implementable as written,
+  but payroll withholding changes real take-home pay and needs an accountant's
+  sign-off plus worked-example tests; it was not worth half-shipping.
+* **B4 (609).** The 13 columns, their order and the pipe-delimited TXT are
+  sourced, but DGII does **not** publish the numeric codes its Excel tool
+  serialises the five enumerated columns to. Shipping a generator on a guessed
+  codification would produce a file that looks right and is rejected.
+* **B5 (test).** No official sample pairing a SignatureValue with its expected
+  security code exists, so there is nothing to assert against beyond
+  determinism. The derivation is deliberately unchanged.
 
 ## B1 — price-only purchase NOTA_CREDITO
 
@@ -97,14 +116,13 @@ rules the derivation is therefore **not changed**: the dead variable goes, a bla
 `/v1/test/sign-demo` pins determinism/shape/consistency with the QR URL, and the ambiguity is documented as
 needing a real DGII test-environment round trip.
 
-## Files
+## Files actually changed
 
-New: `services/core/src/services/isr_escala.rs`, `services/core/src/services/pago_exterior_service.rs`,
-`services/core/tests/compras_nota_credito_precio.rs`, `services/core/tests/nomina_isr.rs`,
-`services/core/tests/reporte_609.rs`, `services/core/tests/ecf_codigo_seguridad.rs`,
-`apps/web/app/api/reports/609/{route.ts,csv/route.ts}`, `apps/web/app/(customer)/(dashboard)/reportes/dgii/609/page.tsx`.
-Edited (small, localised hunks): `compras_service.rs`, `nomina_service.rs`, `report_service.rs`, `ecfl_service.rs`,
-`services/mod.rs`, `main.rs`, `bin/migrate.rs`, the B2 label sites, docs 00–04 and 09.
+New: `services/core/tests/compras_nota_credito_precio.rs` (6 tests).
+Edited (small, localised hunks): `compras_service.rs`, `bin/migrate.rs` (one `ADD COLUMN IF NOT EXISTS` at the end),
+`ecfl_service.rs` (comments only), the B2 label sites (`apps/web/app/api/sales/route.ts`,
+`apps/web/app/api/test/sign/{route.ts,demo.md}`, `apps/web/lib/core-client.ts`, `main.rs`) and docs 00–04, 09–11.
+`contabilidad_service.rs`, `report_service.rs`, `ventas_service.rs` and `nomina_service.rs` are untouched.
 
 ## Risks
 
