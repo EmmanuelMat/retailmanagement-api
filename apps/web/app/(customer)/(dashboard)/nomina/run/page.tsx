@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { PlayCircle } from "lucide-react";
-import { Button, Card, CardContent, Input, Label, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Button, Card, CardContent, ConfirmDialog, Input, Label, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 
 interface NominaDetalle {
@@ -29,10 +29,16 @@ export default function RunNominaPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [resultado, setResultado] = useState<PeriodoResultado | null>(null);
+  const [confirmando, setConfirmando] = useState(false);
 
-  async function handleRun(e: React.FormEvent) {
+  // Enviar el formulario solo abre la confirmación; la corrida real ocurre al confirmar.
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!periodo.trim()) return;
+    setConfirmando(true);
+  }
+
+  async function handleRun() {
     setSaving(true);
     setError("");
     try {
@@ -45,6 +51,7 @@ export default function RunNominaPage() {
       setError(e.message);
     } finally {
       setSaving(false);
+      setConfirmando(false);
     }
   }
 
@@ -57,7 +64,7 @@ export default function RunNominaPage() {
 
       <Card className="max-w-3xl">
         <CardContent className="pt-5">
-          <form onSubmit={handleRun} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
             <div className="space-y-1.5">
               <Label htmlFor="periodo">Período</Label>
               <Input id="periodo" value={periodo} onChange={(e) => setPeriodo(e.target.value)} placeholder="2026-07 quincena 2" required />
@@ -71,6 +78,21 @@ export default function RunNominaPage() {
           {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-3 text-sm mt-4">{error}</div>}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={confirmando}
+        onClose={() => setConfirmando(false)}
+        onConfirm={handleRun}
+        busy={saving}
+        title={`¿Correr la nómina de ${periodo.trim()}?`}
+        confirmLabel="Correr nómina"
+        description={
+          <>
+            <p>Se calcula la nómina de todos los empleados activos y se descuentan los adelantos aprobados.</p>
+            <p>El pago sale de caja al correrla y <strong>no se puede deshacer</strong>.</p>
+          </>
+        }
+      />
 
       {resultado && (
         <Card>

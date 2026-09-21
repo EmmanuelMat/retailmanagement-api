@@ -11,12 +11,13 @@ export interface DialogProps {
   title?: React.ReactNode;
   children?: React.ReactNode;
   className?: string;
+  testId?: string;
 }
 
 // Hand-rolled modal, no Radix - matches the rest of this package (select.tsx,
 // table.tsx, etc.), which is all plain elements + Tailwind, not a shadcn/Radix
 // stack.
-export function Dialog({ open, onClose, title, children, className }: DialogProps) {
+export function Dialog({ open, onClose, title, children, className, testId }: DialogProps) {
   React.useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -34,6 +35,7 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
       <div
         role="dialog"
         aria-modal="true"
+        data-testid={testId}
         className={cn(
           "relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border border-border bg-surface shadow-card p-6",
           className
