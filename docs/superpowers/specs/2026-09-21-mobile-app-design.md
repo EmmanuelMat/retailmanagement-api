@@ -112,6 +112,17 @@ Only the last one is arguably outside "mobile"; it is listed because it is the c
 believed by a colmado owner on a bad-internet street, and it is wrong for the same architectural reason the
 mobile POS is hard.
 
+**This table is scoped to customer-facing copy (README + landing page) — it is not the whole problem.**
+Several internal planning docs independently assert the same false mobile app and go further, describing a
+whole **offline/Tauri/IndexedDB POS** that does not exist and is not on any plan either: `docs/01-ARCHITECTURE.md`
+(lines 9, 14, 41, 166, 182), `docs/00-PLAN-MAESTRO-SISTEMA-COMPLETO.md` (21, 191, 200, 457-518),
+`docs/02-DGII-COMPLIANCE.md` (123, 128-129, 190, 229), plus `docs/05-PAYROLL-ADVANCE.md` and
+`docs/06-API-SPEC.md`. These are not edited in this phase (out of scope), but fixing only the README and
+landing page leaves the next engineer who reads the architecture docs instead of the marketing copy with the
+exact same wrong picture — arguably worse, since they'd be planning implementation from it, not just sales
+copy. Whoever picks up option (b) or (c) below should also open a follow-up to correct or superseded-flag
+these six docs.
+
 ---
 
 ## 2. What mobile *should* be — candidate roles
@@ -218,7 +229,7 @@ no QA; estimates are build-to-first-real-user, excluding store review latency; "
 | **What it is** | Add `manifest.webmanifest` + icons (there is no `apps/web/public/` directory at all today), a `viewport`/`theme-color` export in `apps/web/app/(customer)/layout.tsx` (currently only `metadata`, `:19-23`), a minimal service worker for shell caching and a clear offline *error* screen (not offline selling — §3.3), an "Instalar app" hint, and a mobile UX pass on the screens that matter. |
 | **Effort** | **2–4 person-weeks** for role C (owner dashboard) or role A's *UI* — plus the same 2–3w of backend work if role A is chosen (§2.A), which is unavoidable under any option. |
 | **Reuses** | **Everything**: auth (`apps/web/lib/api.ts`, `middleware.ts:35-40`), the BFF proxy, `packages/ui`, the token/theme system, the Cypress suite, the CI pipeline, the deploy. |
-| **What already works** | The dashboard is genuinely responsive: sidebar collapses to a drawer (`apps/web/app/(customer)/(dashboard)/layout.tsx:326,328,398,408`), and the POS reflows to a single column with a collapsible cart on phones (`…/pos/page.tsx:376-436`). Phase C already enlarged the cart touch targets and added cash-received/change-due. **A cashier can already use the POS from a phone browser today.** |
+| **What already works** | Partial, and weaker than a first read suggests — **verified against the current file, not assumed**: the dashboard sidebar is simply `hidden lg:flex` below the `lg` breakpoint (`apps/web/app/(customer)/(dashboard)/layout.tsx:328`), replaced only by a slim `lg:hidden` header row (`:398`) with no menu button, hamburger, or drawer toggle anywhere in the file. **On a phone today there is no way to navigate between dashboard pages at all except typing a URL directly.** This is real, scoped work this option still has to do, not something "already there." What *is* already responsive: the POS itself reflows to a single column with a collapsible cart on phones (`…/pos/page.tsx:376-436`), and Phase C already enlarged the cart touch targets and added cash-received/change-due — **a cashier can already use the POS from a phone browser today**, once they've navigated to `/pos` by URL or a bookmark. A mobile nav (drawer or bottom tab bar) is part of this option's own effort estimate above, not a discount on it. |
 | **Risks** | iOS is the weak spot: install is manual (Safari has no `beforeinstallprompt`), Background Sync is unsupported, and Web Push requires the user to have added the app to the Home Screen first — no silent push, no background wake ([MagicBell](https://www.magicbell.com/blog/pwa-ios-limitations-safari-support-complete-guide), [MobiLoud](https://www.mobiloud.com/blog/progressive-web-apps-ios/)). So "notify the owner that an advance was requested" is *not* reliably deliverable on iPhone. No app-store listing. A badly-scoped service worker can serve stale JS after a deploy — keep it shell-only and network-first for `/api/*`. |
 | **Maintenance** | **Near zero.** One codebase, one CI, one deploy. |
 
