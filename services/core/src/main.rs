@@ -39,6 +39,7 @@ use services::conduce_service::ConduceService;
 use services::config_service::ConfigService;
 use services::cotizacion_service::CotizacionService;
 use services::contabilidad_service::ContabilidadService;
+use services::estados_financieros::EstadosFinancierosService;
 use services::ai_service::AiService;
 use services::ecf_service::EcfService;
 use services::email_service::EmailService;
@@ -72,6 +73,7 @@ struct HttpState {
     bancos_service: Arc<BancosService>,
     nomina_service: Arc<NominaService>,
     contabilidad_service: Arc<ContabilidadService>,
+    estados_financieros: Arc<EstadosFinancierosService>,
     report_service: Arc<ReportService>,
     config_service: Arc<ConfigService>,
     rnc_service: Arc<RncService>,
@@ -464,6 +466,7 @@ async fn main() -> anyhow::Result<()> {
     let bancos_service = Arc::new(BancosService::new(pool.clone()));
     let nomina_service = Arc::new(NominaService::new(pool.clone()));
     let contabilidad_service = Arc::new(ContabilidadService::new(pool.clone()));
+    let estados_financieros = Arc::new(EstadosFinancierosService::new(pool.clone()));
     let report_service = Arc::new(ReportService::new(pool.clone()));
     let config_service = Arc::new(ConfigService::new(pool.clone()));
     let rnc_service = Arc::new(RncService::new(pool.clone()));
@@ -525,6 +528,7 @@ async fn main() -> anyhow::Result<()> {
         bancos_service,
         nomina_service,
         contabilidad_service,
+        estados_financieros,
         report_service,
         config_service,
         rnc_service,
@@ -640,6 +644,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/contabilidad/periodos", get(http_list_periodos_contables))
         .route("/v1/contabilidad/periodos/:anio/:mes/cerrar", post(http_cerrar_periodo))
         .route("/v1/contabilidad/sincronizar", post(http_sincronizar_contabilidad))
+        .route("/v1/contabilidad/estado-resultados", get(http_estado_resultados))
+        .route("/v1/contabilidad/balance-general", get(http_balance_general))
         // MODULO 10: Reportes y Dashboard
         .route("/v1/reports/606", get(http_report_606))
         .route("/v1/reports/it1", get(http_report_it1))
@@ -3969,6 +3975,7 @@ async fn http_list_asientos(
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
     let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
     let (asientos, total) = state.contabilidad_service.list_asientos(
         &claims.tenant_id, params.cuenta, params.referencia_tipo, params.fecha_desde, params.fecha_hasta, &page, &sort,
     ).await
@@ -4016,6 +4023,7 @@ async fn http_libro_mayor(
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
     let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
     let (cuentas, total) = state.contabilidad_service.libro_mayor(&claims.tenant_id, params.search, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let page_size = page.limit(20);
@@ -4072,6 +4080,7 @@ async fn http_libro_mayor_detalle(
 ) -> Result<Json<pagination::Page<services::contabilidad_service::MovimientoCuenta>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
     let (movimientos, total) = state.contabilidad_service.libro_mayor_detalle(
         &claims.tenant_id, &cuenta, params.fecha_desde, params.fecha_hasta, &page,
     ).await
@@ -4099,6 +4108,7 @@ async fn http_libro_diario(
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
     let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
     let (asientos, total) = state.contabilidad_service.libro_diario(
         &claims.tenant_id, params.fecha_desde, params.fecha_hasta, params.origen, &page, &sort,
     ).await
@@ -4139,6 +4149,68 @@ async fn http_cerrar_periodo(
     state.audit_service.log(&claims.tenant_id, Some(usuario_id), "PERIODO_CERRADO", "periodo_contable", Some(periodo.id),
         serde_json::json!({ "anio": anio, "mes": mes })).await;
     Ok(Json(periodo))
+}
+
+// ------------------ MODULO 7b: Estados financieros (Fase F) ------------------
+
+/// Fase F4: antes, cada vista del mayor mostraba la foto del último
+/// "Sincronizar" que alguien pulsó a mano, así que un estado financiero
+/// podía omitir la venta de hace cinco minutos. Contabilizar aquí pone el
+/// trabajo exactamente donde importa, sin tocar los handlers de venta,
+/// compra, gasto ni nómina (que otras fases están editando).
+///
+/// Es **best-effort a propósito**: `sincronizar` es idempotente (UNIQUE +
+/// ON CONFLICT DO NOTHING, ver `contabilidad_service::create_entry`), pero
+/// puede fallar legítimamente - p. ej. si hay movimiento sin contabilizar
+/// dentro de un período ya cerrado. En ese caso la lectura no debe romperse:
+/// se sirve el mayor tal como está y queda el warn. `POST
+/// /v1/contabilidad/sincronizar` sigue existiendo para forzarlo y ver el
+/// error.
+async fn sincronizar_antes_de_leer(state: &HttpState, tenant_id: &str) {
+    if let Err(e) = state.contabilidad_service.sincronizar(tenant_id).await {
+        tracing::warn!("sincronización automática previa a la lectura falló para {}: {}", tenant_id, e);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EstadoResultadosParams {
+    desde: Option<chrono::NaiveDate>,
+    hasta: Option<chrono::NaiveDate>,
+}
+
+async fn http_estado_resultados(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<EstadoResultadosParams>,
+) -> Result<Json<services::estados_financieros::EstadoResultados>, (StatusCode, String)> {
+    use chrono::Datelike;
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
+    let hasta = params.hasta.unwrap_or_else(|| chrono::Utc::now().date_naive());
+    // Por defecto el mes corriente: es la granularidad de periodos_contables
+    // y lo que un colmado mira cuando abre "Estado de resultados".
+    let desde = params.desde.unwrap_or_else(|| hasta.with_day(1).unwrap_or(hasta));
+    state.estados_financieros.estado_resultados(&claims.tenant_id, desde, hasta).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct BalanceGeneralParams {
+    al: Option<chrono::NaiveDate>,
+}
+
+async fn http_balance_general(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<BalanceGeneralParams>,
+) -> Result<Json<services::estados_financieros::BalanceGeneral>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
+    let al = params.al.unwrap_or_else(|| chrono::Utc::now().date_naive());
+    state.estados_financieros.balance_general(&claims.tenant_id, al).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 // ------------------ MODULO 10: Reportes y Dashboard ------------------

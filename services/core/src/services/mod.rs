@@ -13,6 +13,7 @@ pub mod ecf_service;
 pub mod contabilidad_service;
 pub mod ecfl_service;
 pub mod email_service;
+pub mod estados_financieros;
 pub mod image_service;
 pub mod inventario_service;
 pub mod license_service;

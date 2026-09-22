@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { RefreshCw, BookOpen, BookOpenCheck, ScrollText, Lock, ArrowRight } from "lucide-react";
+import { RefreshCw, BookOpen, BookOpenCheck, ScrollText, Lock, ArrowRight, TrendingUp, Scale } from "lucide-react";
 import { Button, Card, CardContent, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 
@@ -110,6 +110,28 @@ export default function ContabilidadPage() {
               <div>
                 <p className="text-sm font-semibold flex items-center gap-2"><BookOpen className="h-4 w-4" />Libro mayor</p>
                 <p className="text-xs text-muted-foreground mt-1">Saldo por cuenta, con detalle</p>
+              </div>
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/contabilidad/estado-resultados">
+          <Card className="hover:border-primary transition-colors">
+            <CardContent className="pt-5 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold flex items-center gap-2"><TrendingUp className="h-4 w-4" />Estado de resultados</p>
+                <p className="text-xs text-muted-foreground mt-1">Ingresos, costo de ventas y gastos del período</p>
+              </div>
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/contabilidad/balance-general">
+          <Card className="hover:border-primary transition-colors">
+            <CardContent className="pt-5 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold flex items-center gap-2"><Scale className="h-4 w-4" />Balance general</p>
+                <p className="text-xs text-muted-foreground mt-1">Activo, pasivo y patrimonio a una fecha</p>
               </div>
               <ArrowRight className="h-4 w-4 text-muted-foreground" />
             </CardContent>
