@@ -1215,6 +1215,26 @@ async fn main() -> anyhow::Result<()> {
         CROSS JOIN modulos_catalogo m
         WHERE NOT EXISTS (SELECT 1 FROM tenant_modulos tm WHERE tm.tenant_id = t.rnc)
         ON CONFLICT DO NOTHING;
+
+        -- FASE F5: abonos a proveedor (pago de Cuentas por Pagar). Espejo
+        -- exacto de cliente_abonos: una compra FIADO crea la deuda y hasta
+        -- ahora solo podía cerrarse con un asiento manual.
+        -- No se agrega `proveedores.saldo_pendiente`: el saldo se deriva de
+        -- compras FIADO no anuladas menos notas de crédito menos abonos, para
+        -- no crear una tercera fuente de verdad que pueda quedar desfasada
+        -- (ver docs/14 §4 sobre los tres saldos de caja/banco sin conciliar).
+        CREATE TABLE IF NOT EXISTS proveedor_abonos (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            proveedor_id UUID NOT NULL REFERENCES proveedores(id) ON DELETE CASCADE,
+            monto DECIMAL(12,2) NOT NULL,
+            metodo_pago TEXT NOT NULL DEFAULT 'EFECTIVO', -- EFECTIVO | TRANSFERENCIA | CHEQUE
+            nota TEXT,
+            usuario_id UUID REFERENCES usuarios(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_proveedor_abonos_proveedor ON proveedor_abonos(proveedor_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_proveedor_abonos_tenant ON proveedor_abonos(tenant_id, created_at DESC);
         "#
     )
     .execute(&pool)

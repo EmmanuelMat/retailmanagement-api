@@ -117,6 +117,8 @@ pub struct SincronizarResultado {
     pub notas_credito_procesadas: i64,
     pub ajustes_procesados: i64,
     pub banco_procesados: i64,
+    /// Fase F5: pagos a proveedor contra `2110 Cuentas por Pagar`.
+    pub abonos_proveedor_procesados: i64,
 }
 
 pub struct ContabilidadService {
@@ -893,6 +895,35 @@ impl ContabilidadService {
             }
         }
 
+        // --- Abonos a proveedor (Fase F5): espejo del abono de cliente, en
+        // dirección contraria - paga Cuentas por Pagar con Caja. El método
+        // de pago no cambia el asiento: el plan de cuentas tiene una sola
+        // cuenta "1100 Caja y Bancos" (ver partner_service::registrar_abono_proveedor).
+        let abonos_proveedor: Vec<(Uuid, Decimal, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT pa.id, pa.monto, pa.created_at
+               FROM proveedor_abonos pa
+               WHERE pa.tenant_id = $1
+                 AND NOT EXISTS (SELECT 1 FROM asientos a WHERE a.tenant_id = pa.tenant_id AND a.referencia_tipo = 'ABONO_PROVEEDOR' AND a.referencia_id = pa.id)"#,
+        )
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut abonos_proveedor_count = 0i64;
+        for (id, monto, created_at) in abonos_proveedor {
+            let fecha = created_at.date_naive();
+            let lineas = vec![
+                ("2110 Cuentas por Pagar".to_string(), monto, Decimal::ZERO),
+                ("1100 Caja y Bancos".to_string(), Decimal::ZERO, monto),
+            ];
+            if self
+                .create_entry(&mut tx, tenant_id, fecha, "Abono a proveedor", "AUTOMATICO", "ABONO_PROVEEDOR", Some(id), None, None, &lineas)
+                .await?
+                .is_some()
+            {
+                abonos_proveedor_count += 1;
+            }
+        }
+
         tx.commit().await?;
         Ok(SincronizarResultado {
             ventas_procesadas: ventas_count,
@@ -904,6 +935,7 @@ impl ContabilidadService {
             notas_credito_procesadas: notas_count,
             ajustes_procesados: ajustes_count,
             banco_procesados: banco_count,
+            abonos_proveedor_procesados: abonos_proveedor_count,
         })
     }
 }

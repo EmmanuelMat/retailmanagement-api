@@ -570,6 +570,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/clientes/:id", get(http_get_cliente).put(http_update_cliente).delete(http_delete_cliente))
         .route("/v1/proveedores", get(http_list_proveedores).post(http_create_proveedor))
         .route("/v1/proveedores/:id", get(http_get_proveedor).put(http_update_proveedor).delete(http_delete_proveedor))
+        .route("/v1/proveedores/:id/abonos", get(http_list_abonos_proveedor).post(http_registrar_abono_proveedor))
         // MODULO 5: Ventas / Punto de Venta
         .route("/v1/ventas", get(http_list_ventas).post(http_create_venta))
         .route("/v1/ventas/:id", get(http_get_venta))
@@ -2130,11 +2131,13 @@ async fn http_list_proveedores(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
-) -> Result<Json<pagination::Page<services::partner_service::Proveedor>>, (StatusCode, String)> {
+) -> Result<Json<pagination::Page<services::partner_service::ProveedorConSaldo>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
     let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
-    let (proveedores, total) = state.partner_service.list_proveedores(&claims.tenant_id, params.search, params.activo, &page, &sort).await
+    // Fase F5: el listado trae el saldo por pagar derivado (mismos campos de
+    // antes + `saldo_pendiente`), para que se vea a quién se le debe.
+    let (proveedores, total) = state.partner_service.list_proveedores_con_saldo(&claims.tenant_id, params.search, params.activo, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let page_size = page.limit(20);
     Ok(Json(pagination::Page::new(proveedores, page.page_number(), page_size, total)))
@@ -2144,9 +2147,9 @@ async fn http_get_proveedor(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<services::partner_service::Proveedor>, (StatusCode, String)> {
+) -> Result<Json<services::partner_service::ProveedorConSaldo>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    state.partner_service.get_proveedor(&claims.tenant_id, id).await
+    state.partner_service.get_proveedor_con_saldo(&claims.tenant_id, id).await
         .map(Json)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
 }
@@ -2183,6 +2186,36 @@ async fn http_delete_proveedor(
     state.partner_service.delete_proveedor(&claims.tenant_id, id).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// Fase F5: pago a proveedor contra `2110 Cuentas por Pagar`. Espejo de
+// `http_registrar_abono` (lado cliente); ver
+// partner_service::registrar_abono_proveedor para el tratamiento de
+// efectivo vs. transferencia.
+async fn http_list_abonos_proveedor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<services::partner_service::ProveedorAbono>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.list_abonos_proveedor(&claims.tenant_id, id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_registrar_abono_proveedor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::partner_service::CreateProveedorAbonoRequest>,
+) -> Result<Json<services::partner_service::ProveedorAbono>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let abono = state.partner_service.registrar_abono_proveedor(&claims.tenant_id, id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ABONO_PROVEEDOR_REGISTRADO", "proveedor", Some(id),
+        serde_json::json!({ "abono_id": abono.id, "monto": abono.monto, "metodo_pago": abono.metodo_pago })).await;
+    Ok(Json(abono))
 }
 
 // ------------------ MODULO 5: Ventas / Punto de Venta ------------------
