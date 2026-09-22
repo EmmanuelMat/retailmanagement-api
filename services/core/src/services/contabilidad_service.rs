@@ -384,6 +384,52 @@ impl ContabilidadService {
         Ok(periodo)
     }
 
+    /// El código de cuenta de una línea del mayor: el primer token del
+    /// string `"<codigo> <nombre>"` con que se guardan (p. ej. `"1200"` de
+    /// `"1200 Inventario"`). Es lo mismo que hace la parte SQL de los
+    /// estados financieros (`split_part(cuenta, ' ', 1)`), en un solo lugar.
+    pub fn codigo_de_cuenta(cuenta: &str) -> Option<&str> {
+        cuenta.split_whitespace().next().filter(|c| !c.is_empty())
+    }
+
+    /// Fase F2: ninguna línea puede referirse a una cuenta que no esté en el
+    /// plan del tenant. Sin esto, un error de tipeo en un asiento manual
+    /// creaba una "cuenta fantasma" permanente en el libro mayor
+    /// (docs/14-COMPLIANCE-WORKFLOW-UIUX-AUDIT.md §4).
+    ///
+    /// Se matchea **solo por el código**, nunca por el nombre: renombrar una
+    /// cuenta del plan no debe invalidar los asientos históricos, ni obligar
+    /// a que las cadenas hardcodeadas de `sincronizar` sigan la semilla
+    /// carácter por carácter (tildes y paréntesis incluidos, p. ej.
+    /// `"5295 Ajuste de Inventario (Merma)"`).
+    async fn validar_cuentas(tx: &mut sqlx::PgConnection, tenant_id: &str, lineas: &[(String, Decimal, Decimal)]) -> anyhow::Result<()> {
+        let mut codigos: Vec<String> = Vec::with_capacity(lineas.len());
+        for (cuenta, _, _) in lineas {
+            let codigo = Self::codigo_de_cuenta(cuenta).ok_or_else(|| {
+                anyhow::anyhow!("La cuenta \"{}\" no tiene código: usa el formato \"<código> <nombre>\", por ejemplo \"1100 Caja y Bancos\"", cuenta)
+            })?;
+            if !codigos.iter().any(|c| c == codigo) {
+                codigos.push(codigo.to_string());
+            }
+        }
+
+        let existentes: Vec<String> =
+            sqlx::query_scalar("SELECT codigo FROM cuentas_contables WHERE tenant_id = $1 AND activo = true AND codigo = ANY($2)")
+                .bind(tenant_id)
+                .bind(&codigos)
+                .fetch_all(&mut *tx)
+                .await?;
+
+        let faltantes: Vec<&str> = codigos.iter().map(|c| c.as_str()).filter(|c| !existentes.iter().any(|e| e == c)).collect();
+        if !faltantes.is_empty() {
+            anyhow::bail!(
+                "La cuenta {} no existe en el plan de cuentas o está inactiva. Revisa el código en Contabilidad > Plan de cuentas.",
+                faltantes.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ")
+            );
+        }
+        Ok(())
+    }
+
     /// Núcleo compartido de todo insert de asiento (manual, automático o
     /// reversión): valida balance, respeta períodos cerrados, y es
     /// idempotente vía `UNIQUE(tenant_id, referencia_tipo, referencia_id)`
@@ -415,6 +461,8 @@ impl ContabilidadService {
         if total_debe == Decimal::ZERO {
             anyhow::bail!("El asiento no puede estar vacío");
         }
+
+        Self::validar_cuentas(&mut *tx, tenant_id, lineas).await?;
 
         let anio = fecha.year();
         let mes = fecha.month() as i32;
