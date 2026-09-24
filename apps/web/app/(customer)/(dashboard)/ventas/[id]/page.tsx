@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Printer, Undo2, Truck, FileText } from "lucide-react";
-import { Badge, Button, Card, CardContent, Input, Label, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
+import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, Input, Label, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, formatDOP } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 
 interface VentaItem {
@@ -45,6 +45,14 @@ interface NotaCredito {
   e_ncf: string | null;
   estado_dgii: string | null;
   total: string;
+  motivo?: string;
+  es_parcial?: boolean;
+  created_at?: string;
+}
+
+interface LineaDevuelta {
+  venta_item_id: string;
+  cantidad_devuelta: string;
 }
 
 function estadoDgiiVariant(estado: string | null): "success" | "destructive" | "warning" | "secondary" {
@@ -65,6 +73,12 @@ export default function VentaDetallePage() {
   const [emitiendoNota, setEmitiendoNota] = useState(false);
   const [notaError, setNotaError] = useState("");
   const [nota, setNota] = useState<NotaCredito | null>(null);
+  // Cuánto lleva devuelto cada línea (de /devoluciones): es el tope del
+  // selector de cantidad, para que la UI no pueda pedir más de lo que queda.
+  const [devueltoPorLinea, setDevueltoPorLinea] = useState<Record<string, number>>({});
+  const [notasCredito, setNotasCredito] = useState<NotaCredito[]>([]);
+  const [cantidadesDevolucion, setCantidadesDevolucion] = useState<Record<string, string>>({});
+  const [confirmarDevolucion, setConfirmarDevolucion] = useState(false);
 
   const [conduces, setConduces] = useState<ConduceResumen[]>([]);
   const [cantidadesEntrega, setCantidadesEntrega] = useState<Record<string, string>>({});
@@ -107,9 +121,21 @@ export default function VentaDetallePage() {
     apiFetch<{ items: ConduceResumen[] }>(`/api/conduces?venta_id=${params.id}&pageSize=100`).then((d) => setConduces(d.items)).catch(() => {});
   }
 
+  function cargarDevoluciones() {
+    apiFetch<{ notas: NotaCredito[]; lineas: LineaDevuelta[] }>(`/api/ventas/${params.id}/devoluciones`)
+      .then((d) => {
+        setNotasCredito(d.notas);
+        const mapa: Record<string, number> = {};
+        for (const l of d.lineas) mapa[l.venta_item_id] = Number(l.cantidad_devuelta);
+        setDevueltoPorLinea(mapa);
+      })
+      .catch(() => {});
+  }
+
   useEffect(() => {
     cargarVenta();
     cargarConduces();
+    cargarDevoluciones();
     try {
       const u = localStorage.getItem("usuario");
       if (u) setUsuario(JSON.parse(u));
@@ -213,20 +239,48 @@ export default function VentaDetallePage() {
     }
   }
 
-  async function handleEmitirNotaCredito(e: React.FormEvent) {
-    e.preventDefault();
+  /// Lo que queda por devolver de una línea: lo vendido menos lo ya devuelto
+  /// en notas anteriores. Es el tope del selector de cantidad.
+  function pendienteDeDevolver(it: VentaItem) {
+    return Number(it.cantidad) - (devueltoPorLinea[it.id] || 0);
+  }
+
+  const lineasSeleccionadas = (venta?.items || [])
+    .map((it) => ({ it, cantidad: Number(cantidadesDevolucion[it.id] || 0) }))
+    .filter((l) => l.cantidad > 0);
+
+  // Importe estimado a acreditar: se prorratea la línea tal como se vendió
+  // (con su descuento y su ITBIS), igual que hace el servidor. El monto real
+  // lo calcula y devuelve el core - esto es solo para que el cajero confirme.
+  const totalEstimado = lineasSeleccionadas.reduce((acc, { it, cantidad }) => {
+    const proporcion = cantidad / Number(it.cantidad);
+    return acc + (Number(it.subtotal) + Number(it.itbis_monto)) * proporcion;
+  }, 0);
+
+  const devolucionEsTotal =
+    venta != null && venta.items.every((it) => Number(cantidadesDevolucion[it.id] || 0) >= pendienteDeDevolver(it));
+
+  async function handleEmitirNotaCredito() {
     setEmitiendoNota(true);
     setNotaError("");
     try {
       const result = await apiFetch<NotaCredito>(`/api/ventas/${params.id}/nota-credito`, {
         method: "POST",
-        body: JSON.stringify({ motivo }),
+        body: JSON.stringify({
+          motivo,
+          items: lineasSeleccionadas.map(({ it, cantidad }) => ({ venta_item_id: it.id, cantidad: String(cantidad) })),
+        }),
       });
       setNota(result);
+      setConfirmarDevolucion(false);
       setShowNotaCredito(false);
+      setCantidadesDevolucion({});
+      setMotivo("");
       cargarVenta();
+      cargarDevoluciones();
     } catch (e: any) {
       setNotaError(e.message);
+      setConfirmarDevolucion(false);
     } finally {
       setEmitiendoNota(false);
     }
@@ -263,9 +317,9 @@ export default function VentaDetallePage() {
             <Button size="sm" variant="secondary" onClick={handleReimprimir} disabled={imprimiendo}>
               <Printer className="h-3.5 w-3.5" />{imprimiendo ? "Imprimiendo..." : "Reimprimir"}
             </Button>
-            {venta.e_ncf && venta.estado !== "ANULADA" && !nota && (
-              <Button size="sm" variant="secondary" onClick={() => setShowNotaCredito((s) => !s)}>
-                <Undo2 className="h-3.5 w-3.5" />Nota de Crédito
+            {venta.estado !== "ANULADA" && (
+              <Button size="sm" variant="secondary" onClick={() => setShowNotaCredito(true)} data-testid="abrir-devolucion">
+                <Undo2 className="h-3.5 w-3.5" />Devolver productos
               </Button>
             )}
           </div>
@@ -274,26 +328,120 @@ export default function VentaDetallePage() {
 
       {printMsg && <p className="text-xs text-muted-foreground">{printMsg}</p>}
 
-      {showNotaCredito && (
-        <Card className="max-w-md ml-auto">
-          <CardContent className="pt-5">
-            <form onSubmit={handleEmitirNotaCredito} className="space-y-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="motivo">Motivo de la devolución *</Label>
-                <Input id="motivo" required value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Producto defectuoso, cambio de opinión, etc." />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Revierte el stock y la caja de esta venta y emite una Nota de Crédito (e-CF Tipo 34) que referencia el e-NCF original. La venta original queda ANULADA pero su historial permanece intacto.
-              </p>
-              {notaError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{notaError}</div>}
-              <div className="flex gap-2">
-                <Button type="submit" disabled={emitiendoNota}>{emitiendoNota ? "Emitiendo..." : "Emitir Nota de Crédito"}</Button>
-                <Button type="button" variant="secondary" onClick={() => setShowNotaCredito(false)}>Cancelar</Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-      )}
+      <Dialog
+        open={showNotaCredito}
+        onClose={() => setShowNotaCredito(false)}
+        title="Devolver productos"
+        className="max-w-2xl"
+        testId="devolucion-dialog"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            Indica cuánto devuelve el cliente de cada producto. Se acredita lo devuelto al precio y descuento con que se
+            vendió, vuelve al inventario y sale de la caja. La venta solo queda ANULADA si se devuelve todo.
+          </p>
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Producto</TableHead>
+                <TableHead className="text-right">Vendido</TableHead>
+                <TableHead className="text-right">Ya devuelto</TableHead>
+                <TableHead className="text-right">Devolver ahora</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {venta.items.map((it) => {
+                const pendiente = pendienteDeDevolver(it);
+                return (
+                  <TableRow key={it.id}>
+                    <TableCell className="font-medium">{it.nombre}</TableCell>
+                    <TableCell className="text-right tabular-nums">{it.cantidad}</TableCell>
+                    <TableCell className="text-right tabular-nums">{devueltoPorLinea[it.id] || 0}</TableCell>
+                    <TableCell className="text-right">
+                      {pendiente > 0 ? (
+                        <Input
+                          type="number"
+                          min={0}
+                          max={pendiente}
+                          step="1"
+                          aria-label={`Cantidad a devolver de ${it.nombre}`}
+                          data-testid={`devolver-cantidad-${it.id}`}
+                          className="h-8 w-24 ml-auto text-right"
+                          value={cantidadesDevolucion[it.id] || ""}
+                          onChange={(e) => {
+                            // El tope real lo vuelve a validar el servidor contra
+                            // el acumulado; esto es solo para no ofrecer de más.
+                            const pedido = Math.min(Number(e.target.value) || 0, pendiente);
+                            setCantidadesDevolucion((c) => ({ ...c, [it.id]: pedido > 0 ? String(pedido) : "" }));
+                          }}
+                          placeholder="0"
+                        />
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Devuelto</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="motivo">Motivo de la devolución *</Label>
+            <Input
+              id="motivo"
+              data-testid="devolucion-motivo"
+              value={motivo}
+              onChange={(e) => setMotivo(e.target.value)}
+              placeholder="Producto defectuoso, cambio de opinión, etc."
+            />
+          </div>
+
+          <div className="flex items-center justify-between border-t border-border pt-3">
+            <span className="text-sm text-muted-foreground">A devolver</span>
+            <span className="text-base font-bold tabular-nums" data-testid="devolucion-total">{formatDOP(totalEstimado.toFixed(2))}</span>
+          </div>
+
+          {notaError && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{notaError}</div>}
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setShowNotaCredito(false)}>Cancelar</Button>
+            <Button
+              type="button"
+              data-testid="devolucion-continuar"
+              disabled={lineasSeleccionadas.length === 0 || motivo.trim() === ""}
+              onClick={() => setConfirmarDevolucion(true)}
+            >
+              Continuar
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <ConfirmDialog
+        open={confirmarDevolucion}
+        onClose={() => setConfirmarDevolucion(false)}
+        onConfirm={handleEmitirNotaCredito}
+        busy={emitiendoNota}
+        destructive
+        confirmLabel="Emitir Nota de Crédito"
+        title="Confirmar la devolución"
+        description={
+          <>
+            <p>
+              Se devolverán <strong>{lineasSeleccionadas.reduce((a, l) => a + l.cantidad, 0)}</strong> unidad(es) por un
+              total de <strong>{formatDOP(totalEstimado.toFixed(2))}</strong>.
+            </p>
+            <p>
+              Se emite una Nota de Crédito (e-CF Tipo 34) que referencia el e-NCF de esta venta. Esto mueve dinero e
+              inventario y no se puede deshacer.
+            </p>
+            {devolucionEsTotal && <p>Se devuelve todo lo que quedaba: la venta quedará ANULADA.</p>}
+          </>
+        }
+      />
+
 
       {nota && (
         <Card className="max-w-md ml-auto">

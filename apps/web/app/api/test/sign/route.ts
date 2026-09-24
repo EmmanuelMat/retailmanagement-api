@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /**
- * GET /api/test/sign - Demo real XAdES-BES signing without needing real P12 cert
+ * GET /api/test/sign - Demo real XML-DSig signing without needing real P12 cert
  * Calls Rust core /v1/test/sign-demo which generates self-signed P12 and signs sample ECF
  * This proves the Rust signer works per DGII spec:
  * - C14N inclusive
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
     const data = await res.json();
     return NextResponse.json({
       success: true,
-      message: "Real XAdES-BES signed per DGII spec - see docs in services/core/src/services/ecfl_service.rs",
+      message: "Real XML-DSig enveloped signature per DGII spec - see docs in services/core/src/services/ecfl_service.rs",
       steps: [
         "1. Canonicalize original ECF XML (C14N inclusive)",
         "2. SHA256 -> base64 -> DigestValue",

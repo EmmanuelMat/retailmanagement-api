@@ -33,7 +33,7 @@ import { buildAndSignECF, buildSignAndSendToDGII, signDemo, buildECF } from "@/l
  * 
  * Flow real DGII:
  * - Build XML per Informe Tecnico v1.0 (build_ecf_xml)
- * - Sign XAdES-BES (C14N inclusive, RSA-SHA256, DigestValue)
+ * - Sign XML-DSig enveloped per DGII "Firmado de e-CF" (C14N inclusive, RSA-SHA256, DigestValue)
  * - Auth DGII: GET /TesteCF/Autenticacion/api/Autenticacion/Semilla -> sign seed -> POST ValidarSemilla -> token
  * - Send: POST /TesteCF/recepcion/api/FacturasElectronicas multipart file RNC+eNCF.xml -> trackId
  * - Poll: GET /TesteCF/consultaresultado/api/Consultas/Estado?trackId=xxx until Aceptado/Rechazado
@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         modo: "DEMO_CERTIFICADO_AUTO_FIRMADO",
-        mensaje: "Firma XAdES-BES real per DGII spec con certificado auto-firmado (no válido para DGII prod, solo para probar builder + signer + QR). Para flujo real DGII, envía p12Base64 de cert INDOTEL TesteCF/CerteCF + sendToDGII:true",
+        mensaje: "Firma XML-DSig real per DGII spec con certificado auto-firmado (no válido para DGII prod, solo para probar builder + signer + QR). Para flujo real DGII, envía p12Base64 de cert INDOTEL TesteCF/CerteCF + sendToDGII:true",
         eNCF: simplePos?.eNCF || demo.e_ncf,
         tipoECF: simplePos?.tipoECF || 32,
         xmlConstruido: built?.xml_preview || "Core no disponible para build, usando XML demo del signer",
@@ -123,8 +123,8 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        modo: "CONSTRUIDO_Y_FIRMADO_XADES_REAL",
-        mensaje: "XML construido per Informe Tecnico v1.0 + firmado XAdES-BES real con tu P12. No enviado a DGII aún (sendToDGII:false). Usa sendToDGII:true para flujo completo con seed auth + TrackID",
+        modo: "CONSTRUIDO_Y_FIRMADO_XMLDSIG_REAL",
+        mensaje: "XML construido per Informe Tecnico v1.0 + firmado XML-DSig real con tu P12. No enviado a DGII aún (sendToDGII:false). Usa sendToDGII:true para flujo completo con seed auth + TrackID",
         eNCF: result.e_ncf,
         tipoECF: result.tipo_ecf,
         fileName: result.file_name,
@@ -206,8 +206,8 @@ export async function GET(req: NextRequest) {
       { eNCF: "E320000000001", total: "1180.00", estadoDGII: "ACEPTADO", trackId: "DGII-123", qrUrl: "https://ecf.dgii.gov.do/eCF/ConsultaTimbre?..." },
     ],
     endpoints: {
-      "POST /api/sales": "Crear venta + construir XML Informe Tecnico v1.0 + firmar XAdES + opcional enviar a DGII real",
-      "GET /api/test/sign": "Probar firma XAdES real con cert auto-firmado (demo)",
+      "POST /api/sales": "Crear venta + construir XML Informe Tecnico v1.0 + firmar XML-DSig + opcional enviar a DGII real",
+      "GET /api/test/sign": "Probar firma XML-DSig real con cert auto-firmado (demo)",
       "POST /api/sales with p12Base64 + sendToDGII:true": "Flujo completo DGII: seed -> firma seed -> token -> send eCF -> poll TrackID"
     }
   });

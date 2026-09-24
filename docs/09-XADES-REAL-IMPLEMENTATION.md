@@ -1,4 +1,24 @@
-# 09 - Real XAdES-BES Implementation (DGII Spec)
+# 09 - Real XML-DSig Signing Implementation (DGII e-CF Spec)
+
+> **Corrección (Fase B, 2026-09-21).** Este documento (y el código) llamaba
+> "XAdES-BES" a lo que en realidad se implementa. **No es XAdES.** La
+> especificación real de la DGII — *Firmado Comprobantes Fiscales Electrónicos
+> (e-CF)*,
+> <https://dgii.gov.do/cicloContribuyente/facturacion/comprobantesFiscalesElectronicosE-CF/Documentacin%20sobre%20eCF/Instructivos%20sobre%20Facturaci%C3%B3n%20Electr%C3%B3nica/Firmado%20de%20e-CF.pdf>
+> — describe una **firma XML-DSig *enveloped* simple** (`xmlns="http://www.w3.org/2000/09/xmldsig#"`,
+> `SignedXml` estándar de .NET en su propio ejemplo). Su ejemplo de firma **no
+> contiene ningún elemento XAdES**: no hay `QualifyingProperties`,
+> `SignedProperties`, `SigningCertificate` ni `SigningTime`, que son
+> precisamente lo que distingue a XAdES-BES de XML-DSig.
+>
+> Las cuatro URIs de algoritmo que este repo implementa (C14N 2001, rsa-sha256,
+> sha256, enveloped-signature, `Reference URI=""`) **sí coinciden exactamente**
+> con el PDF de la DGII, así que **no hubo cambio de lógica de firma**: solo se
+> corrigió la etiqueta. El **nombre del archivo se mantiene** (`09-XADES-...`)
+> porque está referenciado desde el README y otros documentos.
+>
+> Ver también `docs/14-COMPLIANCE-WORKFLOW-UIUX-AUDIT.md` §1 ("Wrong or
+> overstated").
 
 ## What Was Built
 
@@ -111,7 +131,7 @@ For dev without INDOTEL cert: `generate_self_signed_p12()` in `main.rs`:
 ```rust
 HTTP :3001 (Axum) - For Next.js BFF quick testing
   GET  /health
-  POST /v1/ecf/sign - Real XAdES signer
+  POST /v1/ecf/sign - Real XML-DSig signer
   POST /v1/test/sign-demo - Demo with self-signed cert
   POST /v1/advances/request - reserve advance pending approval
   GET  /v1/employees/:id/balance
@@ -157,7 +177,7 @@ export async function signECFWithCore(req) {
 // apps/web/app/api/sales/route.ts
 const xml = buildSimpleECFXml(tenantId, eNCF, tipoECF, items, clientRNC);
 if (!p12Base64) {
-  // Demo mode - calls Rust core self-signed signer, proves XAdES works
+  // Demo mode - calls Rust core self-signed signer, proves XML-DSig works
   signed = await signDemo();
 } else {
   // Real mode with client cert from vault
@@ -190,7 +210,7 @@ cargo run --bin migrate # first time
 cargo run # starts HTTP :3001 + gRPC :50051
 # You should see: "HTTP listening on 0.0.0.0:3001" + "gRPC listening on [::]:50051"
 
-# Terminal 2 - Test real XAdES signing without real cert (self-signed)
+# Terminal 2 - Test real XML-DSig signing without real cert (self-signed)
 curl -X POST http://localhost:3001/v1/test/sign-demo \
   -H "Content-Type: application/json" -d '{}' | jq
 

@@ -1,6 +1,6 @@
 /**
  * Next.js -> Rust Core Client
- * Real DGII flow: build XML per Informe Tecnico v1.0 + XAdES-BES sign + seed auth + send + poll TrackID
+ * Real DGII flow: build XML per Informe Tecnico v1.0 + XML-DSig enveloped sign + seed auth + send + poll TrackID
  * UI en español, comunicación en inglés
  */
 

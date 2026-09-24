@@ -96,7 +96,7 @@ Output XML:
 </ECF>
 ```
 
-Then this XML goes to `sign_xml_ecf()` for XAdES-BES signing.
+Then this XML goes to `sign_xml_ecf()` for XML-DSig enveloped signing.
 
 ### 2. Real DGII Client (`services/core/src/dgii_client.rs`)
 
@@ -176,7 +176,7 @@ Added in `main.rs`:
   Input: `{ ecf: {...} }` or `{ simplePos: { tenantRnc, razonSocial, direccion, eNCF, tipoECF, clienteRnc, clienteNombre, items: [{nombre, cantidad, precio}], fechaEmision, fechaVencimiento } }`
   Output: `{ xml, xml_preview, e_ncf, tipo_ecf }`
 
-- `POST /v1/ecf/build-sign` - Build + Sign XAdES
+- `POST /v1/ecf/build-sign` - Build + Sign XML-DSig
   Input: same + `p12Base64` + `p12Password`
   Output: `{ xml_built, signed_xml, codigo_seguridad, digest_value, qr_url, file_name }`
 

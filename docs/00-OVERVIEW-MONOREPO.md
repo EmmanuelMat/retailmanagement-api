@@ -22,7 +22,7 @@ Run `tree -L 4 -I 'node_modules|target'` to see:
 │       ├── src/aggregates/sale.rs - Sale + DGII flow
 │       ├── src/aggregates/inventory.rs
 │       ├── src/ledger/mod.rs - TigerBeetle client + pending/post for advances
-│       ├── src/services/ecfl_service.rs - XAdES signing + QR
+│       ├── src/services/ecfl_service.rs - XML-DSig signing + QR
 │       ├── src/services/payroll_service.rs - Advance request -> TB reserve -> approve
 │       ├── src/services/report_service.rs - 606/607 TXT generator
 │       ├── Cargo.toml - dependencies (tokio, axum, tonic, sqlx, rust_decimal, openssl, quick-xml)
@@ -80,7 +80,7 @@ pnpm start
 
 ## Next Steps
 
-- [ ] Implement real XAdES-BES signing in `ecfl_service.rs` (currently mock)
+- [ ] Implement real XML-DSig enveloped signing in `ecfl_service.rs` (currently mock)
 - [ ] Connect sqlx pool + real TigerBeetle client (currently mock)
 - [ ] Add Prisma read models in apps/web
 - [ ] Generate TS from proto with `buf` or `prost`

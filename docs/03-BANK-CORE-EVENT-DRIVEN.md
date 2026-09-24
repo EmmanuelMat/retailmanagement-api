@@ -290,7 +290,7 @@ For offline colmado: Events stored in local SQLite queue (Tauri), synced when on
 - Monthly payroll command consumes all employee aggregates, creates linked transfers for TSS, ISR, advances
 - Generates Journal Entry for accounting + TXT for TSS (not DGII, but TSS is similar)
 
-**Potential Risk:** Building TigerBeetle integration + XAdES signing from scratch is heavy. Start with Formance Ledger Docker for quick validation, migrate to TigerBeetle for performance.
+**Potential Risk:** Building TigerBeetle integration + XML-DSig signing from scratch is heavy. Start with Formance Ledger Docker for quick validation, migrate to TigerBeetle for performance.
 
 Want me to scaffold the Rust core repo now? I can generate:
 - `cargo new fiscal-core-bank`

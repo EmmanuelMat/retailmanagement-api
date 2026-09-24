@@ -20,7 +20,7 @@ Un colmado en Santo Domingo necesita:
 6. **Cuadrar caja** apertura/cierre, bancos, conciliación
 7. **Trabajar sin internet** (Tauri + SQLite queue)
 
-**Arquitectura:** Event Sourcing (Postgres tabla `events` apéndice, hash encadenado) + Ledger TigerBeetle (dinero) + Read Models (Prisma) + Rust core (firma XAdES, DGII real) + Next.js (BFF Español) + Expo Móvil.
+**Arquitectura:** Event Sourcing (Postgres tabla `events` apéndice, hash encadenado) + Ledger TigerBeetle (dinero) + Read Models (Prisma) + Rust core (firma XML-DSig, DGII real) + Next.js (BFF Español) + Expo Móvil.
 
 ---
 
@@ -210,7 +210,7 @@ Caja { id, tenantId, usuarioId, fechaApertura, montoApertura, estado: ABIERTA/CE
 - `VentaCreada`, `ItemAgregadoCarrito { sku, qty, precio }`, `DescuentoAplicado`, `ClienteAsignado { clienteId, esConsumidorFinal }`, `VentaCompletada { eNCF, total, itbis, tipoECF }`, `ETicketFirmaSolicitada { xml }`, `ETicketFirmado { codigoSeguridad, qrUrl }`, `ETicketEnviadoDGII { trackId }`, `ETicketAceptado { trackId, estado Aceptado }`, `ETicketRechazado { motivo }`, `VentaAnulada { motivo, NC eNCF }`, `CajaAbierta`, `CajaCerrada`
 
 **API Rust (Parcialmente existe, falta completar):**
-- Existe: `/v1/ecf/build`, `/build-sign`, `/build-sign-send` (construye XML per Informe Tecnico + firma XAdES + envía DGII real con seed auth -> TrackID poll)
+- Existe: `/v1/ecf/build`, `/build-sign`, `/build-sign-send` (construye XML per Informe Tecnico + firma XML-DSig + envía DGII real con seed auth -> TrackID poll)
 - Falta:
   - `POST /v1/pos/ventas` - Crea venta aggregate, reserva stock TigerBeetle pending, crea eventos, llama ecf_builder + signer async via NATS, retorna QR inmediato
   - `POST /v1/caja/abrir` - Abre caja con monto inicial, evento CajaAbierta, TB transfer: debit caja, credit capital?
@@ -481,7 +481,7 @@ MovimientoBanco { id, bancoId, tipo, monto, referencia, fecha, conciliado: bool 
 
 ### ROADMAP Módulo por Módulo (Orden Ejecución)
 
-**Fase 0 (Hecho):** Docs, Monorepo, Rust core base, XAdES real, ECF Builder, TigerBeetle mock, POS UI único español, Push a GitHub
+**Fase 0 (Hecho):** Docs, Monorepo, Rust core base, firma XML-DSig real, ECF Builder, TigerBeetle mock, POS UI único español, Push a GitHub
 
 **Fase 1 (Semana 1-2): Core Auth + Tenant + Productos + Clientes**
 - Módulo 1 Auth, Módulo 2 Productos, Módulo 4 Clientes/Proveedores
@@ -526,7 +526,7 @@ MovimientoBanco { id, bancoId, tipo, monto, referencia, fecha, conciliado: bool 
 ### LO QUE FALTA EN API ACTUAL Y PLAN
 
 **Actual existe (Rust core):**
-- ✅ POST /v1/ecf/build, /build-sign, /build-sign-send (ECF Builder v1.0 + XAdES + DGII real seed->token->send->poll TrackID)
+- ✅ POST /v1/ecf/build, /build-sign, /build-sign-send (ECF Builder v1.0 + XML-DSig + DGII real seed->token->send->poll TrackID)
 - ✅ POST /v1/ecf/rfce/build, build-sign, build-sign-send (RFCE <250k)
 - ✅ POST /v1/ecf/arecf/build, arecf/build-sign, acecf/build, acecf/build-sign
 - ✅ POST /v1/test/sign-demo (self-signed)

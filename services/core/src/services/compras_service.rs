@@ -41,6 +41,10 @@ pub struct Compra {
     pub isc: Decimal,
     pub otros_impuestos: Decimal,
     pub propina_legal: Decimal,
+    /// Solo para `tipo_documento = NOTA_CREDITO`: true = la nota es un ajuste
+    /// de precio/descuento sin devolución de mercancía (no movió stock, bajó
+    /// el `costo` unitario). Ver `create_compra`.
+    pub ajuste_solo_precio: bool,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -96,6 +100,12 @@ pub struct CreateCompraRequest {
     /// NOTA_CREDITO o NOTA_DEBITO.
     pub tipo_documento: Option<String>,
     pub ncf_modificado: Option<String>,
+    /// Solo válido junto a `tipo_documento = NOTA_CREDITO`. `None`/`false`
+    /// (el default) = el caso de Fase A: el proveedor recibió la mercancía de
+    /// vuelta, así que el stock sale y el costo promedio se recalcula.
+    /// `true` = nota de crédito de PRECIO: rebaja/descuento sobre una compra
+    /// ya recibida, sin movimiento físico — ver `create_compra`.
+    pub ajuste_solo_precio: Option<bool>,
     pub fecha_pago: Option<DateTime<Utc>>,
     /// Si se omiten, todo el subtotal se reporta como "bienes" (default
     /// razonable para un negocio de retail/mercancía).
@@ -147,6 +157,17 @@ impl ComprasService {
         Self { pool }
     }
 
+    /// Una compra puede ser FACTURA, NOTA_CREDITO o NOTA_DEBITO. La
+    /// NOTA_CREDITO tiene dos formas, distinguidas por `ajuste_solo_precio`:
+    ///
+    /// - **devolución física** (default, Fase A): la mercancía vuelve al
+    ///   proveedor — sale del stock, se recalcula el costo promedio y el
+    ///   asiento revierte la compra.
+    /// - **ajuste de precio** (`ajuste_solo_precio: true`): rebaja/descuento
+    ///   sobre mercancía ya recibida. No hay movimiento físico, así que el
+    ///   crédito se absorbe bajando el `costo` unitario a cantidad constante.
+    ///
+    /// Ambas formas comparten asiento, caja/CxP, neteo de IT-1 y fila 606.
     pub async fn create_compra(&self, tenant_id: &str, usuario_id: Uuid, req: CreateCompraRequest) -> anyhow::Result<CompraCompleta> {
         if req.items.is_empty() {
             anyhow::bail!("La compra necesita al menos un producto");
@@ -183,6 +204,10 @@ impl ComprasService {
         }
 
         let es_nota_credito = tipo_documento == "NOTA_CREDITO";
+        let ajuste_solo_precio = req.ajuste_solo_precio.unwrap_or(false);
+        if ajuste_solo_precio && !es_nota_credito {
+            anyhow::bail!("El ajuste solo de precio aplica únicamente a una Nota de Crédito de compra");
+        }
 
         let mut tx = self.pool.begin().await?;
 
@@ -212,7 +237,42 @@ impl ComprasService {
             subtotal_total += line_subtotal;
             itbis_total += line_itbis;
 
-            if es_nota_credito {
+            if ajuste_solo_precio {
+                // Nota de crédito de PRECIO (rebaja/descuento del proveedor
+                // sobre mercancía ya recibida): no hay movimiento físico, así
+                // que `stock_actual` no cambia. Pero el asiento sigue
+                // acreditando 1200 Inventario por el subtotal de la nota (ver
+                // contabilidad_service::sincronizar, rama NOTA_CREDITO), así
+                // que todo el crédito tiene que absorberlo el costo unitario
+                // para que se mantenga el invariante que Fase A protege:
+                //     saldo 1200 == Σ(stock_actual * costo)
+                // La línea se lee como "rebaja total de este producto":
+                // cantidad = unidades originalmente facturadas,
+                // costo_unitario = baja de precio por unidad.
+                let valor_en_libros = costo_actual * stock_actual;
+                if stock_actual <= Decimal::ZERO {
+                    anyhow::bail!(
+                        "No se puede aplicar una nota de crédito de precio a {}: no queda stock. \
+                         La mercancía rebajada ya se vendió, así que el crédito corresponde a 5050 Costo de Ventas — regístralo como asiento manual.",
+                        nombre
+                    );
+                }
+                if line_subtotal > valor_en_libros {
+                    anyhow::bail!(
+                        "La nota de crédito de precio de {} ({}) excede el valor en libros del inventario ({}). \
+                         El exceso corresponde a mercancía ya vendida (5050 Costo de Ventas) — regístralo como asiento manual.",
+                        nombre,
+                        line_subtotal,
+                        valor_en_libros
+                    );
+                }
+                let nuevo_costo = (valor_en_libros - line_subtotal) / stock_actual;
+                sqlx::query("UPDATE productos SET costo = $1, updated_at = NOW() WHERE id = $2")
+                    .bind(nuevo_costo)
+                    .bind(item.producto_id)
+                    .execute(&mut *tx)
+                    .await?;
+            } else if es_nota_credito {
                 // Devolución al proveedor: el stock sale, no entra. El costo
                 // promedio ponderado SÍ se recalcula (la compra en reversa):
                 // la nota acredita 1200 Inventario al precio devuelto, así que
@@ -267,9 +327,9 @@ impl ComprasService {
                    tipo_documento, ncf_modificado, tipo_bienes_servicios, fecha_pago,
                    monto_facturado_servicios, monto_facturado_bienes, itbis_retenido,
                    itbis_proporcionalidad, itbis_costo, tipo_retencion_isr, monto_retencion_renta,
-                   isc, otros_impuestos, propina_legal
+                   isc, otros_impuestos, propina_legal, ajuste_solo_precio
                )
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
                RETURNING {}"#,
             Self::COMPRA_COLUMNS
         ))
@@ -296,6 +356,7 @@ impl ComprasService {
         .bind(req.isc.unwrap_or(Decimal::ZERO))
         .bind(req.otros_impuestos.unwrap_or(Decimal::ZERO))
         .bind(req.propina_legal.unwrap_or(Decimal::ZERO))
+        .bind(ajuste_solo_precio)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -318,25 +379,31 @@ impl ComprasService {
             .await?;
             items.push(ci);
 
-            let (tipo_movimiento, cantidad_movimiento, costo_movimiento, motivo_movimiento) = if es_nota_credito {
-                ("SALIDA", -cantidad, None, "Devolución a proveedor".to_string())
-            } else {
-                ("ENTRADA", cantidad, Some(costo_unitario), "Compra a proveedor".to_string())
-            };
+            // Una nota de crédito de precio no mueve cantidades: el kardex
+            // queda como un libro de cantidades puro, sin movimientos de cero
+            // unidades que lo ensucien. El ajuste queda documentado en la
+            // propia compra (`ajuste_solo_precio`) y en el costo del producto.
+            if !ajuste_solo_precio {
+                let (tipo_movimiento, cantidad_movimiento, costo_movimiento, motivo_movimiento) = if es_nota_credito {
+                    ("SALIDA", -cantidad, None, "Devolución a proveedor".to_string())
+                } else {
+                    ("ENTRADA", cantidad, Some(costo_unitario), "Compra a proveedor".to_string())
+                };
 
-            crate::services::inventario_service::InventarioService::insert_movimiento_tx(
-                &mut tx,
-                tenant_id,
-                Some(usuario_id),
-                producto_id,
-                tipo_movimiento,
-                cantidad_movimiento,
-                costo_movimiento,
-                Some(motivo_movimiento),
-                Some("COMPRA"),
-                Some(compra.id),
-            )
-            .await?;
+                crate::services::inventario_service::InventarioService::insert_movimiento_tx(
+                    &mut tx,
+                    tenant_id,
+                    Some(usuario_id),
+                    producto_id,
+                    tipo_movimiento,
+                    cantidad_movimiento,
+                    costo_movimiento,
+                    Some(motivo_movimiento),
+                    Some("COMPRA"),
+                    Some(compra.id),
+                )
+                .await?;
+            }
         }
 
         // Una compra FIADO no mueve caja - se acredita 2110 Cuentas por
@@ -422,7 +489,7 @@ impl ComprasService {
                estado, tipo_documento, ncf_modificado, tipo_bienes_servicios, fecha_pago,
                monto_facturado_servicios, monto_facturado_bienes, itbis_retenido,
                itbis_proporcionalidad, itbis_costo, tipo_retencion_isr, monto_retencion_renta,
-               isc, otros_impuestos, propina_legal";
+               isc, otros_impuestos, propina_legal, ajuste_solo_precio";
 
     pub async fn get_compra(&self, tenant_id: &str, id: Uuid) -> anyhow::Result<CompraCompleta> {
         let compra = sqlx::query_as::<_, Compra>(&format!(
