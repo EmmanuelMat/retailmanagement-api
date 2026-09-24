@@ -1,4 +1,4 @@
-# Test Real XAdES Signing
+# Test Real XML-DSig Signing (DGII e-CF)
 
 ## Endpoint: GET /api/test/sign
 

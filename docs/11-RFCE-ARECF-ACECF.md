@@ -173,7 +173,7 @@ Per Norma: If you don't send ACECF, e-CF is considered accepted when you report 
 **Day in colmado with your POS:**
 
 1. **Ventas E32 <250k** (47 ventas):
-   - POS -> Event VentaCompletada -> build_simple_pos_ecf -> sign XAdES -> save signed XML + QR -> print ticket with QR
+   - POS -> Event VentaCompletada -> build_simple_pos_ecf -> sign XML-DSig -> save signed XML + QR -> print ticket with QR
    - Do NOT send each to DGII, store in local DB (ecf_documentos)
    - Event: ETicketSigningRequested, ETicketLocallyStored
 

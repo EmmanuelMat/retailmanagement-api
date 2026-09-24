@@ -1,5 +1,5 @@
 //! fiscal-core - Bank-grade Rust core
-//! HTTP :3001 (Axum 0.6) - Real XAdES-BES + Full ECF Builder + RFCE + ARECF/ACECF
+//! HTTP :3001 (Axum 0.6) - Real XML-DSig (DGII e-CF) + Full ECF Builder + RFCE + ARECF/ACECF
 //! gRPC disabled for now to avoid http version conflict (axum 0.6 vs tonic 0.12), enable with feature flag later
 
 mod arecf_acecf_builder;
@@ -752,7 +752,7 @@ async fn main() -> anyhow::Result<()> {
 
     let http_port = std::env::var("CORE_HTTP_PORT").unwrap_or_else(|_| "3001".to_string());
     let http_addr: SocketAddr = format!("0.0.0.0:{}", http_port).parse()?;
-    tracing::info!("HTTP listening on {} - Spanish POS ready, DGII XAdES-BES, RFCE, ARECF/ACECF", http_addr);
+    tracing::info!("HTTP listening on {} - Spanish POS ready, DGII XML-DSig, RFCE, ARECF/ACECF", http_addr);
 
     // Axum 0.6 style server
     axum::Server::bind(&http_addr)
@@ -777,7 +777,7 @@ async fn health() -> Json<serde_json::Value> {
         "status": "ok",
         "core": "fiscal-core Rust v0.3",
         "dgii_env": std::env::var("DGII_ENV").unwrap_or_else(|_| "CERT".to_string()),
-        "signer": "XAdES-BES RSA-SHA256 C14N Inclusive",
+        "signer": "XML-DSig enveloped (DGII e-CF) RSA-SHA256 C14N Inclusive",
         "builder": "Informe Tecnico v1.0 E31/E32/E33/E34/E41-E47 + RFCE + ARECF/ACECF",
         "dgii_client": "seed -> sign seed -> token -> send eCF -> poll TrackID",
         "frontend": "Spanish POS - Colmado POS Dominicana"
@@ -4622,7 +4622,7 @@ async fn http_test_sign_demo_get() -> Result<Json<serde_json::Value>, (StatusCod
         "digest_value": signed.digest_value,
         "qr_url": qr_url,
         "signed_xml_preview": signed.signed_xml.chars().take(500).collect::<String>(),
-        "mensaje": "Demo firma XAdES-BES real con cert auto-firmado (no válido para DGII prod, solo prueba builder+signer+QR)"
+        "mensaje": "Demo firma XML-DSig real con cert auto-firmado (no válido para DGII prod, solo prueba builder+signer+QR)"
     })))
 }
 
