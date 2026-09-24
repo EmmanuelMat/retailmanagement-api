@@ -53,6 +53,8 @@ interface OrdenDetalle {
   prioridad: string;
   fecha: string;
   fecha_programada: string | null;
+  hora_inicio: string | null;
+  hora_fin: string | null;
   direccion: string | null;
   descripcion: string | null;
   subtotal: string;
@@ -73,6 +75,56 @@ interface Empleado { id: string; nombre: string; }
 interface Producto { id: string; sku: string; nombre: string; tipo: "PRODUCTO" | "SERVICIO"; itbis_tipo: string; precio_venta: string | null; }
 interface AuditoriaEntry { id: string; accion: string; created_at: string; }
 
+/** Una orden del mismo técnico que compite por el mismo día. Es lo que
+ * devuelve el core en el cuerpo de un 409 de agenda (`conflictos[]`) y, sin
+ * llegar a bloquear, en `avisos[]` de una respuesta exitosa. */
+interface ConflictoAgenda {
+  orden_id: string;
+  codigo: string;
+  cliente_nombre: string | null;
+  estado: string;
+  fecha_programada: string;
+  hora_inicio: string | null;
+  hora_fin: string | null;
+  empleado_id: string;
+  empleado_nombre: string;
+}
+
+/** "09:00:00" -> "09:00" (el core manda TIME con segundos). */
+const hhmm = (h: string | null) => (h ? h.slice(0, 5) : null);
+
+function rangoHorario(hora_inicio: string | null, hora_fin: string | null): string {
+  const desde = hhmm(hora_inicio);
+  const hasta = hhmm(hora_fin);
+  if (desde && hasta) return `${desde} – ${hasta}`;
+  if (desde) return `desde ${desde}`;
+  return "sin hora definida";
+}
+
+/** `fecha_programada` llega como "AAAA-MM-DD"; `new Date(iso)` lo leería como
+ * UTC medianoche y en Santo Domingo (UTC-4) mostraría el día anterior. */
+function fechaCorta(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y!, (m ?? 1) - 1, d ?? 1).toLocaleDateString("es-DO");
+}
+
+function ListaConflictos({ conflictos }: { conflictos: ConflictoAgenda[] }) {
+  return (
+    <ul className="space-y-1.5" data-testid="lista-conflictos">
+      {conflictos.map((c) => (
+        <li key={`${c.orden_id}-${c.empleado_id}`} className="text-sm">
+          <Link href={`/ordenes-servicio/${c.orden_id}` as any} className="font-mono text-xs text-primary hover:underline">{c.codigo}</Link>
+          {" — "}
+          <span className="font-medium">{c.cliente_nombre || "Consumidor final"}</span>
+          {", "}
+          {fechaCorta(c.fecha_programada)} {rangoHorario(c.hora_inicio, c.hora_fin)}
+          {" ("}{c.empleado_nombre}{")"}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 const ESTADO_LABEL: Record<string, string> = {
   BORRADOR: "Borrador", PROGRAMADA: "Programada", EN_PROCESO: "En proceso",
   PAUSADA: "Pausada", COMPLETADA: "Completada", CANCELADA: "Cancelada",
@@ -82,6 +134,7 @@ const NOTA_TIPO_VARIANT: Record<string, "default" | "secondary" | "accent"> = { 
 
 const TABS = [
   { value: "resumen", label: "Resumen" },
+  { value: "programacion", label: "Programación" },
   { value: "items", label: "Items" },
   { value: "tecnicos", label: "Técnicos" },
   { value: "materiales", label: "Materiales" },
@@ -215,7 +268,12 @@ export default function OrdenServicioDetallePage() {
           <div><p className="text-xs text-muted-foreground">Prioridad</p><p className="font-medium">{orden.prioridad}</p></div>
           <div><p className="text-xs text-muted-foreground">Técnico principal</p><p className="font-medium">{tecnicoPrincipal ? nombreEmpleado(tecnicoPrincipal.empleado_id) : "Sin asignar"}</p></div>
           <div><p className="text-xs text-muted-foreground">Fecha</p><p className="text-muted-foreground">{new Date(orden.fecha).toLocaleDateString("es-DO")}</p></div>
-          <div><p className="text-xs text-muted-foreground">Programada</p><p className="text-muted-foreground">{orden.fecha_programada ? new Date(orden.fecha_programada).toLocaleDateString("es-DO") : "—"}</p></div>
+          <div>
+            <p className="text-xs text-muted-foreground">Programada</p>
+            <p className="text-muted-foreground" data-testid="orden-programada">
+              {orden.fecha_programada ? `${fechaCorta(orden.fecha_programada)} · ${rangoHorario(orden.hora_inicio, orden.hora_fin)}` : "—"}
+            </p>
+          </div>
           <div><p className="text-xs text-muted-foreground">Dirección</p><p className="text-muted-foreground">{orden.direccion || "—"}</p></div>
           <div><p className="text-xs text-muted-foreground">Cotización origen</p><p className="text-muted-foreground">{orden.cotizacion_id ? <Link href={`/cotizaciones/${orden.cotizacion_id}` as any} className="text-primary hover:underline">Ver cotización</Link> : "—"}</p></div>
         </CardContent>
@@ -236,6 +294,7 @@ export default function OrdenServicioDetallePage() {
         />
         <CardContent className="pt-5">
           {tab === "resumen" && <ResumenTab orden={orden} />}
+          {tab === "programacion" && <ProgramacionTab orden={orden} onChanged={load} />}
           {tab === "items" && (
             <ItemsTab
               orden={orden}
@@ -297,6 +356,119 @@ function ResumenTab({ orden }: { orden: OrdenDetalle }) {
       {orden.descripcion && (
         <div className="text-sm text-muted-foreground bg-muted/40 rounded-md p-3">{orden.descripcion}</div>
       )}
+    </div>
+  );
+}
+
+/** Fecha + bloque horario de la orden. Es el único lugar de la app donde se
+ * puede reprogramar una orden ya creada, y comparte con TecnicosTab la misma
+ * mecánica de conflicto: 409 -> ConfirmDialog -> reintento con
+ * `confirmar_conflicto`. */
+function ProgramacionTab({ orden, onChanged }: { orden: OrdenDetalle; onChanged: () => void }) {
+  const [fecha, setFecha] = useState(orden.fecha_programada || "");
+  const [desde, setDesde] = useState(hhmm(orden.hora_inicio) || "");
+  const [hasta, setHasta] = useState(hhmm(orden.hora_fin) || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [ok, setOk] = useState("");
+  const [avisos, setAvisos] = useState<ConflictoAgenda[]>([]);
+  const [conflictos, setConflictos] = useState<ConflictoAgenda[]>([]);
+  const [mensajeConflicto, setMensajeConflicto] = useState("");
+
+  const soloLectura = ["COMPLETADA", "CANCELADA"].includes(orden.estado);
+
+  async function guardar(confirmarConflicto: boolean) {
+    if ((desde || hasta) && !fecha) {
+      setError("Escoge la fecha programada antes de fijar el horario.");
+      return;
+    }
+    if (desde && hasta && hasta <= desde) {
+      setError("La hora de fin debe ser posterior a la hora de inicio.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setOk("");
+    try {
+      const actualizada = await apiFetch<OrdenDetalle & { avisos?: ConflictoAgenda[] }>(`/api/ordenes-servicio/${orden.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          fecha_programada: fecha || undefined,
+          hora_inicio: desde || undefined,
+          hora_fin: hasta || undefined,
+          ...(confirmarConflicto ? { confirmar_conflicto: true } : {}),
+        }),
+      });
+      setConflictos([]);
+      setAvisos(actualizada.avisos || []);
+      setOk("Programación guardada.");
+      onChanged();
+    } catch (e: any) {
+      // 409 = choque de agenda: no es un error del usuario, es una decisión
+      // que tiene que tomar (la regla es blanda a propósito).
+      if (e.status === 409 && e.data?.conflictos?.length) {
+        setMensajeConflicto(e.message);
+        setConflictos(e.data.conflictos);
+      } else {
+        setError(e.message);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="prog-fecha">Fecha programada</Label>
+          <Input id="prog-fecha" type="date" value={fecha} disabled={soloLectura} onChange={(e) => setFecha(e.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="prog-desde">Hora de inicio</Label>
+          <Input id="prog-desde" type="time" value={desde} disabled={soloLectura} onChange={(e) => setDesde(e.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="prog-hasta">Hora de fin</Label>
+          <Input id="prog-hasta" type="time" value={hasta} disabled={soloLectura} onChange={(e) => setHasta(e.target.value)} />
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Al fijar el horario, la app avisa si algún técnico ya asignado a esta orden tiene otro trabajo en ese mismo bloque.
+        Una orden sin horas cuenta como trabajo del día, no reserva un bloque.
+      </p>
+
+      {!soloLectura && (
+        <Button size="sm" disabled={saving} onClick={() => guardar(false)} data-testid="guardar-programacion">
+          {saving ? "Guardando..." : "Guardar programación"}
+        </Button>
+      )}
+      {soloLectura && <p className="text-sm text-muted-foreground">Una orden {orden.estado.toLowerCase()} ya no se puede reprogramar.</p>}
+
+      {ok && <div className="rounded-md border border-success/20 bg-success/10 text-success p-2 text-xs">{ok}</div>}
+      {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{error}</div>}
+      {avisos.length > 0 && (
+        <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-xs space-y-2" data-testid="avisos-agenda">
+          <p className="font-medium">Ese día ya hay otro trabajo asignado (sin bloque horario definido):</p>
+          <ListaConflictos conflictos={avisos} />
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={conflictos.length > 0}
+        onClose={() => setConflictos([])}
+        onConfirm={() => guardar(true)}
+        busy={saving}
+        title="Conflicto de agenda"
+        confirmLabel="Reprogramar de todos modos"
+        description={
+          <>
+            <p>{mensajeConflicto}</p>
+            <ListaConflictos conflictos={conflictos} />
+            <p>Se guardará igual y quedará registrado en la actividad de la orden.</p>
+          </>
+        }
+      />
     </div>
   );
 }
@@ -398,17 +570,32 @@ function TecnicosTab({ orden, empleados, nombreEmpleado, onChanged }: { orden: O
   const [rol, setRol] = useState("TECNICO_PRINCIPAL");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [avisos, setAvisos] = useState<ConflictoAgenda[]>([]);
+  const [conflictos, setConflictos] = useState<ConflictoAgenda[]>([]);
+  const [mensajeConflicto, setMensajeConflicto] = useState("");
 
-  async function handleAsignar() {
+  async function handleAsignar(confirmarConflicto = false) {
     if (!empleadoId) return;
     setSaving(true);
     setError("");
     try {
-      await apiFetch(`/api/ordenes-servicio/${orden.id}/tecnicos`, { method: "POST", body: JSON.stringify({ empleado_id: empleadoId, rol }) });
+      const res = await apiFetch<{ avisos?: ConflictoAgenda[] }>(`/api/ordenes-servicio/${orden.id}/tecnicos`, {
+        method: "POST",
+        body: JSON.stringify({ empleado_id: empleadoId, rol, ...(confirmarConflicto ? { confirmar_conflicto: true } : {}) }),
+      });
       setEmpleadoId("");
+      setConflictos([]);
+      setAvisos(res.avisos || []);
       onChanged();
     } catch (e: any) {
-      setError(e.message);
+      // 409 = el técnico ya tiene trabajo en ese bloque. No se muestra como
+      // error rojo: se le ofrece al despachador asignarlo de todos modos.
+      if (e.status === 409 && e.data?.conflictos?.length) {
+        setMensajeConflicto(e.message);
+        setConflictos(e.data.conflictos);
+      } else {
+        setError(e.message);
+      }
     } finally {
       setSaving(false);
     }
@@ -450,9 +637,35 @@ function TecnicosTab({ orden, empleados, nombreEmpleado, onChanged }: { orden: O
           <option value="TECNICO_PRINCIPAL">Técnico principal</option>
           <option value="ASISTENTE">Asistente</option>
         </Select>
-        <Button size="sm" disabled={saving || !empleadoId} onClick={handleAsignar}><Plus className="h-4 w-4" />Asignar</Button>
+        <Button size="sm" disabled={saving || !empleadoId} onClick={() => handleAsignar(false)} data-testid="asignar-tecnico"><Plus className="h-4 w-4" />Asignar</Button>
       </div>
       {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 text-destructive p-2 text-xs">{error}</div>}
+      {avisos.length > 0 && (
+        <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-xs space-y-2" data-testid="avisos-agenda">
+          <p className="font-medium">Asignado. Ojo: ese técnico ya tiene otro trabajo ese día (sin bloque horario definido):</p>
+          <ListaConflictos conflictos={avisos} />
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">
+        La app avisa si el técnico ya tiene otro trabajo en el mismo bloque horario, pero no lo impide: puedes asignarlo igual y
+        queda registrado. Fija el horario en la pestaña Programación para que el chequeo funcione.
+      </p>
+
+      <ConfirmDialog
+        open={conflictos.length > 0}
+        onClose={() => setConflictos([])}
+        onConfirm={() => handleAsignar(true)}
+        busy={saving}
+        title="Conflicto de agenda"
+        confirmLabel="Asignar de todos modos"
+        description={
+          <>
+            <p>{mensajeConflicto}</p>
+            <ListaConflictos conflictos={conflictos} />
+            <p>Se asignará igual y quedará registrado en la actividad de la orden.</p>
+          </>
+        }
+      />
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { Wrench, Plus, Printer, Search } from "lucide-react";
+import { Wrench, Plus, Printer, Search, CalendarDays } from "lucide-react";
 import {
   Badge, Button, Input, Select,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
@@ -86,9 +86,14 @@ function OrdenesServicioPageContent() {
           <h1 className="text-2xl font-bold font-serif tracking-tight">Órdenes de Servicio</h1>
           <p className="text-sm text-muted-foreground mt-1">Trabajos agendados, en proceso o completados — con técnico, materiales y facturación.</p>
         </div>
-        <Link href={"/ordenes-servicio/nueva" as any}>
-          <Button><Plus className="h-4 w-4" />Nueva orden</Button>
-        </Link>
+        <div className="flex gap-2">
+          <Link href={"/ordenes-servicio/agenda" as any}>
+            <Button variant="secondary" data-testid="ver-agenda"><CalendarDays className="h-4 w-4" />Agenda</Button>
+          </Link>
+          <Link href={"/ordenes-servicio/nueva" as any}>
+            <Button><Plus className="h-4 w-4" />Nueva orden</Button>
+          </Link>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3">
