@@ -931,6 +931,17 @@ async fn main() -> anyhow::Result<()> {
                 CHECK (tipo IN ('INTERNA', 'TECNICO', 'CLIENTE', 'SISTEMA'));
         EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+        -- Fase E (programación de técnicos): índices de apoyo para la agenda
+        -- y para la detección de conflictos. Ninguna columna nueva -
+        -- `hora_inicio`/`hora_fin` ya existen arriba, solo estaban sin uso.
+        -- El parcial cubre el rango de fechas de la agenda; el de empleado_id
+        -- cubre el "¿qué más tiene este técnico ese día?" (hasta ahora
+        -- orden_servicio_tecnicos solo tenía índice por orden_servicio_id).
+        CREATE INDEX IF NOT EXISTS idx_ordenes_servicio_programada
+            ON ordenes_servicio(tenant_id, fecha_programada) WHERE fecha_programada IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_orden_servicio_tecnicos_empleado
+            ON orden_servicio_tecnicos(empleado_id);
+
         -- Los permisos `ordenes_servicio.gestionar`/`ordenes_compra.gestionar`
         -- que gobiernan las rutas nuevas de este módulo se agregan más abajo,
         -- junto con el resto del catálogo global de roles/permisos (ver

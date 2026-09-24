@@ -4,9 +4,15 @@
  */
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** Cuerpo JSON crudo del error, cuando el core manda uno estructurado en
+   * vez de texto plano (hoy solo el 409 de conflicto de agenda de Órdenes de
+   * Servicio, que trae `conflictos[]`). `undefined` para los errores de
+   * texto plano, que son la mayoría. */
+  data?: any;
+  constructor(message: string, status: number, data?: any) {
     super(message);
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -46,7 +52,7 @@ export async function apiFetch<T = any>(path: string, opts: RequestInit = {}): P
       window.location.href = "/trial-expirado";
       return new Promise(() => {});
     }
-    throw new ApiError(message, res.status);
+    throw new ApiError(message, res.status, typeof data === "string" ? undefined : data);
   }
   return data as T;
 }

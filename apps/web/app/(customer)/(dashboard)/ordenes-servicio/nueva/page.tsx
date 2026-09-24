@@ -51,6 +51,8 @@ export default function NuevaOrdenServicioPage() {
   const [condicionId, setCondicionId] = useState("");
   const [prioridad, setPrioridad] = useState("NORMAL");
   const [fechaProgramada, setFechaProgramada] = useState("");
+  const [horaInicio, setHoraInicio] = useState("");
+  const [horaFin, setHoraFin] = useState("");
   const [direccion, setDireccion] = useState("");
   const [descripcion, setDescripcion] = useState("");
   const [lineas, setLineas] = useState<Linea[]>([{ productoId: "", cantidad: "", descuento: "", precioUnitario: "" }]);
@@ -113,6 +115,16 @@ export default function NuevaOrdenServicioPage() {
       setError("Escribe el precio de cada servicio agregado.");
       return;
     }
+    // Un bloque horario sin fecha no reserva nada: la detección de
+    // conflictos del técnico solo trabaja sobre una fecha programada.
+    if ((horaInicio || horaFin) && !fechaProgramada) {
+      setError("Escoge la fecha programada antes de fijar el horario.");
+      return;
+    }
+    if (horaInicio && horaFin && horaFin <= horaInicio) {
+      setError("La hora de fin debe ser posterior a la hora de inicio.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -123,6 +135,8 @@ export default function NuevaOrdenServicioPage() {
           condicion_id: condicionId || undefined,
           prioridad,
           fecha_programada: fechaProgramada || undefined,
+          hora_inicio: horaInicio || undefined,
+          hora_fin: horaFin || undefined,
           direccion: direccion || undefined,
           descripcion: descripcion || undefined,
           items: items.map((l) => {
@@ -178,6 +192,19 @@ export default function NuevaOrdenServicioPage() {
               <div className="space-y-1.5">
                 <Label htmlFor="fechaProgramada">Fecha programada</Label>
                 <Input id="fechaProgramada" type="date" value={fechaProgramada} onChange={(e) => setFechaProgramada(e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-4 col-span-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="horaInicio">Hora de inicio</Label>
+                  <Input id="horaInicio" type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="horaFin">Hora de fin</Label>
+                  <Input id="horaFin" type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} />
+                </div>
+                <p className="col-span-2 text-xs text-muted-foreground -mt-1">
+                  Opcional. Fijar el horario permite avisarte si el técnico que asignes ya tiene otro trabajo en ese bloque.
+                </p>
               </div>
               <div className="space-y-1.5 col-span-2">
                 <Label htmlFor="direccion">Dirección</Label>
