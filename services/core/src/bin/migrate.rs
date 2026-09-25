@@ -1226,6 +1226,12 @@ async fn main() -> anyhow::Result<()> {
         CROSS JOIN modulos_catalogo m
         WHERE NOT EXISTS (SELECT 1 FROM tenant_modulos tm WHERE tm.tenant_id = t.rnc)
         ON CONFLICT DO NOTHING;
+
+        -- Fase B / DGII: una NOTA_CREDITO de compra que es solo un ajuste de
+        -- precio (rebaja/descuento) no devuelve mercancía. Sin esta bandera no
+        -- hay forma de leer una compra y saber por qué el stock no se movió.
+        -- Ver compras_service::create_compra.
+        ALTER TABLE compras ADD COLUMN IF NOT EXISTS ajuste_solo_precio BOOLEAN NOT NULL DEFAULT false;
         "#
     )
     .execute(&pool)

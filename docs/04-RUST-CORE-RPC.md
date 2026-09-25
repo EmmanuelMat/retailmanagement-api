@@ -36,7 +36,7 @@ This is where DGII compliance lives. This is your moat.
 
 1.  **ECF-Engine:**
     - JSON -> XML transformation per Informe Técnico v1.0 schema
-    - XAdES-BES XML Signing (canonicalization C14N, RSA-SHA256, enveloped signature)
+    - XML-DSig enveloped XML Signing (canonicalization C14N, RSA-SHA256, enveloped signature)
     - `getCodeSixDigitfromSignature()` security code
     - RFCE (Resumen Factura Consumo E32 <250k) generation
     - Certificate management (decrypt P12, keep key in memory-safe enclave, never log)
@@ -157,7 +157,7 @@ pub fn sign_xml(xml: &str, p12_bytes: &[u8], password: &str) -> Result<(String, 
     // 2. Canonicalize XML (C14N)
     let canonical = c14n(xml)?; 
 
-    // 3. Sign -> XAdES-BES enveloped
+    // 3. Sign -> XML-DSig enveloped
     let signature_value = sign_rsa_sha256(&canonical, &pkey)?;
     let signed_xml = inject_signature(xml, &signature_value, &cert)?;
 
@@ -169,7 +169,7 @@ pub fn sign_xml(xml: &str, p12_bytes: &[u8], password: &str) -> Result<(String, 
 }
 ```
 
-Note: XAdES in Rust has no mature crate. You will likely port logic from `dgii-ecf` TS lib: use `xmlsec` bindings or implement custom template injection. This is hardest part, budget 2 weeks.
+Note: XML-DSig in Rust has no mature crate. You will likely port logic from `dgii-ecf` TS lib: use `xmlsec` bindings or implement custom template injection. This is hardest part, budget 2 weeks.
 
 ### 5. Performance & Cost Reality Check
 

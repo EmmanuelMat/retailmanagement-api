@@ -23,7 +23,7 @@ We are not building CRUD POS. We are building:
 │ ┌─────────────┐  ┌──────────────┐  ┌─────────────────┐ │
 │ │ EventStore  │  │ TigerBeetle  │  │ DGII ECF Engine │ │
 │ │ Postgres    │  │ Ledger DB    │  │ Signer + Queue  │ │
-│ │ events      │  │ accounts     │  │ XAdES-BES       │ │
+│ │ events      │  │ accounts     │  │ XML-DSig        │ │
 │ │ snapshots   │  │ transfers    │  │ TrackID poller  │ │
 │ └─────────────┘  └──────────────┘  └─────────────────┘ │
 │ ┌─────────────┐  ┌──────────────┐  ┌─────────────────┐ │
@@ -156,7 +156,7 @@ POS -> Event SaleCompleted -> REST 200ms with local receipt "En proceso DGII"
        \
         -> NATS JetStream topic "sale.completed" -> Rust worker:
            1. Transform JSON -> XML (quick-xml)
-           2. Sign XAdES-BES (openssl crate) - P12 decrypted from Vault
+           2. Sign XML-DSig enveloped (openssl crate) - P12 decrypted from Vault
            3. Auth to DGII, POST /recepcion -> TrackID
            4. Loop poll /consultaResultado
            5. Emit event ETicketAccepted(trackId, qr_url) -> projector updates sale row

@@ -1,4 +1,14 @@
-//! DGII e-CF Real XAdES-BES Signer
+//! DGII e-CF Real XML-DSig Signer
+//!
+//! NOTE (Fase B): esto NO es XAdES. La especificación real de la DGII
+//! ("Firmado Comprobantes Fiscales Electrónicos (e-CF)",
+//! <https://dgii.gov.do/cicloContribuyente/facturacion/comprobantesFiscalesElectronicosE-CF/Documentacin%20sobre%20eCF/Instructivos%20sobre%20Facturaci%C3%B3n%20Electr%C3%B3nica/Firmado%20de%20e-CF.pdf>)
+//! es una firma XML-DSig *enveloped* simple: su ejemplo no contiene ningún
+//! elemento XAdES (`QualifyingProperties`, `SignedProperties`,
+//! `SigningCertificate`, `SigningTime`). Las URIs de algoritmo de abajo sí
+//! coinciden exactamente con ese PDF. Solo se corrigió la etiqueta; la lógica
+//! de firma no cambió. Ver docs/09.
+//!
 //! Implements spec from DGII "Firmado de e-CF" PDF:
 //! CanonicalizationMethod: http://www.w3.org/TR/2001/REC-xml-c14n-20010315
 //! SignatureMethod: http://www.w3.org/2001/04/xmldsig-more#rsa-sha256
@@ -138,12 +148,28 @@ pub fn sign_xml_ecf(xml_input: &str, p12_der: &[u8], password: &str) -> Result<S
         )
     };
 
-    // Step 8: Codigo Seguridad = first 6 chars of SHA256 of signature? Per DGII spec: first 6 of hash of signature?
-    // Spec: "CodigoSeguridad" is 6 digits extracted from signature hash. We implement as first 6 chars of SHA256(signature_value) uppercase alphanumeric
-    // Also alternative: first 6 chars of base64-decoded signature hash? Use common e-CF implementation: first 6 chars of signature hash hex uppercase
-    let mut hasher2 = Sha256::new();
-    hasher2.update(signature_value.as_bytes());
-    let sig_hash = hasher2.finalize();
+    // Step 8: Código de Seguridad (los 6 caracteres que van debajo del QR en
+    // la Representación Impresa y viajan en `CodigoSeguridad` del QR).
+    //
+    // ⚠️ DERIVACIÓN NO VERIFICADA CONTRA LA DGII — ver docs/14 §1 y el PR de
+    // Fase B. Lo único que publica la DGII (documentación del Facturador
+    // Gratuito, <https://fg.dgii.gov.do/ecf/PortalFG/assets/Instructivo-Facturador-Gratuito-de-FE.pdf>
+    // y sus Preguntas Frecuentes) es la frase "los primeros seis (6) dígitos
+    // del hash generado en el SignatureValue de la firma digital del e-CF",
+    // que admite dos lecturas incompatibles:
+    //   (a) los primeros 6 caracteres del propio `SignatureValue` (base64) —
+    //       el SignatureValue *es* el hash firmado; o
+    //   (b) los primeros 6 caracteres de un hash calculado *sobre* el
+    //       SignatureValue.
+    // El "Firmado de e-CF" (la especificación técnica de firma) no menciona el
+    // código de seguridad en absoluto, y no se encontró ninguna muestra oficial
+    // que empareje un SignatureValue con su código esperado.
+    //
+    // Se mantiene deliberadamente la derivación existente — lectura (b) sobre
+    // los BYTES crudos de la firma — porque cambiarla sin una muestra oficial
+    // sería sustituir una conjetura por otra. Resolver con un round-trip real
+    // contra el ambiente de pruebas (TesteCF) de la DGII antes de cualquier
+    // intento de precertificación PSFE.
     let sig_hash_hex = format!("{:x}", Sha256::digest(signature_bytes.clone()));
     let codigo_seguridad = sig_hash_hex[..6].to_uppercase();
 
