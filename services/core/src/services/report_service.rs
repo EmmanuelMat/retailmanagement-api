@@ -318,9 +318,16 @@ impl ReportService {
     /// números se usa tanto para el período declarado como, con un rango
     /// que cubre todo el histórico previo, para el saldo arrastrado.
     async fn itbis_neto_del_rango(&self, tenant_id: &str, desde: DateTime<Utc>, hasta: DateTime<Utc>) -> anyhow::Result<(Decimal, Decimal)> {
+        // ANULADA entra igual que COMPLETADA: una venta solo queda ANULADA al
+        // devolverse por completo (ver ventas_service::create_nota_credito), y
+        // esa devolución ya resta abajo vía notas_credito. Excluirla restaría
+        // dos veces el mismo ITBIS - y encima retroactivamente, sacando la
+        // venta del período en que se facturó. El tratamiento correcto es
+        // declarar el ITBIS en el período de la factura y acreditarlo en el
+        // período de la nota, que es justo lo que hace esta resta.
         let trasladado_ventas: Decimal = sqlx::query_scalar(
             "SELECT COALESCE(SUM(itbis_total), 0) FROM ventas
-             WHERE tenant_id = $1 AND estado = 'COMPLETADA' AND created_at >= $2 AND created_at < $3",
+             WHERE tenant_id = $1 AND estado IN ('COMPLETADA', 'ANULADA') AND created_at >= $2 AND created_at < $3",
         )
         .bind(tenant_id)
         .bind(desde)

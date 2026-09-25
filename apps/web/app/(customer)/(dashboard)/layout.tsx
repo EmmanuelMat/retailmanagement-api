@@ -32,6 +32,7 @@ import {
   Wrench,
   ClipboardList,
   Compass,
+  Undo2,
   X,
 } from "lucide-react";
 import { isRouteAllowed, isDgiiRoute, isModuloAllowed, isModuloActivo } from "@/lib/roles";
@@ -48,6 +49,7 @@ const NAV: NavGroup[] = [
     items: [
       { label: "Punto de Venta", href: "/pos", icon: ShoppingCart },
       { label: "Ventas", href: "/ventas", icon: FileBarChart },
+      { label: "Devoluciones", href: "/ventas/devoluciones", icon: Undo2 },
       { label: "Cotizaciones", href: "/cotizaciones", icon: FileText },
       { label: "Conduces", href: "/conduces", icon: PackageCheck },
       { label: "Clientes", href: "/clientes", icon: Users },

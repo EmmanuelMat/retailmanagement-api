@@ -117,6 +117,8 @@ pub struct SincronizarResultado {
     pub notas_credito_procesadas: i64,
     pub ajustes_procesados: i64,
     pub banco_procesados: i64,
+    /// Fase F5: pagos a proveedor contra `2110 Cuentas por Pagar`.
+    pub abonos_proveedor_procesados: i64,
 }
 
 pub struct ContabilidadService {
@@ -384,6 +386,52 @@ impl ContabilidadService {
         Ok(periodo)
     }
 
+    /// El código de cuenta de una línea del mayor: el primer token del
+    /// string `"<codigo> <nombre>"` con que se guardan (p. ej. `"1200"` de
+    /// `"1200 Inventario"`). Es lo mismo que hace la parte SQL de los
+    /// estados financieros (`split_part(cuenta, ' ', 1)`), en un solo lugar.
+    pub fn codigo_de_cuenta(cuenta: &str) -> Option<&str> {
+        cuenta.split_whitespace().next().filter(|c| !c.is_empty())
+    }
+
+    /// Fase F2: ninguna línea puede referirse a una cuenta que no esté en el
+    /// plan del tenant. Sin esto, un error de tipeo en un asiento manual
+    /// creaba una "cuenta fantasma" permanente en el libro mayor
+    /// (docs/14-COMPLIANCE-WORKFLOW-UIUX-AUDIT.md §4).
+    ///
+    /// Se matchea **solo por el código**, nunca por el nombre: renombrar una
+    /// cuenta del plan no debe invalidar los asientos históricos, ni obligar
+    /// a que las cadenas hardcodeadas de `sincronizar` sigan la semilla
+    /// carácter por carácter (tildes y paréntesis incluidos, p. ej.
+    /// `"5295 Ajuste de Inventario (Merma)"`).
+    async fn validar_cuentas(tx: &mut sqlx::PgConnection, tenant_id: &str, lineas: &[(String, Decimal, Decimal)]) -> anyhow::Result<()> {
+        let mut codigos: Vec<String> = Vec::with_capacity(lineas.len());
+        for (cuenta, _, _) in lineas {
+            let codigo = Self::codigo_de_cuenta(cuenta).ok_or_else(|| {
+                anyhow::anyhow!("La cuenta \"{}\" no tiene código: usa el formato \"<código> <nombre>\", por ejemplo \"1100 Caja y Bancos\"", cuenta)
+            })?;
+            if !codigos.iter().any(|c| c == codigo) {
+                codigos.push(codigo.to_string());
+            }
+        }
+
+        let existentes: Vec<String> =
+            sqlx::query_scalar("SELECT codigo FROM cuentas_contables WHERE tenant_id = $1 AND activo = true AND codigo = ANY($2)")
+                .bind(tenant_id)
+                .bind(&codigos)
+                .fetch_all(&mut *tx)
+                .await?;
+
+        let faltantes: Vec<&str> = codigos.iter().map(|c| c.as_str()).filter(|c| !existentes.iter().any(|e| e == c)).collect();
+        if !faltantes.is_empty() {
+            anyhow::bail!(
+                "La cuenta {} no existe en el plan de cuentas o está inactiva. Revisa el código en Contabilidad > Plan de cuentas.",
+                faltantes.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ")
+            );
+        }
+        Ok(())
+    }
+
     /// Núcleo compartido de todo insert de asiento (manual, automático o
     /// reversión): valida balance, respeta períodos cerrados, y es
     /// idempotente vía `UNIQUE(tenant_id, referencia_tipo, referencia_id)`
@@ -415,6 +463,8 @@ impl ContabilidadService {
         if total_debe == Decimal::ZERO {
             anyhow::bail!("El asiento no puede estar vacío");
         }
+
+        Self::validar_cuentas(&mut *tx, tenant_id, lineas).await?;
 
         let anio = fecha.year();
         let mes = fecha.month() as i32;
@@ -739,8 +789,14 @@ impl ContabilidadService {
         // original fue FIADO y si tuvo Costo de Ventas. Si la venta
         // original todavía no tiene asiento, se salta y se reintenta en el
         // próximo sincronizar.
-        let notas: Vec<(Uuid, Uuid, DateTime<Utc>)> = sqlx::query_as(
-            r#"SELECT nc.id, nc.venta_id, nc.created_at
+        //
+        // Una nota PARCIAL (`es_parcial`, ver ventas_service) no puede
+        // reversar el asiento entero: su asiento se construye desde las
+        // líneas de la propia nota (ingresos e ITBIS por lo acreditado, costo
+        // e inventario por cantidad devuelta * costo de la línea vendida), con
+        // las mismas cuentas que habría usado el espejo.
+        let notas: Vec<(Uuid, Uuid, bool, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT nc.id, nc.venta_id, nc.es_parcial, nc.created_at
                FROM notas_credito nc
                WHERE nc.tenant_id = $1
                  AND NOT EXISTS (SELECT 1 FROM asientos a WHERE a.tenant_id = nc.tenant_id AND a.referencia_tipo = 'NOTA_CREDITO' AND a.referencia_id = nc.id)"#,
@@ -749,22 +805,58 @@ impl ContabilidadService {
         .fetch_all(&mut *tx)
         .await?;
         let mut notas_count = 0i64;
-        for (id, venta_id, created_at) in notas {
+        for (id, venta_id, es_parcial, created_at) in notas {
             let original: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM asientos WHERE tenant_id = $1 AND referencia_tipo = 'VENTA' AND referencia_id = $2")
                 .bind(tenant_id)
                 .bind(venta_id)
                 .fetch_optional(&mut *tx)
                 .await?;
             let Some((orig_asiento_id,)) = original else { continue };
-            let lineas_originales: Vec<(String, Decimal, Decimal)> =
-                sqlx::query_as("SELECT cuenta, debe, haber FROM asientos_contables WHERE asiento_id = $1")
-                    .bind(orig_asiento_id)
-                    .fetch_all(&mut *tx)
-                    .await?;
-            let lineas_reversa: Vec<(String, Decimal, Decimal)> = lineas_originales.into_iter().map(|(cuenta, debe, haber)| (cuenta, haber, debe)).collect();
+            let lineas_reversa: Vec<(String, Decimal, Decimal)> = if es_parcial {
+                let (subtotal, itbis, total): (Decimal, Decimal, Decimal) =
+                    sqlx::query_as("SELECT subtotal, itbis_total, total FROM notas_credito WHERE id = $1")
+                        .bind(id)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                let cogs: Decimal = sqlx::query_scalar(
+                    "SELECT COALESCE(SUM(cantidad * costo_unitario), 0) FROM nota_credito_items WHERE nota_credito_id = $1 AND costo_unitario IS NOT NULL",
+                )
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let metodo_pago: String = sqlx::query_scalar("SELECT metodo_pago FROM ventas WHERE id = $1").bind(venta_id).fetch_one(&mut *tx).await?;
+                let cuenta_pago = if metodo_pago == "FIADO" { "1110 Cuentas por Cobrar" } else { "1100 Caja y Bancos" };
+                let mut l = vec![("4100 Ingresos por Ventas".to_string(), subtotal, Decimal::ZERO)];
+                if itbis > Decimal::ZERO {
+                    l.push(("2100 ITBIS por Pagar".to_string(), itbis, Decimal::ZERO));
+                }
+                l.push((cuenta_pago.to_string(), Decimal::ZERO, total));
+                if cogs > Decimal::ZERO {
+                    l.push(("1200 Inventario".to_string(), cogs, Decimal::ZERO));
+                    l.push(("5050 Costo de Ventas".to_string(), Decimal::ZERO, cogs));
+                }
+                l
+            } else {
+                let lineas_originales: Vec<(String, Decimal, Decimal)> =
+                    sqlx::query_as("SELECT cuenta, debe, haber FROM asientos_contables WHERE asiento_id = $1")
+                        .bind(orig_asiento_id)
+                        .fetch_all(&mut *tx)
+                        .await?;
+                lineas_originales.into_iter().map(|(cuenta, debe, haber)| (cuenta, haber, debe)).collect()
+            };
             let fecha = created_at.date_naive();
+            // Una nota parcial no "reversa" el asiento de la venta: son
+            // varias, y la venta sigue viva. Solo la total se enlaza con
+            // `reversa_de`/origen REVERSION, como hasta ahora - si no, la
+            // primera devolución parcial dejaría el asiento de la venta
+            // marcado como ya reversado para `reversar_asiento`.
+            let (descripcion, origen, reversa_de) = if es_parcial {
+                ("Nota de Crédito (devolución parcial)", "AUTOMATICO", None)
+            } else {
+                ("Nota de Crédito", "REVERSION", Some(orig_asiento_id))
+            };
             if self
-                .create_entry(&mut tx, tenant_id, fecha, "Nota de Crédito", "REVERSION", "NOTA_CREDITO", Some(id), Some(orig_asiento_id), None, &lineas_reversa)
+                .create_entry(&mut tx, tenant_id, fecha, descripcion, origen, "NOTA_CREDITO", Some(id), reversa_de, None, &lineas_reversa)
                 .await?
                 .is_some()
             {
@@ -845,6 +937,35 @@ impl ContabilidadService {
             }
         }
 
+        // --- Abonos a proveedor (Fase F5): espejo del abono de cliente, en
+        // dirección contraria - paga Cuentas por Pagar con Caja. El método
+        // de pago no cambia el asiento: el plan de cuentas tiene una sola
+        // cuenta "1100 Caja y Bancos" (ver partner_service::registrar_abono_proveedor).
+        let abonos_proveedor: Vec<(Uuid, Decimal, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT pa.id, pa.monto, pa.created_at
+               FROM proveedor_abonos pa
+               WHERE pa.tenant_id = $1
+                 AND NOT EXISTS (SELECT 1 FROM asientos a WHERE a.tenant_id = pa.tenant_id AND a.referencia_tipo = 'ABONO_PROVEEDOR' AND a.referencia_id = pa.id)"#,
+        )
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut abonos_proveedor_count = 0i64;
+        for (id, monto, created_at) in abonos_proveedor {
+            let fecha = created_at.date_naive();
+            let lineas = vec![
+                ("2110 Cuentas por Pagar".to_string(), monto, Decimal::ZERO),
+                ("1100 Caja y Bancos".to_string(), Decimal::ZERO, monto),
+            ];
+            if self
+                .create_entry(&mut tx, tenant_id, fecha, "Abono a proveedor", "AUTOMATICO", "ABONO_PROVEEDOR", Some(id), None, None, &lineas)
+                .await?
+                .is_some()
+            {
+                abonos_proveedor_count += 1;
+            }
+        }
+
         tx.commit().await?;
         Ok(SincronizarResultado {
             ventas_procesadas: ventas_count,
@@ -856,6 +977,7 @@ impl ContabilidadService {
             notas_credito_procesadas: notas_count,
             ajustes_procesados: ajustes_count,
             banco_procesados: banco_count,
+            abonos_proveedor_procesados: abonos_proveedor_count,
         })
     }
 }

@@ -1232,6 +1232,55 @@ async fn main() -> anyhow::Result<()> {
         -- hay forma de leer una compra y saber por qué el stock no se movió.
         -- Ver compras_service::create_compra.
         ALTER TABLE compras ADD COLUMN IF NOT EXISTS ajuste_solo_precio BOOLEAN NOT NULL DEFAULT false;
+
+        -- Devoluciones parciales (Fase D): que linea y cuanto se devolvio en
+        -- cada Nota de Credito. Los montos se copian de la linea vendida
+        -- (venta_items) al momento de la devolucion, NUNCA del precio actual
+        -- del producto - ver ventas_service::create_nota_credito.
+        CREATE TABLE IF NOT EXISTS nota_credito_items (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            nota_credito_id UUID NOT NULL REFERENCES notas_credito(id) ON DELETE CASCADE,
+            venta_item_id UUID NOT NULL REFERENCES venta_items(id),
+            producto_id UUID NOT NULL REFERENCES productos(id),
+            sku TEXT NOT NULL,
+            nombre TEXT NOT NULL,
+            cantidad DECIMAL(12,2) NOT NULL,
+            precio_unitario DECIMAL(12,2) NOT NULL,
+            descuento DECIMAL(12,2) NOT NULL DEFAULT 0,
+            itbis_tipo TEXT NOT NULL,
+            itbis_monto DECIMAL(12,2) NOT NULL,
+            subtotal DECIMAL(12,2) NOT NULL,
+            costo_unitario DECIMAL(12,2),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_nota_credito_items_nota ON nota_credito_items(nota_credito_id);
+        CREATE INDEX IF NOT EXISTS idx_nota_credito_items_venta_item ON nota_credito_items(venta_item_id);
+
+        -- Discriminador para contabilidad_service::sincronizar: false (que es
+        -- lo que queda en toda fila historica) = devolucion total = espejo del
+        -- asiento de la venta, exactamente como antes de esta fase.
+        ALTER TABLE notas_credito ADD COLUMN IF NOT EXISTS es_parcial BOOLEAN NOT NULL DEFAULT false;
+
+        -- FASE F5: abonos a proveedor (pago de Cuentas por Pagar). Espejo
+        -- exacto de cliente_abonos: una compra FIADO crea la deuda y hasta
+        -- ahora solo podía cerrarse con un asiento manual.
+        -- No se agrega `proveedores.saldo_pendiente`: el saldo se deriva de
+        -- compras FIADO no anuladas menos notas de crédito menos abonos, para
+        -- no crear una tercera fuente de verdad que pueda quedar desfasada
+        -- (ver docs/14 §4 sobre los tres saldos de caja/banco sin conciliar).
+        CREATE TABLE IF NOT EXISTS proveedor_abonos (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id TEXT NOT NULL REFERENCES tenants(rnc) ON DELETE CASCADE,
+            proveedor_id UUID NOT NULL REFERENCES proveedores(id) ON DELETE CASCADE,
+            monto DECIMAL(12,2) NOT NULL,
+            metodo_pago TEXT NOT NULL DEFAULT 'EFECTIVO', -- EFECTIVO | TRANSFERENCIA | CHEQUE
+            nota TEXT,
+            usuario_id UUID REFERENCES usuarios(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_proveedor_abonos_proveedor ON proveedor_abonos(proveedor_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_proveedor_abonos_tenant ON proveedor_abonos(tenant_id, created_at DESC);
         "#
     )
     .execute(&pool)

@@ -39,6 +39,7 @@ use services::conduce_service::ConduceService;
 use services::config_service::ConfigService;
 use services::cotizacion_service::CotizacionService;
 use services::contabilidad_service::ContabilidadService;
+use services::estados_financieros::EstadosFinancierosService;
 use services::ai_service::AiService;
 use services::ecf_service::EcfService;
 use services::email_service::EmailService;
@@ -72,6 +73,7 @@ struct HttpState {
     bancos_service: Arc<BancosService>,
     nomina_service: Arc<NominaService>,
     contabilidad_service: Arc<ContabilidadService>,
+    estados_financieros: Arc<EstadosFinancierosService>,
     report_service: Arc<ReportService>,
     config_service: Arc<ConfigService>,
     rnc_service: Arc<RncService>,
@@ -464,6 +466,7 @@ async fn main() -> anyhow::Result<()> {
     let bancos_service = Arc::new(BancosService::new(pool.clone()));
     let nomina_service = Arc::new(NominaService::new(pool.clone()));
     let contabilidad_service = Arc::new(ContabilidadService::new(pool.clone()));
+    let estados_financieros = Arc::new(EstadosFinancierosService::new(pool.clone()));
     let report_service = Arc::new(ReportService::new(pool.clone()));
     let config_service = Arc::new(ConfigService::new(pool.clone()));
     let rnc_service = Arc::new(RncService::new(pool.clone()));
@@ -525,6 +528,7 @@ async fn main() -> anyhow::Result<()> {
         bancos_service,
         nomina_service,
         contabilidad_service,
+        estados_financieros,
         report_service,
         config_service,
         rnc_service,
@@ -566,13 +570,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/clientes/:id", get(http_get_cliente).put(http_update_cliente).delete(http_delete_cliente))
         .route("/v1/proveedores", get(http_list_proveedores).post(http_create_proveedor))
         .route("/v1/proveedores/:id", get(http_get_proveedor).put(http_update_proveedor).delete(http_delete_proveedor))
+        .route("/v1/proveedores/:id/abonos", get(http_list_abonos_proveedor).post(http_registrar_abono_proveedor))
         // MODULO 5: Ventas / Punto de Venta
         .route("/v1/ventas", get(http_list_ventas).post(http_create_venta))
         .route("/v1/ventas/:id", get(http_get_venta))
         .route("/v1/ventas/:id/emitir-ecf", post(http_emitir_ecf_venta))
         .route("/v1/ventas/:id/imprimir", post(http_imprimir_venta))
         .route("/v1/ventas/:id/nota-credito", post(http_crear_nota_credito))
+        .route("/v1/ventas/:id/devoluciones", get(http_devoluciones_de_venta))
         .route("/v1/ventas/:id/conduce-retroactivo", post(http_crear_conduce_retroactivo))
+        .route("/v1/notas-credito", get(http_list_notas_credito))
         .route("/v1/notas-credito/:id", get(http_get_nota_credito))
         .route("/v1/cotizaciones", get(http_list_cotizaciones).post(http_create_cotizacion))
         .route("/v1/cotizaciones/:id", get(http_get_cotizacion))
@@ -643,6 +650,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/contabilidad/periodos", get(http_list_periodos_contables))
         .route("/v1/contabilidad/periodos/:anio/:mes/cerrar", post(http_cerrar_periodo))
         .route("/v1/contabilidad/sincronizar", post(http_sincronizar_contabilidad))
+        .route("/v1/contabilidad/estado-resultados", get(http_estado_resultados))
+        .route("/v1/contabilidad/balance-general", get(http_balance_general))
         // MODULO 10: Reportes y Dashboard
         .route("/v1/reports/606", get(http_report_606))
         .route("/v1/reports/it1", get(http_report_it1))
@@ -2127,11 +2136,13 @@ async fn http_list_proveedores(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
-) -> Result<Json<pagination::Page<services::partner_service::Proveedor>>, (StatusCode, String)> {
+) -> Result<Json<pagination::Page<services::partner_service::ProveedorConSaldo>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
     let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
-    let (proveedores, total) = state.partner_service.list_proveedores(&claims.tenant_id, params.search, params.activo, &page, &sort).await
+    // Fase F5: el listado trae el saldo por pagar derivado (mismos campos de
+    // antes + `saldo_pendiente`), para que se vea a quién se le debe.
+    let (proveedores, total) = state.partner_service.list_proveedores_con_saldo(&claims.tenant_id, params.search, params.activo, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let page_size = page.limit(20);
     Ok(Json(pagination::Page::new(proveedores, page.page_number(), page_size, total)))
@@ -2141,9 +2152,9 @@ async fn http_get_proveedor(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<services::partner_service::Proveedor>, (StatusCode, String)> {
+) -> Result<Json<services::partner_service::ProveedorConSaldo>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    state.partner_service.get_proveedor(&claims.tenant_id, id).await
+    state.partner_service.get_proveedor_con_saldo(&claims.tenant_id, id).await
         .map(Json)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
 }
@@ -2180,6 +2191,36 @@ async fn http_delete_proveedor(
     state.partner_service.delete_proveedor(&claims.tenant_id, id).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// Fase F5: pago a proveedor contra `2110 Cuentas por Pagar`. Espejo de
+// `http_registrar_abono` (lado cliente); ver
+// partner_service::registrar_abono_proveedor para el tratamiento de
+// efectivo vs. transferencia.
+async fn http_list_abonos_proveedor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<services::partner_service::ProveedorAbono>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    state.partner_service.list_abonos_proveedor(&claims.tenant_id, id).await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn http_registrar_abono_proveedor(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<services::partner_service::CreateProveedorAbonoRequest>,
+) -> Result<Json<services::partner_service::ProveedorAbono>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
+    let abono = state.partner_service.registrar_abono_proveedor(&claims.tenant_id, id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ABONO_PROVEEDOR_REGISTRADO", "proveedor", Some(id),
+        serde_json::json!({ "abono_id": abono.id, "monto": abono.monto, "metodo_pago": abono.metodo_pago })).await;
+    Ok(Json(abono))
 }
 
 // ------------------ MODULO 5: Ventas / Punto de Venta ------------------
@@ -2455,6 +2496,9 @@ async fn http_reintentar_pendientes(
 #[derive(Debug, Deserialize)]
 struct CrearNotaCreditoRequest {
     motivo: String,
+    /// Devolución PARCIAL: qué línea de la venta y cuánto de ella vuelve.
+    /// Ausente = devolución total (comportamiento de siempre).
+    items: Option<Vec<services::ventas_service::DevolucionItemRequest>>,
     #[serde(rename = "p12Base64")] p12_base64: Option<String>,
     #[serde(rename = "p12Password")] p12_password: Option<String>,
     environment: Option<String>,
@@ -2462,9 +2506,11 @@ struct CrearNotaCreditoRequest {
 }
 
 /// Emite una Nota de Crédito (e-CF Tipo 34) para una venta ya facturada:
-/// revierte stock y caja, referencia el e-NCF original vía
+/// revierte stock y caja de lo devuelto, referencia el e-NCF original vía
 /// InformacionReferencia (nunca edita/anula la venta en sitio), y sigue el
 /// mismo pipeline real de firma + envío + retención que una venta.
+/// Con `items` la devolución es parcial: la venta sigue COMPLETADA y el E34
+/// lleva solo los renglones devueltos.
 async fn http_crear_nota_credito(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -2476,16 +2522,47 @@ async fn http_crear_nota_credito(
 
     let venta_original = state.ventas_service.get_venta(&claims.tenant_id, venta_id).await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
-    let e_ncf_original = venta_original.venta.e_ncf.clone()
-        .ok_or((StatusCode::BAD_REQUEST, "La venta original no tiene un e-CF emitido — no se puede emitir una Nota de Crédito".to_string()))?;
-
-    let (nota, _items) = state.ventas_service.create_nota_credito(&claims.tenant_id, usuario_id, venta_id, &req.motivo).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "NOTA_CREDITO_EMITIDA", "venta", Some(venta_id),
-        serde_json::json!({ "motivo": req.motivo, "total": nota.total })).await;
-
     let tenant = state.auth_service.get_tenant(&claims.tenant_id).await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    // Un negocio sin factura electrónica activa igual necesita poder aceptar
+    // una devolución: se registra la nota (stock, caja, contabilidad) sin
+    // documento fiscal. Con e-CF activa el requisito de siempre se mantiene:
+    // sin e-NCF original no hay nada que referenciar en el E34.
+    let e_ncf_original = if tenant.factura_electronica_activa {
+        Some(venta_original.venta.e_ncf.clone().ok_or((
+            StatusCode::BAD_REQUEST,
+            "La venta original no tiene un e-CF emitido — no se puede emitir una Nota de Crédito".to_string(),
+        ))?)
+    } else {
+        None
+    };
+
+    let (nota, nota_items) = state.ventas_service
+        .create_nota_credito(&claims.tenant_id, usuario_id, venta_id, &req.motivo, req.items)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let detalle_lineas: Vec<serde_json::Value> = nota_items.iter().map(|it| serde_json::json!({
+        "venta_item_id": it.venta_item_id,
+        "sku": it.sku,
+        "nombre": it.nombre,
+        "cantidad": it.cantidad,
+        "subtotal": it.subtotal,
+        "itbis_monto": it.itbis_monto,
+    })).collect();
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "NOTA_CREDITO_EMITIDA", "venta", Some(venta_id),
+        serde_json::json!({
+            "motivo": req.motivo,
+            "total": nota.total,
+            "nota_credito_id": nota.id,
+            "es_parcial": nota.es_parcial,
+            "lineas": detalle_lineas,
+        })).await;
+
+    let Some(e_ncf_original) = e_ncf_original else {
+        return Ok(Json(nota));
+    };
+
     let (cliente_rnc, cliente_nombre, cliente_direccion) = match venta_original.venta.cliente_id {
         Some(cid) => match state.partner_service.get_cliente(&claims.tenant_id, cid).await {
             Ok(c) => (c.rnc_cedula.unwrap_or_else(|| "000000000".to_string()), c.nombre, c.direccion),
@@ -2502,14 +2579,29 @@ async fn http_crear_nota_credito(
     let fecha_emision = now.format("%d-%m-%Y").to_string();
     let fecha_vencimiento = fecha_vencimiento_secuencia.format("%d-%m-%Y").to_string();
 
-    let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String)> = venta_original.items.iter()
-        .map(|it| (it.nombre.clone(), it.cantidad, it.precio_unitario, it.itbis_tipo.clone()))
+    // Solo los renglones devueltos, con la cantidad devuelta y el descuento
+    // que arrastra la línea original: así los totales del E34 nunca superan
+    // los de la factura que modifica.
+    let items: Vec<(String, rust_decimal::Decimal, rust_decimal::Decimal, String, rust_decimal::Decimal)> = nota_items.iter()
+        .map(|it| (it.nombre.clone(), it.cantidad, it.precio_unitario, it.itbis_tipo.clone(), it.descuento))
         .collect();
 
-    let ecf = build_simple_pos_ecf(
+    // Catálogo DGII de CodigoModificacion (ver ecf_builder::ReferenciaNcf):
+    // 1 anula el comprobante completo, 3 corrige montos (devoluciones y
+    // descuentos parciales). Usar 1 en una devolución parcial le diría a DGII
+    // que la factura entera quedó sin efecto.
+    let codigo_modificacion = if nota.es_parcial { "3" } else { "1" };
+    let fecha_venta_original = venta_original.venta.created_at.with_timezone(&chrono::Local).format("%d-%m-%Y").to_string();
+
+    let ecf = ecf_builder::build_pos_ecf_con_descuento(
         &claims.tenant_id, &tenant.razon_social, &tenant.direccion, &e_ncf, tipo_ecf, &cliente_rnc, &cliente_nombre,
         items, &fecha_emision, &fecha_vencimiento, cliente_direccion.as_deref(), 0,
-        Some((&e_ncf_original, &req.motivo)),
+        Some(ecf_builder::ReferenciaNcf {
+            ncf_modificado: &e_ncf_original,
+            razon: &req.motivo,
+            fecha_ncf_modificado: Some(&fecha_venta_original),
+            codigo_modificacion,
+        }),
     );
     let xml_built = build_ecf_xml(&ecf);
 
@@ -2562,15 +2654,72 @@ async fn http_crear_nota_credito(
     Ok(Json(nota))
 }
 
+#[derive(Debug, Serialize)]
+struct NotaCreditoCompletaResponse {
+    #[serde(flatten)]
+    nota: services::ventas_service::NotaCredito,
+    items: Vec<services::ventas_service::NotaCreditoItem>,
+}
+
 async fn http_get_nota_credito(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<services::ventas_service::NotaCredito>, (StatusCode, String)> {
+) -> Result<Json<NotaCreditoCompletaResponse>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    state.ventas_service.get_nota_credito(&claims.tenant_id, id).await
-        .map(Json)
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+    let nota = state.ventas_service.get_nota_credito(&claims.tenant_id, id).await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let items = state.ventas_service.get_nota_credito_items(nota.id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(NotaCreditoCompletaResponse { nota, items }))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListNotasCreditoQuery {
+    #[serde(rename = "ventaId")] venta_id: Option<Uuid>,
+    #[serde(rename = "fechaDesde")] fecha_desde: Option<chrono::NaiveDate>,
+    #[serde(rename = "fechaHasta")] fecha_hasta: Option<chrono::NaiveDate>,
+    page: Option<i64>,
+    #[serde(rename = "pageSize")] page_size: Option<i64>,
+    #[serde(rename = "sortBy")] sort_by: Option<String>,
+    #[serde(rename = "sortDir")] sort_dir: Option<String>,
+}
+
+/// Listado de devoluciones (Notas de Crédito) del tenant - alimenta
+/// `ventas/devoluciones` en la app.
+async fn http_list_notas_credito(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(q): Query<ListNotasCreditoQuery>,
+) -> Result<Json<pagination::Page<services::ventas_service::NotaCreditoConVenta>>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let page = pagination::PageParams { page: q.page, page_size: q.page_size };
+    let sort = pagination::SortParams { sort_by: q.sort_by, sort_dir: q.sort_dir };
+    let (notas, total) = state.ventas_service
+        .list_notas_credito(&claims.tenant_id, q.venta_id, q.fecha_desde, q.fecha_hasta, &page, &sort)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let page_size = page.limit(20);
+    Ok(Json(pagination::Page::new(notas, page.page_number(), page_size, total)))
+}
+
+#[derive(Debug, Serialize)]
+struct DevolucionesDeVentaResponse {
+    notas: Vec<services::ventas_service::NotaCredito>,
+    /// Cuánto se ha devuelto ya de cada línea de la venta, sumando todas sus
+    /// notas - es el tope que la UI usa para el selector de cantidad.
+    lineas: Vec<services::ventas_service::LineaDevuelta>,
+}
+
+async fn http_devoluciones_de_venta(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(venta_id): Path<Uuid>,
+) -> Result<Json<DevolucionesDeVentaResponse>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    let (notas, lineas) = state.ventas_service.devoluciones_de_venta(&claims.tenant_id, venta_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(DevolucionesDeVentaResponse { notas, lineas }))
 }
 
 // ------------------ MODULO 5b: Cotizaciones ------------------
@@ -3626,6 +3775,8 @@ async fn http_create_compra(
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
     let completa = state.compras_service.create_compra(&claims.tenant_id, usuario_id, req).await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "COMPRA_REGISTRADA", "compra", Some(completa.compra.id),
+        serde_json::json!({ "total": completa.compra.total, "metodo_pago": completa.compra.metodo_pago, "tipo_documento": completa.compra.tipo_documento })).await;
     Ok(Json(CompraCompletaResponse { compra: completa.compra, items: completa.items }))
 }
 
@@ -3691,9 +3842,11 @@ async fn http_create_gasto(
 ) -> Result<Json<services::compras_service::Gasto>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
-    state.compras_service.create_gasto(&claims.tenant_id, usuario_id, req).await
-        .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+    let gasto = state.compras_service.create_gasto(&claims.tenant_id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "GASTO_REGISTRADO", "gasto", Some(gasto.id),
+        serde_json::json!({ "monto": gasto.monto, "categoria": gasto.categoria, "concepto": gasto.concepto })).await;
+    Ok(Json(gasto))
 }
 
 // ------------------ MODULO 9: Caja y Bancos ------------------
@@ -3842,9 +3995,11 @@ async fn http_create_banco_movimiento(
 ) -> Result<Json<services::caja_service::BancoMovimiento>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
-    state.bancos_service.create_movimiento(&claims.tenant_id, id, usuario_id, req).await
-        .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+    let movimiento = state.bancos_service.create_movimiento(&claims.tenant_id, id, usuario_id, req).await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "BANCO_MOVIMIENTO_REGISTRADO", "banco", Some(id),
+        serde_json::json!({ "movimiento_id": movimiento.id, "tipo": movimiento.tipo, "monto": movimiento.monto })).await;
+    Ok(Json(movimiento))
 }
 
 // ------------------ MODULO 8: Nomina y Adelantos ------------------
@@ -4051,6 +4206,7 @@ async fn http_list_asientos(
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
     let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
     let (asientos, total) = state.contabilidad_service.list_asientos(
         &claims.tenant_id, params.cuenta, params.referencia_tipo, params.fecha_desde, params.fecha_hasta, &page, &sort,
     ).await
@@ -4068,6 +4224,16 @@ async fn http_create_asiento(
     let usuario_id = Uuid::parse_str(&claims.sub).map_err(|e| (StatusCode::UNAUTHORIZED, format!("Token inválido: {}", e)))?;
     let asientos = state.contabilidad_service.create_asiento_manual(&claims.tenant_id, usuario_id, req).await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    // La vía de escritura de dinero más riesgosa del sistema: un asiento
+    // manual puede tocar cualquier cuenta sin pasar por ningún módulo de
+    // negocio. Se audita el asiento completo (cuentas y montos), no solo el id.
+    let asiento_id = asientos.first().and_then(|a| a.asiento_id);
+    state.audit_service.log(&claims.tenant_id, Some(usuario_id), "ASIENTO_MANUAL_CREADO", "asiento", asiento_id,
+        serde_json::json!({
+            "descripcion": asientos.first().map(|a| a.descripcion.clone()),
+            "fecha": asientos.first().map(|a| a.fecha),
+            "lineas": asientos.iter().map(|a| serde_json::json!({ "cuenta": a.cuenta, "debe": a.debe, "haber": a.haber })).collect::<Vec<_>>(),
+        })).await;
     Ok(Json(serde_json::json!({ "asientos": asientos })))
 }
 
@@ -4088,6 +4254,7 @@ async fn http_libro_mayor(
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
     let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
     let (cuentas, total) = state.contabilidad_service.libro_mayor(&claims.tenant_id, params.search, &page, &sort).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let page_size = page.limit(20);
@@ -4099,9 +4266,14 @@ async fn http_sincronizar_contabilidad(
     headers: HeaderMap,
 ) -> Result<Json<services::contabilidad_service::SincronizarResultado>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
-    state.contabilidad_service.sincronizar(&claims.tenant_id).await
-        .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    let usuario_id = Uuid::parse_str(&claims.sub).ok();
+    let resultado = state.contabilidad_service.sincronizar(&claims.tenant_id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Quién la corrió y qué generó: sin esto no hay forma de saber de dónde
+    // salió un asiento automático fechado en un día viejo.
+    state.audit_service.log(&claims.tenant_id, usuario_id, "CONTABILIDAD_SINCRONIZADA", "contabilidad", None,
+        serde_json::json!(resultado)).await;
+    Ok(Json(resultado))
 }
 
 #[derive(Debug, Deserialize)]
@@ -4139,6 +4311,7 @@ async fn http_libro_mayor_detalle(
 ) -> Result<Json<pagination::Page<services::contabilidad_service::MovimientoCuenta>>, (StatusCode, String)> {
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
     let (movimientos, total) = state.contabilidad_service.libro_mayor_detalle(
         &claims.tenant_id, &cuenta, params.fecha_desde, params.fecha_hasta, &page,
     ).await
@@ -4166,6 +4339,7 @@ async fn http_libro_diario(
     let claims = claims_from_headers(&state.auth_service, &headers)?;
     let page = pagination::PageParams { page: params.page, page_size: params.page_size };
     let sort = pagination::SortParams { sort_by: params.sort_by, sort_dir: params.sort_dir };
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
     let (asientos, total) = state.contabilidad_service.libro_diario(
         &claims.tenant_id, params.fecha_desde, params.fecha_hasta, params.origen, &page, &sort,
     ).await
@@ -4206,6 +4380,68 @@ async fn http_cerrar_periodo(
     state.audit_service.log(&claims.tenant_id, Some(usuario_id), "PERIODO_CERRADO", "periodo_contable", Some(periodo.id),
         serde_json::json!({ "anio": anio, "mes": mes })).await;
     Ok(Json(periodo))
+}
+
+// ------------------ MODULO 7b: Estados financieros (Fase F) ------------------
+
+/// Fase F4: antes, cada vista del mayor mostraba la foto del último
+/// "Sincronizar" que alguien pulsó a mano, así que un estado financiero
+/// podía omitir la venta de hace cinco minutos. Contabilizar aquí pone el
+/// trabajo exactamente donde importa, sin tocar los handlers de venta,
+/// compra, gasto ni nómina (que otras fases están editando).
+///
+/// Es **best-effort a propósito**: `sincronizar` es idempotente (UNIQUE +
+/// ON CONFLICT DO NOTHING, ver `contabilidad_service::create_entry`), pero
+/// puede fallar legítimamente - p. ej. si hay movimiento sin contabilizar
+/// dentro de un período ya cerrado. En ese caso la lectura no debe romperse:
+/// se sirve el mayor tal como está y queda el warn. `POST
+/// /v1/contabilidad/sincronizar` sigue existiendo para forzarlo y ver el
+/// error.
+async fn sincronizar_antes_de_leer(state: &HttpState, tenant_id: &str) {
+    if let Err(e) = state.contabilidad_service.sincronizar(tenant_id).await {
+        tracing::warn!("sincronización automática previa a la lectura falló para {}: {}", tenant_id, e);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EstadoResultadosParams {
+    desde: Option<chrono::NaiveDate>,
+    hasta: Option<chrono::NaiveDate>,
+}
+
+async fn http_estado_resultados(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<EstadoResultadosParams>,
+) -> Result<Json<services::estados_financieros::EstadoResultados>, (StatusCode, String)> {
+    use chrono::Datelike;
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
+    let hasta = params.hasta.unwrap_or_else(|| chrono::Utc::now().date_naive());
+    // Por defecto el mes corriente: es la granularidad de periodos_contables
+    // y lo que un colmado mira cuando abre "Estado de resultados".
+    let desde = params.desde.unwrap_or_else(|| hasta.with_day(1).unwrap_or(hasta));
+    state.estados_financieros.estado_resultados(&claims.tenant_id, desde, hasta).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct BalanceGeneralParams {
+    al: Option<chrono::NaiveDate>,
+}
+
+async fn http_balance_general(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(params): Query<BalanceGeneralParams>,
+) -> Result<Json<services::estados_financieros::BalanceGeneral>, (StatusCode, String)> {
+    let claims = claims_from_headers(&state.auth_service, &headers)?;
+    sincronizar_antes_de_leer(&state, &claims.tenant_id).await;
+    let al = params.al.unwrap_or_else(|| chrono::Utc::now().date_naive());
+    state.estados_financieros.balance_general(&claims.tenant_id, al).await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 // ------------------ MODULO 10: Reportes y Dashboard ------------------

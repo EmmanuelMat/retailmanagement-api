@@ -2,11 +2,11 @@
 
 import { Fragment, Suspense, useState } from "react";
 import Link from "next/link";
-import { Plus, Pencil, Trash2, Truck, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, Truck, Search, HandCoins } from "lucide-react";
 import {
-  Button, Input, Select,
+  Button, ConfirmDialog, Input, Select,
   Table, TableBody, TableCell, TableHead, SortableTableHead, TableHeader, TableRow,
-  Pagination, ScrollableTableCard,
+  Pagination, ScrollableTableCard, formatDOP,
 } from "@repo/ui";
 import { apiFetch } from "@/lib/api";
 import { useServerTable } from "@/lib/use-server-table";
@@ -18,6 +18,9 @@ interface Proveedor {
   rnc: string | null;
   contacto: string | null;
   telefono: string | null;
+  /** Deuda por compras a crédito, derivada en el core (ver
+   *  partner_service::SALDO_PROVEEDOR_SQL). Llega como string decimal. */
+  saldo_pendiente: string;
 }
 
 interface ProveedoresFilters {
@@ -57,6 +60,39 @@ function ProveedoresPageContent() {
   const [searchInput, setSearchInput] = useSearchFilterSync(state.filters.search || "", (search) => setFilters({ search }));
   const [eliminandoId, setEliminandoId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState("");
+  // Abono a proveedor: paga la deuda de compras a crédito (2110 Cuentas por
+  // Pagar). Mueve dinero, así que pasa por ConfirmDialog como el resto de
+  // las acciones irreversibles.
+  const [abonando, setAbonando] = useState<Proveedor | null>(null);
+  const [abonoMonto, setAbonoMonto] = useState("");
+  const [abonoMetodo, setAbonoMetodo] = useState("EFECTIVO");
+  const [abonoBusy, setAbonoBusy] = useState(false);
+  const [abonoError, setAbonoError] = useState("");
+
+  function abrirAbono(p: Proveedor) {
+    setAbonando(p);
+    setAbonoMonto(p.saldo_pendiente);
+    setAbonoMetodo("EFECTIVO");
+    setAbonoError("");
+  }
+
+  async function handleAbono() {
+    if (!abonando) return;
+    setAbonoBusy(true);
+    setAbonoError("");
+    try {
+      await apiFetch(`/api/proveedores/${abonando.id}/abonos`, {
+        method: "POST",
+        body: JSON.stringify({ monto: abonoMonto, metodo_pago: abonoMetodo }),
+      });
+      setAbonando(null);
+      refresh();
+    } catch (e: any) {
+      setAbonoError(e.message);
+    } finally {
+      setAbonoBusy(false);
+    }
+  }
 
   async function handleDelete(id: string) {
     setDeleteError("");
@@ -121,7 +157,8 @@ function ProveedoresPageContent() {
               <TableHead>RNC</TableHead>
               <TableHead>Contacto</TableHead>
               <TableHead>Teléfono</TableHead>
-              <TableHead className="w-24 text-right">Acciones</TableHead>
+              <TableHead className="text-right">Saldo por pagar</TableHead>
+              <TableHead className="w-32 text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -132,8 +169,26 @@ function ProveedoresPageContent() {
                   <TableCell className="font-mono text-xs text-muted-foreground">{p.rnc || "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{p.contacto || "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{p.telefono || "—"}</TableCell>
+                  <TableCell
+                    className={`text-right tabular-nums ${Number(p.saldo_pendiente) > 0 ? "font-semibold" : "text-muted-foreground"}`}
+                    data-testid="proveedor-saldo"
+                  >
+                    {formatDOP(p.saldo_pendiente)}
+                  </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
+                      {Number(p.saldo_pendiente) > 0 && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Abonar a ${p.nombre}`}
+                          title="Registrar abono"
+                          data-testid="proveedor-abonar"
+                          onClick={() => abrirAbono(p)}
+                        >
+                          <HandCoins className="h-4 w-4" />
+                        </Button>
+                      )}
                       <Link href={`/proveedores/${p.id}` as any}>
                         <Button size="icon" variant="ghost"><Pencil className="h-4 w-4" /></Button>
                       </Link>
@@ -143,7 +198,7 @@ function ProveedoresPageContent() {
                 </TableRow>
                 {eliminandoId === p.id && (
                   <TableRow>
-                    <TableCell colSpan={5} className="bg-muted/30">
+                    <TableCell colSpan={6} className="bg-muted/30">
                       <div className="flex flex-wrap items-center gap-2 py-1">
                         <span className="text-sm">¿Desactivar a {p.nombre}?</span>
                         <Button size="sm" variant="destructive" onClick={() => handleDelete(p.id)}>Desactivar</Button>
@@ -158,6 +213,44 @@ function ProveedoresPageContent() {
           </TableBody>
         </Table>
       </ScrollableTableCard>
+
+      <ConfirmDialog
+        open={abonando !== null}
+        onClose={() => setAbonando(null)}
+        onConfirm={handleAbono}
+        busy={abonoBusy}
+        confirmLabel="Registrar abono"
+        title={`Abonar a ${abonando?.nombre ?? ""}`}
+        description={
+          <div className="space-y-3">
+            <p>
+              Saldo por pagar: <strong className="tabular-nums">{formatDOP(abonando?.saldo_pendiente ?? "0")}</strong>. El abono baja la deuda y,
+              si es en efectivo, sale de la caja.
+            </p>
+            <div className="space-y-1.5">
+              <label htmlFor="abono-monto" className="text-xs text-muted-foreground">Monto</label>
+              <Input
+                id="abono-monto"
+                type="number"
+                min="0"
+                step="0.01"
+                value={abonoMonto}
+                onChange={(e) => setAbonoMonto(e.target.value)}
+                data-testid="proveedor-abono-monto"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="abono-metodo" className="text-xs text-muted-foreground">Método de pago</label>
+              <Select id="abono-metodo" value={abonoMetodo} onChange={(e) => setAbonoMetodo(e.target.value)}>
+                <option value="EFECTIVO">Efectivo (sale de la caja)</option>
+                <option value="TRANSFERENCIA">Transferencia</option>
+                <option value="CHEQUE">Cheque</option>
+              </Select>
+            </div>
+            {abonoError && <p className="text-xs text-destructive">{abonoError}</p>}
+          </div>
+        }
+      />
     </div>
   );
 }
