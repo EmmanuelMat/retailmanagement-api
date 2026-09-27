@@ -156,15 +156,6 @@ export default function OrdenServicioDetallePage() {
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
   const [auditoria, setAuditoria] = useState<AuditoriaEntry[]>([]);
-  const [esServicios, setEsServicios] = useState(false);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("tenant");
-      if (raw) setEsServicios(JSON.parse(raw).tipo_negocio === "SERVICIOS");
-    } catch {}
-  }, []);
-
   function load() {
     apiFetch<OrdenDetalle>(`/api/ordenes-servicio/${params.id}`).then(setOrden).catch((e) => setError(e.message));
   }
@@ -298,7 +289,9 @@ export default function OrdenServicioDetallePage() {
           {tab === "items" && (
             <ItemsTab
               orden={orden}
-              productos={esServicios ? productos.filter((p) => p.tipo === "SERVICIO") : productos}
+              // Items solo lista servicios, sea cual sea el tipo de negocio;
+              // los productos van en la pestaña Materiales.
+              productos={productos.filter((p) => p.tipo === "SERVICIO")}
               onChanged={load}
             />
           )}
