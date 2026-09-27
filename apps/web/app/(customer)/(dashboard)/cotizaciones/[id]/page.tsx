@@ -91,10 +91,10 @@ export default function CotizacionDetallePage() {
   useEffect(() => {
     load();
     apiFetch<{ items: Cliente[] }>("/api/clientes?pageSize=1000&activo=true").then((d) => setClientes(d.items)).catch(() => {});
-    const tipoQuery = esServicios ? "&tipo=SERVICIO" : "";
-    apiFetch<{ items: Producto[] }>(`/api/productos?pageSize=5000&activo=true${tipoQuery}`).then((d) => setProductos(d.items)).catch(() => {});
+    // Solo servicios, sea cual sea el tipo de negocio - ver cotizaciones/nueva.
+    apiFetch<{ items: Producto[] }>("/api/productos?pageSize=5000&activo=true&tipo=SERVICIO").then((d) => setProductos(d.items)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.id, esServicios]);
+  }, [params.id]);
 
   async function handleGuardarCliente() {
     setGuardandoCliente(true);
